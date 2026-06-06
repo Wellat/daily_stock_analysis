@@ -246,7 +246,12 @@ jobs:
           LONGBRIDGE_ENABLE_OVERNIGHT: ${{ vars.LONGBRIDGE_ENABLE_OVERNIGHT || secrets.LONGBRIDGE_ENABLE_OVERNIGHT }}
           LONGBRIDGE_PUSH_CANDLESTICK_MODE: ${{ vars.LONGBRIDGE_PUSH_CANDLESTICK_MODE || secrets.LONGBRIDGE_PUSH_CANDLESTICK_MODE }}
           LONGBRIDGE_PRINT_QUOTE_PACKAGES: ${{ vars.LONGBRIDGE_PRINT_QUOTE_PACKAGES || secrets.LONGBRIDGE_PRINT_QUOTE_PACKAGES }}
-          
+
+          # Finnhub（美股日线/实时行情，免费 60 次/分钟）
+          FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
+          # AlphaVantage（美股日线，免费 25 次/天）
+          ALPHAVANTAGE_API_KEY: ${{ secrets.ALPHAVANTAGE_API_KEY }}
+
           # ==========================================
           # 搜索服务
           # ==========================================
@@ -421,6 +426,8 @@ jobs:
           else
             echo "  Longbridge: ⚪ 未配置（仅 YFinance 等，无长桥调用）"
           fi
+          echo "  Finnhub: $([ -n "$FINNHUB_API_KEY" ] && echo '✅ 已配置' || echo '⚪ 未配置（美股将使用 YFinance 兜底）')"
+          echo "  AlphaVantage: $([ -n "$ALPHAVANTAGE_API_KEY" ] && echo '✅ 已配置' || echo '⚪ 未配置（美股将使用 YFinance 兜底）')"
           echo ""
           echo "【搜索引擎】"
           echo "  Bocha API Keys: $([ -n "$BOCHA_API_KEYS" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
