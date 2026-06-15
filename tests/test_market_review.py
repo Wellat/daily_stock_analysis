@@ -104,6 +104,35 @@ class MarketReviewLocalizationTestCase(unittest.TestCase):
         persist_history.assert_called_once()
         self.assertTrue(persist_history.call_args.kwargs["query_id"].startswith("market_review_"))
 
+    def test_run_market_review_can_skip_report_file_for_context_generation(self) -> None:
+        notifier = self._make_notifier()
+        market_analyzer = MagicMock()
+        market_analyzer.run_daily_review_with_snapshot.return_value = SimpleNamespace(
+            report="CN body",
+            market_light_snapshot={"region": "cn", "trade_date": "2026-03-06", "score": 60},
+        )
+
+        with patch.object(
+            market_review_module,
+            "get_config",
+            return_value=SimpleNamespace(report_language="zh", market_review_region="cn"),
+        ), patch.object(
+            market_review_module,
+            "MarketAnalyzer",
+            return_value=market_analyzer,
+        ), patch.object(market_review_module, "_persist_market_review_history") as persist_history:
+            result = run_market_review(
+                notifier,
+                send_notification=False,
+                return_structured=True,
+                save_report_file=False,
+            )
+
+        self.assertIsInstance(result, market_review_module.MarketReviewRunResult)
+        self.assertEqual(result.report, "CN body")
+        notifier.save_report_to_file.assert_not_called()
+        persist_history.assert_called_once()
+
     def test_run_market_review_passes_request_config_to_generation(self) -> None:
         notifier = self._make_notifier()
         request_config = SimpleNamespace(report_language="en", market_review_region="cn")
@@ -401,13 +430,14 @@ class MarketReviewLocalizationTestCase(unittest.TestCase):
                     },
                 )
 
-                self.assertEqual(saved, 1)
+                self.assertGreater(saved, 0)
                 db = DatabaseManager.get_instance()
                 with db.get_session() as session:
                     row = session.query(AnalysisHistory).filter(
                         AnalysisHistory.query_id == "market-task-001"
                     ).first()
                     self.assertIsNotNone(row)
+                    self.assertEqual(row.id, saved)
                     self.assertEqual(row.code, market_review_module.MARKET_REVIEW_HISTORY_CODE)
                     self.assertEqual(row.name, "大盘复盘")
                     self.assertEqual(row.report_type, market_review_module.MARKET_REVIEW_REPORT_TYPE)
@@ -416,6 +446,8 @@ class MarketReviewLocalizationTestCase(unittest.TestCase):
                     self.assertIn('"market_light_snapshots"', row.context_snapshot)
                     self.assertIn('"market_review_payload"', row.context_snapshot)
                     self.assertIn('"trade_date": "2026-03-06"', row.context_snapshot)
+                    snapshot = json.loads(row.context_snapshot or "{}")
+                    self.assertIn("analysis_context_pack_overview", snapshot)
             finally:
                 DatabaseManager.reset_instance()
                 Config._instance = None

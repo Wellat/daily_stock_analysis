@@ -345,6 +345,7 @@ For the notification baseline, diagnostics, and deployment notes, see [Notificat
 | `STOCK_LIST` | Watchlist codes (comma-separated) | - |
 | `MAX_WORKERS` | Concurrent threads | `3` |
 | `MARKET_REVIEW_ENABLED` | Enable market review | `true` |
+| `DAILY_MARKET_CONTEXT_ENABLED` | Inject the daily market context into stock-analysis prompts and soften aggressive buy advice in high-risk/risk-off markets; enabled by default, and market review can still run when this is set to `false` | `true` |
 | `MARKET_REVIEW_REGION` | Market review region: cn (A-shares), hk (HK stocks), us (US stocks), both (all three markets) | `cn` |
 | `MARKET_REVIEW_COLOR_SCHEME` | Index change color style in market reviews: `green_up` = green gains/red losses (default), `red_up` = red gains/green losses | `green_up` |
 | `SCHEDULE_ENABLED` | Enable scheduled tasks | `false` |
@@ -1130,9 +1131,13 @@ Unknown or ambiguous advice is not coerced into `watch` or `hold`; it returns em
 
 #1390 P0 does not flatten future signal-asset fields into current report summaries, history lists, StockBar rows, or backtest responses. #1390 P1 now carries more granular plan fields such as `horizon`, `plan_quality`, and `status` through an independent `DecisionSignal` resource; it still does not change the existing report contract, backfill history, or add configuration.
 
-### Decision Signal Asset (#1390 P1)
+### Decision Signal Asset (#1390 P1/P2)
 
-`DecisionSignal` is an independent backend resource for persisting AI recommendations as queryable, deduplicated, status-updatable signal assets. It does not replace `operation_advice`, does not expand the legacy `decision_type=buy|hold|sell` contract, and does not auto-extract from existing reports yet; before P2, signals are written only through explicit API or service calls.
+`DecisionSignal` is an independent backend resource for persisting AI recommendations as queryable, deduplicated, status-updatable signal assets. It does not replace `operation_advice` or expand the legacy `decision_type=buy|hold|sell` contract. Starting with #1390 P2, regular stock analysis and Agent stock analysis best-effort extract one `source_type=analysis` signal from the final `AnalysisResult` after analysis history is saved successfully; explicit API and service calls remain supported.
+
+Automatic extraction consumes structured fields from the completed report only. It does not parse Markdown, backfill old history, add configuration, or change the main report contract. Extraction failures, unknown or ambiguous advice, non-stock reports, and unrecognized markets skip signal writes without affecting report persistence. `source_report_id` is the just-saved `AnalysisHistory.id`; `trace_id` prefers the runtime diagnostics trace and falls back to the pipeline trace or `query_id`; `stock_name` comes from `AnalysisResult.name`; `trigger_source` comes from the runtime entrypoint and falls back to `system`.
+
+For P2 automatic extraction, `market_phase` first reads `market_phase_summary.phase` from the saved context snapshot and then falls back to `AnalysisResult.market_phase_summary.phase`; data quality first reads `analysis_context_pack_overview.data_quality` from the saved context snapshot and then falls back to `AnalysisResult.analysis_context_pack_overview.data_quality`. Price-plan extraction reuses the same sniper-point parser used by history persistence, mapping `dashboard.battle_plan.sniper_points.ideal_buy/secondary_buy/stop_loss/take_profit` to `entry_low/entry_high/stop_loss/target_price`; `ideal_buy` alone writes `entry_low`, `secondary_buy` alone writes `entry_high`, and when both are present they are sorted into `entry_low <= entry_high`. Missing stop-loss or target prices only lower the service-computed `plan_quality` instead of inventing fields. `watch_conditions` first reads `dashboard.phase_decision.watch_conditions` and then falls back to `dashboard.battle_plan.action_checklist`. `catalyst_summary` is written only when `dashboard.intelligence.positive_catalysts` exists and is a list. `confidence` uses a conservative report-level mapping: `高/high=0.8`, `中/medium/mid=0.6`, `低/low=0.4`; the original report confidence level remains in `metadata`.
 
 Core fields include `stock_code`, `stock_name`, `market`, `source_type`, `source_agent`, `source_report_id`, `trace_id`, `market_phase`, `trigger_source`, `action`, `action_label`, `confidence`, `score`, `horizon`, `entry_low`, `entry_high`, `stop_loss`, `target_price`, `invalidation`, `watch_conditions`, `reason`, `risk_summary`, `catalyst_summary`, `evidence`, `data_quality_summary`, `plan_quality`, `status`, `expires_at`, `created_at`, `updated_at`, and `metadata`. `action` reuses the eight-state action taxonomy; `market_phase` reuses the market phase enum; `source_type` supports `analysis|agent|alert|market_review|manual`; `status` supports `active|expired|invalidated|closed|archived`; `horizon` supports `intraday|1d|3d|5d|10d|swing|long`.
 
@@ -1406,6 +1411,8 @@ A: Check if Actions is enabled, and if cron expression is correct (note it's UTC
 - If Agent asks for more days than the local cache contains, the tool returns the available records and marks the response with `partial_cache=true`, `requested_days`, and `actual_records`.
 - When the cache is missing or stale, the tool keeps the original data-source fetch path; successful fetches are written back to `stock_daily` on a best-effort basis, and write failures do not block the Agent response.
 - `search_stock_news` and `search_comprehensive_intel` persist successful results to `news_intel` on a best-effort basis, reusing the existing URL / fallback-key deduplication logic.
+- Stock news search now applies a domain-agnostic admission filter after relevance ranking: obvious download/install/app-rating pages and adult/escort spam pages are removed, and zero-score filler results are dropped when the same batch already has direct-stock or scored sector/market candidates. This is not a hard-coded website blocklist.
+- This admission-filter change is isolated to retrieval post-filtering and does not alter model names, provider settings, Base URL, LiteLLM route semantics, or runtime config migration/cleanup behavior.
 - `get_realtime_quote` does not use `stock_daily` as a realtime-quote cache and does not write intraday quotes into the daily-bar table; realtime quote caching should use a dedicated realtime store if needed.
 
 ## Agent Event Monitor
