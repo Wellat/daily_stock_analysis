@@ -21,6 +21,7 @@ from api.v1.endpoints import (
     decision_signals,
     health,
     history,
+    market,
     portfolio,
     stocks,
     system_config,
@@ -100,6 +101,12 @@ router.include_router(
     alphasift.router,
     prefix="/alphasift",
     tags=["AlphaSift"]
+)
+
+router.include_router(
+    market.router,
+    prefix="/market",
+    tags=["Market"]
 )
 
 router.include_router(

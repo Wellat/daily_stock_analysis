@@ -114,6 +114,16 @@ from api.v1.schemas.decision_signals import (
     DecisionSignalMutationResponse,
     DecisionSignalStatusUpdateRequest,
 )
+from api.v1.schemas.market import (
+    MarketIndexItem,
+    MarketBreadthStats,
+    SectorItem,
+    MarketOverviewResponse,
+    AllMarketOverviewResponse,
+    MarketNewsItem,
+    MarketNewsResponse,
+    AllMarketNewsResponse,
+)
 
 __all__ = [
     # common
@@ -214,4 +224,13 @@ __all__ = [
     "DecisionSignalListResponse",
     "DecisionSignalMutationResponse",
     "DecisionSignalStatusUpdateRequest",
+    # market
+    "MarketIndexItem",
+    "MarketBreadthStats",
+    "SectorItem",
+    "MarketOverviewResponse",
+    "AllMarketOverviewResponse",
+    "MarketNewsItem",
+    "MarketNewsResponse",
+    "AllMarketNewsResponse",
 ]
