@@ -65,7 +65,7 @@ def _internal_error(message: str, exc: Exception) -> HTTPException:
 
 
 @router.post(
-    "",
+    "/",
     response_model=DecisionSignalMutationResponse,
     responses={
         **AUTH_RESPONSE,
@@ -95,7 +95,7 @@ def create_signal(request: DecisionSignalCreateRequest) -> DecisionSignalMutatio
 
 
 @router.get(
-    "",
+    "/",
     response_model=DecisionSignalListResponse,
     responses={
         **AUTH_RESPONSE,

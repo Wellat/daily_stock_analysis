@@ -20,8 +20,8 @@ _VALID_REGIONS = ("cn", "us", "hk")
 
 
 def _market_index_to_dict(idx: MarketIndex) -> Dict[str, Any]:
-    """将 MarketIndex dataclass 转为 dict，包含 prev_close。"""
-    return {
+    """将 MarketIndex dataclass 转为 dict，包含 prev_close 和 MA20 数据。"""
+    result = {
         "code": idx.code,
         "name": idx.name,
         "current": idx.current,
@@ -35,6 +35,11 @@ def _market_index_to_dict(idx: MarketIndex) -> Dict[str, Any]:
         "amount": idx.amount,
         "amplitude": idx.amplitude,
     }
+    if idx.ma20 is not None:
+        result["ma20"] = idx.ma20
+    if idx.ma20_deviation_pct is not None:
+        result["ma20_deviation_pct"] = idx.ma20_deviation_pct
+    return result
 
 
 def _overview_to_dict(region: str, overview: MarketOverview) -> Dict[str, Any]:

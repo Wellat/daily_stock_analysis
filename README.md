@@ -164,6 +164,39 @@ python main.py --schedule
 python main.py --serve-only
 ```
 
+### 开发环境启动
+
+#### 方式一：一体化启动（前后端同一个端口）
+
+```bash
+python main.py --webui        # 启动后端 + 挂载前端静态资源，访问 http://localhost:8000
+python main.py --webui-only   # 同上，但不执行分析任务
+```
+
+> `--webui` 等同 `--serve` + 自动准备前端 assets，前端页面由后端直接托管，统一访问 **http://localhost:8000**。
+
+#### 方式二：前后端分离开发（各自独立端口）
+
+```bash
+# 终端 1：启动后端 API（端口 8000）
+python main.py --serve-only
+
+# 终端 2：启动前端 Vite 开发服务器（端口 5173，支持热更新）
+cd apps/dsa-web && npm run dev
+```
+
+> 前端开发地址：**http://localhost:5173**，后端 API 地址：`http://localhost:8000`。
+> CORS 已默认允许 `localhost:5173` 和 `localhost:3000`。
+
+#### 其他常用命令
+
+| 场景 | 命令 |
+|------|------|
+| 跑一次分析任务（不启服务） | `python main.py` |
+| 跑指定股票分析 | `python main.py --stocks 600519,hk00700,AAPL` |
+| 跑大盘复盘 | `python main.py --market-review` |
+| 构建前端 | `cd apps/dsa-web && npm run build` |
+
 > Docker 部署、定时任务、云服务器访问请参考 [完整指南](docs/full-guide.md)；桌面客户端打包请参考 [桌面端打包说明](docs/desktop-package.md)。
 
 ## 📱 推送效果

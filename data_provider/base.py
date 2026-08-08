@@ -2344,6 +2344,46 @@ class DataFetcherManager:
                 continue
         return []
 
+    def get_index_daily_data(
+        self,
+        index_code: str,
+        days: int = 30,
+    ) -> Optional[pd.DataFrame]:
+        """
+        获取 A 股指数日 K 线数据（用于计算均线等指标）。
+
+        绕过 normalize_stock_code()，直接使用裸 6 位代码调用指数专用 API，
+        避免上证指数代码被误映射到深圳个股。
+
+        Args:
+            index_code: 裸 6 位指数代码，如 "000001"、"399001"
+            days: 获取天数
+
+        Returns:
+            包含 date/open/close/high/low/volume/amount 列的 DataFrame，失败返回 None
+        """
+        fetchers = self._get_fetchers_snapshot()
+        for fetcher in fetchers:
+            if not hasattr(fetcher, "get_index_daily_data"):
+                continue
+            try:
+                df = fetcher.get_index_daily_data(index_code=index_code, days=days)
+                if df is not None and not df.empty:
+                    logger.info(
+                        "[IndexDailyData] 指数 %s 日K线获取成功: provider=%s rows=%d",
+                        index_code, fetcher.name, len(df),
+                    )
+                    return df
+            except Exception as e:
+                logger.warning(
+                    "[IndexDailyData] 指数 %s 日K线获取失败: provider=%s error=%s",
+                    index_code, fetcher.name, e,
+                )
+                continue
+
+        logger.warning("[IndexDailyData] 指数 %s 日K线所有数据源均失败", index_code)
+        return None
+
     def get_market_stats(self, *, purpose: str = "unspecified") -> Dict[str, Any]:
         """获取市场涨跌统计（自动切换数据源）"""
         logger.info("[MarketStats] component=market_stats action=start purpose=%s", purpose)

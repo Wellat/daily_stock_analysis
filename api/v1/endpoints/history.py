@@ -72,7 +72,7 @@ def _normalize_code_for_grouping(code: str) -> str:
 
 
 @router.get(
-    "",
+    "/",
     response_model=HistoryListResponse,
     responses={
         200: {"description": "历史记录列表"},
@@ -195,7 +195,7 @@ def delete_history_by_code(
 
 
 @router.delete(
-    "",
+    "/",
     response_model=DeleteHistoryResponse,
     responses={
         200: {"description": "删除成功"},

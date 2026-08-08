@@ -918,6 +918,80 @@ class EfinanceFetcher(BaseFetcher):
             logger.error(f"[efinance] 获取指数行情失败: {e}")
             return None
 
+    def get_index_daily_data(
+        self,
+        index_code: str,
+        days: int = 30,
+    ) -> Optional[pd.DataFrame]:
+        """
+        获取 A 股指数日 K 线数据（东方财富接口，efinance）。
+
+        Args:
+            index_code: 裸 6 位指数代码，如 "000001"、"399001"
+            days: 获取天数
+
+        Returns:
+            包含 date/open/close/high/low/volume/amount 列的 DataFrame，失败返回 None
+        """
+        try:
+            import efinance as ef
+            from datetime import datetime, timedelta
+
+            self._set_random_user_agent()
+            self._enforce_rate_limit()
+
+            end_date = datetime.now().strftime("%Y%m%d")
+            start_date = (datetime.now() - timedelta(days=days + 10)).strftime("%Y%m%d")
+
+            df = _ef_call_with_timeout(
+                ef.stock.get_quote_history,
+                stock_codes=index_code,
+                beg=start_date,
+                end=end_date,
+                klt=101,  # 日K
+            )
+
+            if df is None or df.empty:
+                logger.warning(f"[efinance] 指数 {index_code} 日K线数据为空")
+                return None
+
+            # efinance 返回的列名可能是中文或英文，统一处理
+            col_map = {}
+            for col in df.columns:
+                col_lower = col.lower()
+                if col in ("日期", "date"):
+                    col_map[col] = "date"
+                elif col in ("开盘", "open"):
+                    col_map[col] = "open"
+                elif col in ("收盘", "close"):
+                    col_map[col] = "close"
+                elif col in ("最高", "high"):
+                    col_map[col] = "high"
+                elif col in ("最低", "low"):
+                    col_map[col] = "low"
+                elif col in ("成交量", "volume"):
+                    col_map[col] = "volume"
+                elif col in ("成交额", "amount"):
+                    col_map[col] = "amount"
+
+            df = df.rename(columns=col_map)
+
+            # 确保数值类型
+            for col in ("open", "close", "high", "low", "volume", "amount"):
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors="coerce")
+
+            # 按日期排序，取最近 days 条
+            if "date" in df.columns:
+                df = df.sort_values("date").tail(days).reset_index(drop=True)
+
+            logger.info(f"[efinance] 获取指数 {index_code} 日K线成功: {len(df)} 条")
+            return df
+
+        except Exception as e:
+            logger.warning(f"[efinance] 获取指数 {index_code} 日K线失败: {e}")
+            return None
+
     def get_market_stats(self) -> Optional[Dict[str, Any]]:
         """
         获取市场涨跌统计 (efinance)

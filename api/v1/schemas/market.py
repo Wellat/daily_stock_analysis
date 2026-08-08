@@ -30,6 +30,8 @@ class MarketIndexItem(BaseModel):
             "volume": 2500000000,
             "amount": 350000000000,
             "amplitude": 0.94,
+            "ma20": 3180.25,
+            "ma20_deviation_pct": 0.63,
         }
     })
 
@@ -45,6 +47,8 @@ class MarketIndexItem(BaseModel):
     volume: float = Field(description="成交量")
     amount: float = Field(description="成交额")
     amplitude: float = Field(description="振幅(%)")
+    ma20: Optional[float] = Field(default=None, description="20日均线值（仅CN指数）")
+    ma20_deviation_pct: Optional[float] = Field(default=None, description="相对于20日均线的偏差百分比（仅CN指数）")
 
 
 class MarketBreadthStats(BaseModel):

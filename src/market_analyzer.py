@@ -61,9 +61,11 @@ class MarketIndex:
     volume: float = 0.0          # 成交量（手）
     amount: float = 0.0          # 成交额（元）
     amplitude: float = 0.0       # 振幅(%)
-    
+    ma20: Optional[float] = None           # 20日均线值
+    ma20_deviation_pct: Optional[float] = None  # 相对于20日均线的偏差百分比
+
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        result = {
             'code': self.code,
             'name': self.name,
             'current': self.current,
@@ -76,6 +78,11 @@ class MarketIndex:
             'amount': self.amount,
             'amplitude': self.amplitude,
         }
+        if self.ma20 is not None:
+            result['ma20'] = self.ma20
+        if self.ma20_deviation_pct is not None:
+            result['ma20_deviation_pct'] = self.ma20_deviation_pct
+        return result
 
 
 @dataclass
@@ -327,21 +334,25 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
     def get_market_overview(self) -> MarketOverview:
         """
         获取市场概览数据
-        
+
         Returns:
             MarketOverview: 市场概览数据对象
         """
         today = datetime.now().strftime('%Y-%m-%d')
         overview = MarketOverview(date=today)
-        
+
         # 1. 获取主要指数行情（按 region 切换 A 股/美股）
         overview.indices = self._get_main_indices()
 
-        # 2. 获取涨跌统计（A 股有，美股无等效数据）
+        # 2. 为 A 股指数补充 MA20 数据
+        if self.region == "cn" and overview.indices:
+            self._enrich_indices_with_ma20(overview.indices)
+
+        # 3. 获取涨跌统计（A 股有，美股无等效数据）
         if self.profile.has_market_stats:
             self._get_market_statistics(overview)
 
-        # 3. 获取板块涨跌榜（A 股有，美股暂无）
+        # 4. 获取板块涨跌榜（A 股有，美股暂无）
         if self.profile.has_sector_rankings:
             self._get_sector_rankings(overview)
         
@@ -392,6 +403,82 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             logger.error("[大盘] %s action=get_main_indices status=failed error=%s", self._log_context(), e)
 
         return indices
+
+    # -- CN 指数代码 -> 裸代码映射（用于拉取指数日K线） --
+    _CN_INDEX_CODE_MAP: Dict[str, str] = {
+        "sh000001": "000001",
+        "sz399001": "399001",
+        "sz399006": "399006",
+        "sh000688": "000688",
+        "sh000016": "000016",
+        "sh000300": "000300",
+        # 兼容裸代码格式
+        "000001": "000001",
+        "399001": "399001",
+        "399006": "399006",
+        "000688": "000688",
+        "000016": "000016",
+        "000300": "000300",
+    }
+
+    def _enrich_indices_with_ma20(self, indices: List[MarketIndex]) -> None:
+        """
+        并发拉取各指数 30 天日 K 线，计算 MA20 和偏差百分比。
+
+        使用 ThreadPoolExecutor 并发拉取，单个指数失败不影响其他指数。
+        """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        def _calc_ma20(index: MarketIndex) -> None:
+            bare_code = self._CN_INDEX_CODE_MAP.get(index.code, index.code)
+            try:
+                df = self.data_manager.get_index_daily_data(
+                    index_code=bare_code, days=30,
+                )
+                if df is None or df.empty or "close" not in df.columns:
+                    logger.warning("[MA20] 指数 %s 日K线数据不可用，跳过", index.code)
+                    return
+
+                if len(df) < 20:
+                    logger.warning(
+                        "[MA20] 指数 %s 日K线不足20条(%d条)，跳过",
+                        index.code, len(df),
+                    )
+                    return
+
+                ma20 = df["close"].tail(20).mean()
+                index.ma20 = round(ma20, 2)
+                if ma20 > 0 and index.current > 0:
+                    index.ma20_deviation_pct = round(
+                        (index.current - ma20) / ma20 * 100, 2,
+                    )
+
+                logger.info(
+                    "[MA20] 指数 %s current=%.2f ma20=%.2f deviation=%.2f%%",
+                    index.code, index.current, index.ma20, index.ma20_deviation_pct,
+                )
+            except Exception as e:
+                logger.warning("[MA20] 指数 %s 计算失败: %s", index.code, e)
+
+        logger.info(
+            "[大盘] %s action=enrich_ma20 status=start count=%d",
+            self._log_context(), len(indices),
+        )
+
+        with ThreadPoolExecutor(max_workers=min(len(indices), 6)) as executor:
+            futures = {executor.submit(_calc_ma20, idx): idx for idx in indices}
+            for future in as_completed(futures):
+                try:
+                    future.result()
+                except Exception as e:
+                    idx = futures[future]
+                    logger.warning("[MA20] 指数 %s 异常: %s", idx.code, e)
+
+        enriched = sum(1 for idx in indices if idx.ma20 is not None)
+        logger.info(
+            "[大盘] %s action=enrich_ma20 status=done enriched=%d/%d",
+            self._log_context(), enriched, len(indices),
+        )
 
     def _get_market_statistics(self, overview: MarketOverview):
         """获取市场涨跌统计"""

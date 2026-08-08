@@ -1749,6 +1749,68 @@ class AkshareFetcher(BaseFetcher):
             logger.error(f"[Akshare] 获取指数行情失败: {e}")
             return None
 
+    def get_index_daily_data(
+        self,
+        index_code: str,
+        days: int = 30,
+    ) -> Optional[pd.DataFrame]:
+        """
+        获取 A 股指数日 K 线数据（东方财富接口）。
+
+        Args:
+            index_code: 裸 6 位指数代码，如 "000001"、"399001"
+            days: 获取天数
+
+        Returns:
+            包含 date/open/close/high/low/volume/amount 列的 DataFrame，失败返回 None
+        """
+        try:
+            import akshare as ak
+            from datetime import datetime, timedelta
+
+            self._set_random_user_agent()
+            self._enforce_rate_limit()
+
+            end_date = datetime.now().strftime("%Y%m%d")
+            start_date = (datetime.now() - timedelta(days=days + 10)).strftime("%Y%m%d")
+
+            df = ak.index_zh_a_hist(
+                symbol=index_code,
+                period="daily",
+                start_date=start_date,
+                end_date=end_date,
+            )
+
+            if df is None or df.empty:
+                logger.warning(f"[Akshare] 指数 {index_code} 日K线数据为空")
+                return None
+
+            # 标准化列名
+            df = df.rename(columns={
+                "日期": "date",
+                "开盘": "open",
+                "收盘": "close",
+                "最高": "high",
+                "最低": "low",
+                "成交量": "volume",
+                "成交额": "amount",
+            })
+
+            # 确保数值类型
+            for col in ("open", "close", "high", "low", "volume", "amount"):
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors="coerce")
+
+            # 按日期排序，取最近 days 条
+            df = df.sort_values("date").tail(days).reset_index(drop=True)
+
+            logger.info(f"[Akshare] 获取指数 {index_code} 日K线成功: {len(df)} 条")
+            return df
+
+        except Exception as e:
+            logger.warning(f"[Akshare] 获取指数 {index_code} 日K线失败: {e}")
+            return None
+
     def get_market_stats(self) -> Optional[Dict[str, Any]]:
         """
         获取市场涨跌统计
