@@ -10,9 +10,10 @@
 """
 
 import logging
-from typing import Optional
+from typing import Any, Mapping, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Depends, Body
+from fastapi.responses import Response
 
 from api.deps import get_database_manager
 from api.v1.schemas.history import (
@@ -48,6 +49,7 @@ from src.utils.data_processing import (
     normalize_model_used,
     extract_fundamental_detail_fields,
     extract_board_detail_fields,
+    extract_market_structure_detail_field,
     extract_realtime_detail_fields,
 )
 from src.analysis_context_pack_overview import (
@@ -55,10 +57,27 @@ from src.analysis_context_pack_overview import (
     sanitize_context_snapshot_for_api,
 )
 from src.market_phase_summary import extract_market_phase_summary
+from src.config import get_config
+from src.md2img import markdown_to_image
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+_DELETE_BY_CODE_BATCH_SIZE = 10_000
+
+
+def _history_share_image_payload(result: Mapping[str, Any]) -> Optional[Mapping[str, Any]]:
+    """Return the exact persisted payload used by the deterministic poster."""
+
+    if result.get("report_type") == "market_review":
+        context_snapshot = result.get("context_snapshot")
+        if isinstance(context_snapshot, Mapping):
+            market_payload = context_snapshot.get("market_review_payload")
+            if isinstance(market_payload, Mapping):
+                return market_payload
+
+    raw_result = result.get("raw_result")
+    return raw_result if isinstance(raw_result, Mapping) else None
 
 
 def _normalize_code_for_grouping(code: str) -> str:
@@ -69,6 +88,70 @@ def _normalize_code_for_grouping(code: str) -> str:
     """
     from data_provider.base import normalize_stock_code
     return normalize_stock_code(code or "")
+
+
+def _raw_result_value(raw_result: Any, key: str) -> Any:
+    if not isinstance(raw_result, dict):
+        return None
+
+    value = raw_result.get(key)
+    if value is not None and value != "":
+        return value
+
+    for container_key in ("summary", "dashboard"):
+        container = raw_result.get(container_key)
+        if isinstance(container, dict):
+            nested_value = container.get(key)
+            if nested_value is not None and nested_value != "":
+                return nested_value
+
+    return None
+
+
+def _coalesce_text(*values: Any) -> Optional[str]:
+    for value in values:
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return None
+
+
+def _coalesce_int(*values: Any) -> Optional[int]:
+    for value in values:
+        if value is None or isinstance(value, bool):
+            continue
+        if isinstance(value, str) and not value.strip():
+            continue
+        try:
+            return int(float(value))
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _extract_guardrail_reason(raw_result: Any) -> Optional[str]:
+    if not isinstance(raw_result, dict):
+        return None
+    for reason in (
+        raw_result.get("guardrail_reason"),
+        raw_result.get("downgrade_reason"),
+        raw_result.get("decision_score_guardrail_reason"),
+    ):
+        if reason is not None:
+            text = str(reason).strip()
+            if text:
+                return text
+
+    metadata = raw_result.get("metadata")
+    if isinstance(metadata, dict):
+        metadata_reason = metadata.get("guardrail_reason") or metadata.get("downgrade_reason")
+        if metadata_reason is not None:
+            text = str(metadata_reason).strip()
+            if text:
+                return text
+    return None
 
 
 @router.get(
@@ -128,6 +211,7 @@ def get_history_list(
                 stock_code=item.get("stock_code", ""),
                 stock_name=item.get("stock_name"),
                 report_type=item.get("report_type"),
+                region=item.get("region"),
                 trend_prediction=item.get("trend_prediction"),
                 analysis_summary=item.get("analysis_summary"),
                 sentiment_score=item.get("sentiment_score"),
@@ -168,6 +252,7 @@ def get_history_list(
     response_model=DeleteHistoryResponse,
     responses={
         200: {"description": "删除成功"},
+        400: {"description": "股票代码不能为空", "model": ErrorResponse},
         404: {"description": "未找到记录", "model": ErrorResponse},
         500: {"description": "服务器错误", "model": ErrorResponse},
     },
@@ -180,12 +265,33 @@ def delete_history_by_code(
 ) -> DeleteHistoryResponse:
     try:
         candidates = HistoryService._history_code_filter_candidates(stock_code)
-        records, _ = db_manager.get_analysis_history_paginated(code=candidates, limit=10000)
-        record_ids = [r.id for r in records if r.id is not None]
-        if not record_ids:
-            return DeleteHistoryResponse(deleted=0)
-        deleted = db_manager.delete_analysis_history_records(record_ids)
+        if not candidates:
+            raise HTTPException(
+                status_code=400,
+                detail={"error": "invalid_request", "message": "stock_code 不能为空"},
+            )
+
+        deleted = 0
+        while True:
+            records, _ = db_manager.get_analysis_history_paginated(
+                code=candidates,
+                limit=_DELETE_BY_CODE_BATCH_SIZE,
+            )
+            record_ids = [r.id for r in records if r.id is not None]
+            if not record_ids:
+                break
+
+            batch_deleted = db_manager.delete_analysis_history_records(record_ids)
+            if batch_deleted == 0:
+                raise RuntimeError("history deletion made no progress")
+            deleted += batch_deleted
+
+            if len(records) < _DELETE_BY_CODE_BATCH_SIZE:
+                break
+
         return DeleteHistoryResponse(deleted=deleted)
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"按股票代码删除历史记录失败: {e}", exc_info=True)
         raise HTTPException(
@@ -259,6 +365,7 @@ def get_stock_bar(
         from datetime import date as date_type
         from src.utils.data_processing import parse_json_field
 
+        service = HistoryService(db_manager)
         start = date_type.fromisoformat(start_date) if start_date else None
         end = date_type.fromisoformat(end_date) if end_date else None
 
@@ -274,7 +381,8 @@ def get_stock_bar(
         # Deduplicate by normalized code, keeping the record with highest id
         seen: dict = {}
         for record in records:
-            norm_code = _normalize_code_for_grouping(record.code or "")
+            display_code = service._display_stock_code(record.code or "")
+            norm_code = _normalize_code_for_grouping(display_code)
             if norm_code not in seen or record.id > seen[norm_code].id:
                 seen[norm_code] = record
 
@@ -283,40 +391,48 @@ def get_stock_bar(
             record = seen[norm_code]
             raw_result = parse_json_field(getattr(record, "raw_result", None))
             model_used = raw_result.get("model_used") if isinstance(raw_result, dict) else None
+            sentiment_score = _coalesce_int(
+                record.sentiment_score,
+                _raw_result_value(raw_result, "sentiment_score"),
+            )
+            operation_advice = _coalesce_text(
+                record.operation_advice,
+                _raw_result_value(raw_result, "operation_advice"),
+            )
             action_fields = build_action_fields(
-                operation_advice=(
-                    raw_result.get("operation_advice") if isinstance(raw_result, dict) else None
-                )
-                or record.operation_advice,
-                explicit_action=raw_result.get("action") if isinstance(raw_result, dict) else None,
+                operation_advice=operation_advice,
+                explicit_action=_raw_result_value(raw_result, "action"),
                 report_type=record.report_type,
                 report_language=normalize_report_language(
-                    raw_result.get("report_language") if isinstance(raw_result, dict) else None
+                    _raw_result_value(raw_result, "report_language")
                 ),
+                sentiment_score=sentiment_score,
+                guardrail_reason=_extract_guardrail_reason(raw_result),
+                align_with_score=True,
             )
 
+            display_stock_code = service._display_stock_code(record.code)
             analysis_count = db_manager.get_analysis_history_paginated(
-                code=HistoryService._history_code_filter_candidates(
-                    record.code or "",
-                ),
+                code=HistoryService._history_code_filter_candidates(display_stock_code),
                 limit=1,
             )[1]
             items.append(
                 StockBarItem(
                     id=record.id,
-                    stock_code=record.code or "",
+                    stock_code=display_stock_code,
                     stock_name=record.name,
                     report_type=record.report_type,
-                    sentiment_score=record.sentiment_score,
-                    operation_advice=record.operation_advice,
+                    sentiment_score=sentiment_score,
+                    operation_advice=operation_advice,
                     action=action_fields["action"],
                     action_label=action_fields["action_label"],
                     analysis_count=analysis_count,
-                    last_analysis_time=(
-                        record.created_at.isoformat() if record.created_at else None
-                    ),
+                    last_analysis_time=service._serialize_created_at(record.created_at),
                     model_used=normalize_model_used(model_used),
-                    market_phase_summary=extract_market_phase_summary(getattr(record, "context_snapshot", None)),
+                    market_phase_summary=service._display_market_phase_summary(
+                        record.code,
+                        getattr(record, "context_snapshot", None),
+                    ),
                 )
             )
 
@@ -385,7 +501,9 @@ def get_history_detail(
         # 同时不混用 `change_60d`（60 日累计涨跌幅）作为日内 change_pct 的兜底。
         context_snapshot = result.get("context_snapshot")
         analysis_context_pack_overview = extract_analysis_context_pack_overview(context_snapshot)
-        market_phase_summary = extract_market_phase_summary(context_snapshot)
+        market_phase_summary = result.get("market_phase_summary")
+        if market_phase_summary is None:
+            market_phase_summary = extract_market_phase_summary(context_snapshot)
         api_context_snapshot = sanitize_context_snapshot_for_api(context_snapshot)
         realtime_fields = extract_realtime_detail_fields(context_snapshot)
         current_price = realtime_fields.get("current_price")
@@ -453,7 +571,7 @@ def get_history_detail(
         
         fallback_fundamental = db_manager.get_latest_fundamental_snapshot(
             query_id=result.get("query_id", ""),
-            code=result.get("stock_code", ""),
+            code=result.get("storage_stock_code") or result.get("stock_code", ""),
         )
         extracted_fundamental = extract_fundamental_detail_fields(
             context_snapshot=result.get("context_snapshot"),
@@ -462,6 +580,10 @@ def get_history_detail(
         extracted_boards = extract_board_detail_fields(
             context_snapshot=result.get("context_snapshot"),
             fallback_fundamental_payload=fallback_fundamental,
+        )
+        market_structure = extract_market_structure_detail_field(
+            result.get("context_snapshot"),
+            result.get("raw_result"),
         )
 
         details = ReportDetails(
@@ -473,6 +595,8 @@ def get_history_detail(
             dividend_metrics=extracted_fundamental.get("dividend_metrics"),
             belong_boards=extracted_boards.get("belong_boards"),
             sector_rankings=extracted_boards.get("sector_rankings"),
+            concept_rankings=extracted_boards.get("concept_rankings"),
+            market_structure=market_structure,
         )
         
         return AnalysisReport(
@@ -637,6 +761,82 @@ def get_history_news(
                 "message": f"查询新闻情报失败: {str(e)}"
             }
         )
+
+
+@router.get(
+    "/{record_id}/share-image",
+    response_class=Response,
+    responses={
+        200: {"description": "PNG 分享图片", "content": {"image/png": {}}},
+        404: {"description": "报告不存在", "model": ErrorResponse},
+        500: {"description": "报告生成失败", "model": ErrorResponse},
+        503: {"description": "图片渲染器不可用", "model": ErrorResponse},
+    },
+    summary="生成历史报告分享图片",
+    description="根据历史报告 Markdown 与持久化结构化数据生成确定性的 PNG 分享图片",
+)
+def get_history_share_image(
+    record_id: str,
+    db_manager: DatabaseManager = Depends(get_database_manager),
+) -> Response:
+    service = HistoryService(db_manager)
+    result = service.resolve_and_get_detail(record_id)
+    if result is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "not_found",
+                "message": f"未找到 id/query_id={record_id} 的分析记录",
+            },
+        )
+
+    try:
+        markdown_content = service.get_markdown_report(record_id)
+    except MarkdownReportGenerationError as exc:
+        logger.error("Share image report generation failed for %s: %s", record_id, exc.message)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "generation_failed",
+                "message": f"生成分享图片所需报告失败: {exc.message}",
+            },
+        ) from exc
+
+    if not markdown_content:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "not_found",
+                "message": f"未找到 id/query_id={record_id} 的报告内容",
+            },
+        )
+
+    config = get_config()
+    image_bytes = markdown_to_image(
+        markdown_content,
+        max_chars=getattr(config, "markdown_to_image_max_chars", 15000),
+        structured_payload=_history_share_image_payload(result),
+    )
+    if image_bytes is None:
+        engine = getattr(config, "md2img_engine", "wkhtmltoimage")
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "share_image_unavailable",
+                "message": f"分享图片生成失败，请检查 {engine} 转图工具是否已安装并可用",
+            },
+        )
+
+    filename = f"dsa-report-{result.get('id') or record_id}.png"
+    return Response(
+        content=image_bytes,
+        media_type="image/png",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 @router.get(

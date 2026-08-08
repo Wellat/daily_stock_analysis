@@ -23,6 +23,7 @@ A股自选股智能分析系统 - 主调度程序
 """
 from __future__ import annotations
 
+import json
 import multiprocessing
 import os
 from pathlib import Path
@@ -44,17 +45,21 @@ if os.getenv("GITHUB_ACTIONS") != "true" and os.getenv("USE_PROXY", "false").low
     os.environ["http_proxy"] = proxy_url
     os.environ["https_proxy"] = proxy_url
 
-if os.getenv("DSA_PACKAGED_ALPHASIFT_IMPORT_PROBE") == "1":
+_packaged_import_probe = os.getenv("DSA_PACKAGED_IMPORT_PROBE")
+if _packaged_import_probe:
     import importlib
     import sys
 
     try:
-        importlib.import_module("alphasift.dsa_adapter")
+        importlib.import_module(_packaged_import_probe)
     except Exception as exc:
-        print(f"ERROR: packaged AlphaSift adapter import failed: {exc}", file=sys.stderr)
+        print(
+            f"ERROR: packaged import failed for {_packaged_import_probe}: {exc}",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
-    print("OK: packaged AlphaSift adapter import succeeded")
+    print(f"OK: packaged import succeeded for {_packaged_import_probe}")
     sys.exit(0)
 
 import argparse
@@ -64,10 +69,13 @@ import time
 import uuid
 from datetime import date, datetime, timezone, timedelta
 
-from data_provider.base import canonical_stock_code
 from src.webui_frontend import prepare_webui_frontend_assets
 from src.config import get_config, Config
 from src.logging_config import setup_logging
+from src.brokers.futu.portfolio import FutuPortfolioError
+from data_provider.base import canonical_stock_code
+from src.services.stock_list_parser import split_stock_list
+from src.services.stock_code_utils import resolve_index_stock_code_for_analysis
 
 
 logger = logging.getLogger(__name__)
@@ -100,6 +108,13 @@ def _warn_if_public_webui_without_auth(host: str) -> None:
         "boundary or enable admin authentication before exposing it.",
         host,
     )
+
+
+def _resolve_web_service_bind(args: argparse.Namespace, config: Config) -> Tuple[str, int]:
+    """Resolve the effective Web/API bind address from CLI first, then config."""
+    host = args.host if args.host is not None else (config.webui_host or "127.0.0.1")
+    port = args.port if args.port is not None else config.webui_port
+    return host, port
 
 
 def _read_active_env_values() -> Optional[Dict[str, str]]:
@@ -264,6 +279,7 @@ def parse_arguments() -> argparse.Namespace:
   python main.py --debug            # 调试模式
   python main.py --dry-run          # 仅获取数据，不进行 AI 分析
   python main.py --stocks 600519,000001  # 指定分析特定股票
+  python main.py --portfolio futu   # 使用 Futu 真实正股持仓（覆盖 --stocks）
   python main.py --no-notify        # 不发送推送通知
   python main.py --check-notify     # 检查通知配置，不发送通知
   python main.py --single-notify    # 启用单股推送模式（每分析完一只立即推送）
@@ -288,6 +304,13 @@ def parse_arguments() -> argparse.Namespace:
         '--stocks',
         type=str,
         help='指定要分析的股票代码，逗号分隔（覆盖配置文件）'
+    )
+
+    parser.add_argument(
+        '--portfolio',
+        type=str.lower,
+        choices=('futu',),
+        help='使用券商真实持仓作为股票列表；当前支持 futu，并覆盖 --stocks/STOCK_LIST'
     )
 
     parser.add_argument(
@@ -372,15 +395,15 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         '--port',
         type=int,
-        default=8000,
-        help='FastAPI 服务端口（默认 8000）'
+        default=None,
+        help='FastAPI 服务端口（默认使用 WEBUI_PORT，未配置时为 8000）'
     )
 
     parser.add_argument(
         '--host',
         type=str,
-        default='0.0.0.0',
-        help='FastAPI 服务监听地址（默认 0.0.0.0）'
+        default=None,
+        help='FastAPI 服务监听地址（默认使用 WEBUI_HOST，未配置时为 127.0.0.1）'
     )
 
     parser.add_argument(
@@ -511,6 +534,25 @@ def _refresh_stock_index_cache_for_analysis(config: Config) -> None:
         logger.warning("[stock-index] 分析前刷新股票索引失败，继续执行分析: %s", exc)
 
 
+def _resolve_portfolio_stock_codes(args: argparse.Namespace) -> Optional[List[str]]:
+    """Resolve an optional broker portfolio into the analysis stock list."""
+    portfolio = str(getattr(args, "portfolio", "") or "").strip().lower()
+    if not portfolio:
+        return None
+    if portfolio != "futu":  # argparse prevents this for CLI callers; keep API callers safe.
+        raise ValueError(f"不支持的 portfolio: {portfolio}")
+
+    from src.brokers.futu.portfolio import load_futu_stock_codes
+
+    stock_codes = [
+        canonical_stock_code(code)
+        for code in load_futu_stock_codes()
+        if (code or "").strip()
+    ]
+    logger.info("portfolio=futu 已覆盖 stocks/STOCK_LIST，使用 %d 只真实正股", len(stock_codes))
+    return stock_codes
+
+
 def _prime_daily_market_context(
     config: Config,
     pipeline: Any,
@@ -581,16 +623,28 @@ def _can_reuse_market_context_for_review(summary: str, region: str) -> bool:
     return len(parts) <= 1
 
 
+def _resolve_daily_market_context_market(market: str, normalized_region: str) -> str:
+    if "," not in normalized_region:
+        return market
+    parts = [item.strip() for item in normalized_region.split(",") if item.strip()]
+    if parts and all(item in {"jp", "kr"} for item in parts):
+        return parts[0]
+    return market
+
+
 def _resolve_daily_market_context_target_date(
     region: str,
     current_time: datetime,
 ) -> date:
     normalized_region = str(region or "cn").strip().lower()
-    market = normalized_region if normalized_region in {"cn", "hk", "us"} else "cn"
+    market = normalized_region if normalized_region in {"cn", "hk", "us", "jp", "kr"} else "cn"
 
     from src.core.trading_calendar import get_effective_trading_date
 
-    return get_effective_trading_date(market, current_time=current_time)
+    return get_effective_trading_date(
+        _resolve_daily_market_context_market(market, normalized_region),
+        current_time=current_time,
+    )
 
 
 def _market_review_report_text(review_result: Any) -> str:
@@ -635,16 +689,62 @@ def _save_reused_market_review_report(
         logger.warning("复用大盘上下文保存大盘复盘报告失败: %s", exc)
 
 
+def _run_auto_backtest(config: Config) -> None:
+    """Run the independently configured auto-backtest without failing analysis."""
+
+    try:
+        if not getattr(config, 'backtest_enabled', False):
+            return
+
+        from src.services.backtest_service import BacktestService
+
+        logger.info("开始自动回测...")
+        service = BacktestService()
+        stats = service.run_backtest(
+            force=False,
+            eval_window_days=getattr(config, 'backtest_eval_window_days', 10),
+            min_age_days=getattr(config, 'backtest_min_age_days', 14),
+            limit=200,
+        )
+        logger.info(
+            f"自动回测完成: processed={stats.get('processed')} "
+            f"saved={stats.get('saved')} completed={stats.get('completed')} "
+            f"insufficient={stats.get('insufficient')} errors={stats.get('errors')}"
+        )
+    except Exception as exc:
+        logger.warning(f"自动回测失败（已忽略）: {exc}")
+
+
 def run_full_analysis(
     config: Config,
     args: argparse.Namespace,
-    stock_codes: Optional[List[str]] = None
-):
+    stock_codes: Optional[List[str]] = None,
+    *,
+    raise_errors: bool = False,
+) -> bool:
     """
     执行完整的分析流程（个股 + 大盘复盘）
 
-    这是定时任务调用的主函数
+    这是定时任务调用的主函数。Futu 持仓解析失败始终传播给调用方；
+    ``raise_errors`` 只控制持仓解析成功后的分析流程异常语义。
     """
+    # Portfolio resolution is its own CLI contract boundary. A broker import
+    # failure must reach the one-shot caller, while all later work keeps the
+    # existing run_full_analysis return-value semantics.
+    portfolio_stock_codes = _resolve_portfolio_stock_codes(args)
+    portfolio_is_empty = portfolio_stock_codes == []
+    market_review_requested = (
+        getattr(config, 'market_review_enabled', False)
+        and not getattr(args, 'no_market_review', False)
+    )
+    if portfolio_is_empty and not market_review_requested:
+        logger.info(
+            "真实账户中无符合条件的 Futu 持仓，"
+            "本轮跳过个股分析和大盘复盘。"
+        )
+        _run_auto_backtest(config)
+        return True
+
     # Import pipeline modules outside the broad try/except so that import-time
     # failures propagate to the caller instead of being silently swallowed.
     from src.core.market_review import run_market_review
@@ -652,9 +752,11 @@ def run_full_analysis(
 
     try:
         _refresh_stock_index_cache_for_analysis(config)
+        if portfolio_stock_codes is not None:
+            stock_codes = portfolio_stock_codes
 
         # Issue #529: Hot-reload STOCK_LIST from .env on each scheduled run
-        if stock_codes is None:
+        if stock_codes is None and portfolio_stock_codes is None:
             config.refresh_stock_list()
 
         # Issue #373: Trading day filter (per-stock, per-market)
@@ -663,14 +765,24 @@ def run_full_analysis(
             config, args, effective_codes
         )
         if should_skip:
-            logger.info(
-                "今日所有相关市场均为非交易日，跳过执行。可使用 --force-run 强制执行。"
-            )
-            return
+            if portfolio_is_empty:
+                logger.info(
+                    "真实账户中无符合条件的 Futu 持仓，"
+                    "本轮无需执行个股分析或大盘复盘，跳过执行。"
+                )
+            else:
+                logger.info(
+                    "今日所有相关市场均为非交易日，跳过执行。"
+                    "可使用 --force-run 强制执行。"
+                )
+            return True
         if set(filtered_codes) != set(effective_codes):
             skipped = set(effective_codes) - set(filtered_codes)
             logger.info("今日休市股票已跳过: %s", skipped)
         stock_codes = filtered_codes
+        skip_futu_stock_analysis = (
+            portfolio_stock_codes is not None and not stock_codes
+        )
 
         # 命令行参数 --single-notify 覆盖配置（#55）
         if getattr(args, 'single_notify', False):
@@ -750,13 +862,20 @@ def run_full_analysis(
             )
 
         # 1. 运行个股分析
-        results = pipeline.run(
-            stock_codes=stock_codes,
-            dry_run=args.dry_run,
-            send_notification=not args.no_notify,
-            merge_notification=merge_notification,
-            current_time=analysis_reference_time,
-        )
+        if skip_futu_stock_analysis:
+            if portfolio_is_empty:
+                logger.info("真实账户中无符合条件的 Futu 持仓，跳过个股分析。")
+            else:
+                logger.info("Futu 持仓经交易日过滤后无可分析股票，跳过个股分析。")
+            results = []
+        else:
+            results = pipeline.run(
+                stock_codes=stock_codes,
+                dry_run=args.dry_run,
+                send_notification=not args.no_notify,
+                merge_notification=merge_notification,
+                current_time=analysis_reference_time,
+            )
 
         if should_use_daily_market_context and not market_context_summary:
             (
@@ -945,27 +1064,43 @@ def run_full_analysis(
             logger.error(f"飞书文档生成失败: {e}")
 
         # === Auto backtest ===
-        try:
-            if getattr(config, 'backtest_enabled', False):
-                from src.services.backtest_service import BacktestService
+        _run_auto_backtest(config)
 
-                logger.info("开始自动回测...")
-                service = BacktestService()
-                stats = service.run_backtest(
-                    force=False,
-                    eval_window_days=getattr(config, 'backtest_eval_window_days', 10),
-                    min_age_days=getattr(config, 'backtest_min_age_days', 14),
-                    limit=200,
-                )
-                logger.info(
-                    f"自动回测完成: processed={stats.get('processed')} saved={stats.get('saved')} "
-                    f"completed={stats.get('completed')} insufficient={stats.get('insufficient')} errors={stats.get('errors')}"
-                )
-        except Exception as e:
-            logger.warning(f"自动回测失败（已忽略）: {e}")
+        return True
 
     except Exception as e:
         logger.exception(f"分析流程执行失败: {e}")
+        if raise_errors:
+            raise
+        return False
+
+
+def run_scheduled_analysis(
+    config: Config,
+    args: argparse.Namespace,
+    stock_codes: Optional[List[str]] = None,
+) -> bool:
+    """Run scheduled analysis with failures propagated to the scheduler."""
+    return run_full_analysis(config, args, stock_codes, raise_errors=True)
+
+
+def _run_analysis_with_runtime_scheduler_lock(
+    config: Config,
+    args: argparse.Namespace,
+    stock_codes: Optional[List[str]] = None,
+) -> None:
+    from src.services.runtime_scheduler import run_with_global_analysis_lock
+
+    # Keep startup/triggered analysis in sync with API runtime scheduler and
+    # run-now entrypoint. Blocking is expected here because startup paths should
+    # wait for an in-flight job before returning a response.
+    run_with_global_analysis_lock(
+        task_runner=run_full_analysis,
+        config=config,
+        args=args,
+        stock_codes=stock_codes,
+        blocking=True,
+    )
 
 
 def start_api_server(host: str, port: int, config: Config) -> None:
@@ -989,19 +1124,78 @@ def start_api_server(host: str, port: int, config: Config) -> None:
     finally:
         probe.close()
 
-    def run_server():
-        level_name = (config.log_level or "INFO").lower()
-        uvicorn.run(
-            "api.app:app",
-            host=host,
-            port=port,
-            log_level=level_name,
-            log_config=None,
+    level_name = (config.log_level or "INFO").lower()
+    use_config_signal_handlers = True
+    uvicorn_kwargs = {
+        "host": host,
+        "port": port,
+        "log_level": level_name,
+        "log_config": None,
+    }
+    # Import the ASGI app object in the calling thread instead of handing uvicorn
+    # the "api.app:app" import string. With the string, uvicorn imports the app
+    # lazily inside the server thread, and that import (litellm + the full app
+    # tree, ~10s+ on constrained hosts) runs inside the startup probe window
+    # below, tripping the 3.0s timeout and causing a restart loop on slower
+    # machines. Importing first keeps the heavy work out of the probe window;
+    # genuine import failures still surface immediately to the caller.
+    from api.app import app as fastapi_app
+
+    try:
+        uvicorn_config = uvicorn.Config(
+            fastapi_app,
+            install_signal_handlers=False,
+            **uvicorn_kwargs,
         )
+    except TypeError:
+        # Older uvicorn versions do not accept install_signal_handlers in
+        # Config; fall back and only disable signal handling via Server attribute
+        # when it's a boolean flag.
+        use_config_signal_handlers = False
+        uvicorn_config = uvicorn.Config(
+            fastapi_app,
+            **uvicorn_kwargs,
+        )
+    uvicorn_server = uvicorn.Server(config=uvicorn_config)
+    if not use_config_signal_handlers:
+        install_signal_handlers = getattr(uvicorn_server, "install_signal_handlers", None)
+        if isinstance(install_signal_handlers, bool):
+            uvicorn_server.install_signal_handlers = False
+
+    startup_error: list[BaseException] = []
+
+    def run_server():
+        try:
+            uvicorn_server.run()
+        except Exception as exc:  # noqa: BLE001 - surface startup issues to caller promptly
+            startup_error.append(exc)
 
     thread = threading.Thread(target=run_server, daemon=True)
     thread.start()
-    logger.info(f"FastAPI 服务已启动: http://{host}:{port}")
+
+    timeout_seconds = 3.0
+    wait_deadline = time.time() + timeout_seconds
+    while time.time() < wait_deadline:
+        if startup_error:
+            raise RuntimeError(
+                f"FastAPI server failed to start: {host}:{port}; {startup_error[0]}"
+            )
+        if uvicorn_server.started:
+            logger.info(f"FastAPI 服务已启动: http://{host}:{port}")
+            return
+        if not thread.is_alive():
+            break
+        time.sleep(0.05)
+
+    if startup_error:
+        raise RuntimeError(f"FastAPI server failed to start: {host}:{port}; {startup_error[0]}")
+    if uvicorn_server.started:
+        logger.info(f"FastAPI 服务已启动: http://{host}:{port}")
+        return
+    if not thread.is_alive():
+        raise RuntimeError(f"FastAPI 服务器启动后立即退出: {host}:{port}")
+
+    raise RuntimeError(f"FastAPI 服务在 {timeout_seconds:.1f}s 内未完成启动: {host}:{port}")
 
 
 def _is_truthy_env(var_name: str, default: str = "true") -> bool:
@@ -1086,6 +1280,36 @@ def _build_schedule_time_provider(default_schedule_time: str):
     return _provider
 
 
+def _build_schedule_times_provider(default_schedule_time: str):
+    """Read the latest SCHEDULE_TIMES with SCHEDULE_TIME fallback."""
+    from src.core.config_manager import ConfigManager
+    from src.scheduler import normalize_schedule_times
+
+    _SYSTEM_DEFAULT_SCHEDULE_TIME = "18:00"
+    manager = ConfigManager()
+
+    def _provider():
+        if "SCHEDULE_TIMES" in _INITIAL_PROCESS_ENV:
+            return normalize_schedule_times(
+                os.getenv("SCHEDULE_TIMES", ""),
+                fallback_time=os.getenv("SCHEDULE_TIME", default_schedule_time),
+            )
+        if "SCHEDULE_TIME" in _INITIAL_PROCESS_ENV:
+            return normalize_schedule_times(
+                os.getenv("SCHEDULE_TIMES", ""),
+                fallback_time=os.getenv("SCHEDULE_TIME", default_schedule_time),
+            )
+
+        config_map = manager.read_config_map()
+        schedule_time = (config_map.get("SCHEDULE_TIME", "") or "").strip() or _SYSTEM_DEFAULT_SCHEDULE_TIME
+        return normalize_schedule_times(
+            config_map.get("SCHEDULE_TIMES", ""),
+            fallback_time=schedule_time,
+        )
+
+    return _provider
+
+
 def main() -> int:
     """
     主入口函数
@@ -1144,8 +1368,14 @@ def main() -> int:
     # 解析股票列表（统一为大写 Issue #355）
     stock_codes = None
     if args.stocks:
-        stock_codes = [canonical_stock_code(c) for c in args.stocks.split(',') if (c or "").strip()]
+        stock_codes = [
+            resolve_index_stock_code_for_analysis(c)
+            for c in split_stock_list(args.stocks)
+            if (c or "").strip()
+        ]
         logger.info(f"使用命令行指定的股票列表: {stock_codes}")
+        if getattr(args, "portfolio", None):
+            logger.info("同时指定了 --portfolio；实际分析时 portfolio 将覆盖 --stocks")
 
     # === 处理 --webui / --webui-only 参数，映射到 --serve / --serve-only ===
     if args.webui:
@@ -1160,16 +1390,56 @@ def main() -> int:
     # === 启动 Web 服务 (如果启用) ===
     start_serve = (args.serve or args.serve_only) and os.getenv("GITHUB_ACTIONS") != "true"
 
-    # 兼容旧版 WEBUI_HOST/WEBUI_PORT：如果用户未通过 --host/--port 指定，则使用旧变量
     if start_serve:
-        if args.host == '0.0.0.0' and os.getenv('WEBUI_HOST'):
-            args.host = os.getenv('WEBUI_HOST')
-        if args.port == 8000 and os.getenv('WEBUI_PORT'):
-            args.port = int(os.getenv('WEBUI_PORT'))
+        args.host, args.port = _resolve_web_service_bind(args, config)
         _warn_if_public_webui_without_auth(args.host)
 
     bot_clients_started = False
     if start_serve:
+        from src.services.runtime_scheduler import (
+            CLI_SCHEDULER_OWNER_ENV,
+            RUNTIME_SCHEDULER_ARGS_ENV,
+            RUNTIME_SCHEDULER_FORCE_ENABLED_ENV,
+            RUNTIME_SCHEDULER_RUN_IMMEDIATELY_ENV,
+            RUNTIME_SCHEDULER_SUPPRESS_START_ENV,
+        )
+
+        # The API runtime scheduler owns schedules once the Web/API service starts.
+        # This keeps Web settings, status, and run-now actions attached to the real
+        # scheduler instead of a separate CLI loop.
+        os.environ.pop(CLI_SCHEDULER_OWNER_ENV, None)
+        if args.serve_only:
+            os.environ[RUNTIME_SCHEDULER_SUPPRESS_START_ENV] = "true"
+        else:
+            os.environ.pop(RUNTIME_SCHEDULER_SUPPRESS_START_ENV, None)
+        runtime_schedule_requested = not args.serve_only and (
+            args.schedule or config.schedule_enabled
+        )
+        if not args.serve_only and args.schedule:
+            os.environ[RUNTIME_SCHEDULER_FORCE_ENABLED_ENV] = "true"
+        else:
+            os.environ.pop(RUNTIME_SCHEDULER_FORCE_ENABLED_ENV, None)
+        if runtime_schedule_requested:
+            runtime_run_immediately = config.schedule_run_immediately
+            if getattr(args, 'no_run_immediately', False):
+                runtime_run_immediately = False
+            os.environ[RUNTIME_SCHEDULER_RUN_IMMEDIATELY_ENV] = (
+                "true" if runtime_run_immediately else "false"
+            )
+        else:
+            os.environ.pop(RUNTIME_SCHEDULER_RUN_IMMEDIATELY_ENV, None)
+        runtime_scheduler_args = {
+            "no_notify": bool(getattr(args, "no_notify", False)),
+            "no_market_review": bool(getattr(args, "no_market_review", False)),
+            "dry_run": bool(getattr(args, "dry_run", False)),
+            "force_run": bool(getattr(args, "force_run", False)),
+            "single_notify": bool(getattr(args, "single_notify", False)),
+            "no_context_snapshot": bool(getattr(args, "no_context_snapshot", False)),
+            "workers": getattr(args, "workers", None),
+        }
+        if getattr(args, "portfolio", None):
+            runtime_scheduler_args["portfolio"] = args.portfolio
+        os.environ[RUNTIME_SCHEDULER_ARGS_ENV] = json.dumps(runtime_scheduler_args)
         if not prepare_webui_frontend_assets():
             logger.warning("前端静态资源未就绪，继续启动 FastAPI 服务（Web 页面可能不可用）")
         try:
@@ -1253,6 +1523,18 @@ def main() -> int:
 
         # 模式2: 定时任务模式
         if args.schedule or config.schedule_enabled:
+            if start_serve:
+                logger.info("模式: Web/API runtime scheduler")
+                logger.info(f"Web 服务运行中: http://{args.host}:{args.port}")
+                logger.info("Web/API runtime scheduler 已接管定时任务，保存设置会作用于当前进程")
+                logger.info("按 Ctrl+C 退出...")
+                try:
+                    while True:
+                        time.sleep(1)
+                except KeyboardInterrupt:
+                    logger.info("\n用户中断，程序退出")
+                return 0
+
             logger.info("模式: 定时任务")
             logger.info(f"每日执行时间: {config.schedule_time}")
 
@@ -1268,6 +1550,7 @@ def main() -> int:
             from src.scheduler import run_with_schedule
             scheduled_stock_codes = _resolve_scheduled_stock_codes(stock_codes)
             schedule_time_provider = _build_schedule_time_provider(config.schedule_time)
+            schedule_times_provider = _build_schedule_times_provider(config.schedule_time)
 
             def scheduled_task():
                 runtime_config = _reload_runtime_config()
@@ -1293,18 +1576,30 @@ def main() -> int:
                     "name": "agent_event_monitor",
                 })
 
-            run_with_schedule(
-                task=scheduled_task,
-                schedule_time=config.schedule_time,
-                run_immediately=should_run_immediately,
-                background_tasks=background_tasks,
-                schedule_time_provider=schedule_time_provider,
-            )
+            schedule_kwargs = {
+                "task": scheduled_task,
+                "schedule_time": config.schedule_time,
+                "run_immediately": should_run_immediately,
+                "background_tasks": background_tasks,
+                "schedule_time_provider": schedule_time_provider,
+            }
+            if hasattr(config, "schedule_times"):
+                schedule_kwargs["schedule_times"] = config.schedule_times
+                schedule_kwargs["schedule_times_provider"] = schedule_times_provider
+            run_with_schedule(**schedule_kwargs)
             return 0
 
         # 模式3: 正常单次运行
         if config.run_immediately:
-            run_full_analysis(config, args, stock_codes)
+            try:
+                _run_analysis_with_runtime_scheduler_lock(config, args, stock_codes)
+            except FutuPortfolioError as exc:
+                if not start_serve:
+                    raise
+                logger.exception(
+                    "Futu 持仓导入失败，Web/API 服务继续运行: %s",
+                    exc,
+                )
         else:
             logger.info("配置为不立即运行分析 (RUN_IMMEDIATELY=false)")
 

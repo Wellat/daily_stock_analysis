@@ -34,6 +34,7 @@ from src.services.run_diagnostics import (
     reset_run_diagnostic_context,
 )
 from src.utils.analysis_metadata import SELECTION_SOURCES
+from src.services.stock_code_utils import resolve_index_stock_code_for_analysis
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +46,7 @@ def _dedupe_stock_code_key(stock_code: str) -> str:
     The task queue should treat equivalent market code shapes as the same
     underlying stock, e.g. ``600519`` and ``600519.SH``.
     """
-    return canonical_stock_code(normalize_stock_code(stock_code))
+    return resolve_index_stock_code_for_analysis(normalize_stock_code(stock_code))
 
 
 class TaskStatus(str, Enum):
@@ -85,11 +86,12 @@ class TaskInfo:
     skills: Optional[List[str]] = None
     report_language: Optional[str] = None
     trace_id: Optional[str] = None
+    region: Optional[str] = None
     flow_events: List[Dict[str, Any]] = field(default_factory=list)
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert task info into an API-friendly dictionary."""
-        return {
+        payload = {
             "task_id": self.task_id,
             "trace_id": self.trace_id or self.task_id,
             "stock_code": self.stock_code,
@@ -107,6 +109,9 @@ class TaskInfo:
             "selection_source": self.selection_source,
             "skills": self.skills,
         }
+        if self.region is not None:
+            payload["region"] = self.region
+        return payload
     
     def copy(self) -> 'TaskInfo':
         """Create a shallow copy of the task information."""
@@ -131,6 +136,7 @@ class TaskInfo:
             skills=list(self.skills) if self.skills is not None else None,
             report_language=self.report_language,
             trace_id=self.trace_id or self.task_id,
+            region=self.region,
             flow_events=copy.deepcopy(self.flow_events),
         )
 
@@ -350,7 +356,7 @@ class AnalysisTaskQueue:
         Raises:
             DuplicateTaskError: Raised when the stock is already being analyzed
         """
-        stock_code = canonical_stock_code(stock_code)
+        stock_code = resolve_index_stock_code_for_analysis(stock_code)
         if not stock_code:
             raise ValueError("股票代码不能为空或仅包含空白字符")
 
@@ -399,7 +405,7 @@ class AnalysisTaskQueue:
         created_task_ids: List[str] = []
 
         canonical_codes = [
-            normalized for normalized in (canonical_stock_code(code) for code in stock_codes)
+            normalized for normalized in (resolve_index_stock_code_for_analysis(code) for code in stock_codes)
             if normalized
         ]
 
@@ -471,6 +477,7 @@ class AnalysisTaskQueue:
         message: Optional[str] = "任务已加入队列",
         task_id: Optional[str] = None,
         trace_id: Optional[str] = None,
+        region: Optional[str] = None,
     ) -> TaskInfo:
         """
         Submit a generic background callable with task lifecycle tracking.
@@ -487,6 +494,7 @@ class AnalysisTaskQueue:
             status=TaskStatus.PENDING,
             message=message,
             report_type=report_type,
+            region=region,
         )
 
         with self._data_lock:
