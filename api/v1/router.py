@@ -22,7 +22,6 @@ from api.v1.endpoints import (
     health,
     history,
     intelligence,
-    market,
     portfolio,
     stocks,
     system_config,
@@ -109,24 +108,6 @@ router.include_router(
     intelligence.router,
     prefix="/intelligence",
     tags=["Intelligence"]
-)
-
-router.include_router(
-    alphasift.router,
-    prefix="/alphasift",
-    tags=["AlphaSift"]
-)
-
-router.include_router(
-    market.router,
-    prefix="/market",
-    tags=["Market"]
-)
-
-router.include_router(
-    market.router,
-    prefix="/market",
-    tags=["Market"]
 )
 
 router.include_router(
