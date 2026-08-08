@@ -14,13 +14,14 @@ from fastapi import APIRouter
 from api.v1.endpoints import (
     agent,
     alerts,
-    alphasift,
+    screening,
     analysis,
     auth,
     backtest,
     decision_signals,
     health,
     history,
+    intelligence,
     market,
     portfolio,
     stocks,
@@ -28,8 +29,9 @@ from api.v1.endpoints import (
     usage,
 )
 
-# 创建 v1 版本主路由
-router = APIRouter(prefix="/api/v1")
+# 创建 v1 版本主路由。
+# /api/v1 前缀在 api.app 挂载，避免新版 FastAPI 误判子路由 "" 为 empty path。
+router = APIRouter()
 
 router.include_router(
     auth.router,
@@ -98,9 +100,27 @@ router.include_router(
 )
 
 router.include_router(
+    screening.router,
+    prefix="/screening",
+    tags=["Screening"]
+)
+
+router.include_router(
+    intelligence.router,
+    prefix="/intelligence",
+    tags=["Intelligence"]
+)
+
+router.include_router(
     alphasift.router,
     prefix="/alphasift",
     tags=["AlphaSift"]
+)
+
+router.include_router(
+    market.router,
+    prefix="/market",
+    tags=["Market"]
 )
 
 router.include_router(
