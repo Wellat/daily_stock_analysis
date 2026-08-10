@@ -7,6 +7,8 @@ const cbApi = vi.hoisted(() => ({
   getInstrumentDetail: vi.fn(),
   listInstrumentBars: vi.fn(),
   listInstrumentEvents: vi.fn(),
+  listSyncRuns: vi.fn(),
+  syncData: vi.fn(),
 }));
 
 const stockApi = vi.hoisted(() => ({
@@ -23,6 +25,8 @@ vi.mock('../../api/stocks', () => ({ marketStocksApi: stockApi }));
 describe('MarketDataPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    cbApi.listSyncRuns.mockResolvedValue({ items: [], total: 0 });
+    cbApi.syncData.mockResolvedValue({ sync_run_id: 1 });
     cbApi.listInstruments.mockResolvedValue({
       market: 'cn',
       total: 1,
@@ -126,5 +130,21 @@ describe('MarketDataPage', () => {
     await waitFor(() => expect(stockApi.getStockBars).toHaveBeenCalledWith('000725', { limit: 1000 }));
     expect(screen.getByLabelText('股票K线图表')).toBeInTheDocument();
     expect(screen.getAllByText('6.93').length).toBeGreaterThan(0);
+  }, 15000);
+
+  it('switches to the data-sync tab and submits a sync request', async () => {
+    render(<MarketDataPage />);
+    await screen.findByText('123001');
+    cbApi.syncData.mockResolvedValue({ sync_run_id: 7, status: 'running', cb_basic_upserted: 0, cb_terms_upserted: 0, cb_factor_upserted: 0, cb_event_upserted: 0 });
+    cbApi.listSyncRuns.mockResolvedValue({
+      total: 1,
+      items: [
+        { id: 7, run_uid: 'x', sync_type: 'akshare_convertible_bond', market: 'cn', status: 'completed', result: {}, created_at: '2026-08-10T00:00:00' },
+      ],
+    });
+    fireEvent.click(screen.getByRole('tab', { name: '数据同步' }));
+    fireEvent.change(await screen.findByLabelText('同步来源'), { target: { value: 'akshare' } });
+    fireEvent.click(screen.getByRole('button', { name: '开始同步' }));
+    await waitFor(() => expect(cbApi.syncData).toHaveBeenCalledWith({ market: 'cn', source: 'akshare', symbols: [] }));
   }, 15000);
 });

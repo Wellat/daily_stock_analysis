@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import logging
+import threading
 from datetime import date
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
@@ -10,10 +12,16 @@ from uuid import uuid4
 from src.core.strategy_lab.fixture_engine import build_default_fixture_dataset
 from src.repositories.strategy_lab.data_repo import StrategyLabDataRepository
 from src.services.strategy_lab.cb_providers import (
+    AkshareConvertibleBondProvider,
     ConvertibleBondDataProvider,
     get_convertible_bond_provider,
 )
 from src.storage import DatabaseManager
+
+logger = logging.getLogger(__name__)
+
+# 模块级锁：同一时间只允许一个外部数据源同步任务在后台运行，避免并发写库
+_PROVIDER_SYNC_LOCK = threading.Lock()
 
 
 class StrategyLabDataSyncService:
@@ -263,12 +271,113 @@ class StrategyLabDataSyncService:
             self.repository.fail_sync_run(run.id, str(exc))
             raise
 
+    def start_provider_sync(
+        self,
+        *,
+        market: str,
+        source: str,
+        symbols: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Start a provider sync in a background thread and return immediately.
+
+        Upstream providers can be slow (e.g. AkShare pulls per-symbol daily bars),
+        so the HTTP request must not block on them. The caller polls
+        ``list_sync_runs`` for the final ``completed``/``failed`` status.
+        """
+        if not _PROVIDER_SYNC_LOCK.acquire(blocking=False):
+            raise ValueError("已有数据源同步任务进行中，请等待完成后再试")
+        provider = get_convertible_bond_provider(source)
+        run = self.repository.create_sync_run(
+            run_uid=uuid4().hex,
+            sync_type=f"{provider.name}_convertible_bond",
+            market=market,
+            payload={"market": market, "source": provider.name, "symbols": symbols or []},
+        )
+
+        def _worker() -> None:
+            try:
+                result: Dict[str, Any] = {}
+                if isinstance(provider, AkshareConvertibleBondProvider):
+                    # AkShare 全量同步按标的逐只拉取并分批入库：先落列表/条款/事件，
+                    # 再逐只拉日线边拉边写，定期把进度快照写入 result_json，
+                    # 避免"全量拉完再一次性写入"在长时间任务中失败即全丢的问题。
+                    basics, terms = provider.fetch_list(market=market, symbols=symbols)
+                    result["cb_basic_upserted"] = self.repository.upsert_cb_basic(
+                        [self._normalize_basic_row(row, market=market) for row in basics],
+                        source=provider.name,
+                    )
+                    result["cb_terms_upserted"] = self.repository.upsert_cb_terms(
+                        [self._normalize_terms_row(row) for row in terms],
+                        source=provider.name,
+                    )
+                    events = provider.fetch_events(symbols=symbols)
+                    result["cb_event_upserted"] = self.repository.upsert_cb_events(
+                        [self._normalize_event_row(row) for row in events],
+                        source=provider.name,
+                    )
+                    codes = [basic["bond_code"] for basic in basics]
+                    factor_total = len(codes)
+                    factor_upserted = 0
+                    for idx, code in enumerate(codes, 1):
+                        rows = provider.fetch_factors(code)
+                        if rows:
+                            factor_upserted += self.repository.upsert_cb_daily_factors(
+                                [self._normalize_factor_row(row) for row in rows],
+                                source=provider.name,
+                            )
+                        if idx % 10 == 0 or idx == factor_total:
+                            self.repository.update_sync_run_progress(run.id, result={
+                                "stage": "fetching",
+                                "processed": idx,
+                                "total": factor_total,
+                                "cb_basic_upserted": result["cb_basic_upserted"],
+                                "cb_terms_upserted": result["cb_terms_upserted"],
+                                "cb_event_upserted": result["cb_event_upserted"],
+                                "cb_factor_upserted": factor_upserted,
+                            })
+                    result["cb_factor_upserted"] = factor_upserted
+                else:
+                    dataset = provider.fetch(market=market, symbols=symbols)
+                    result = {
+                        "cb_basic_upserted": self.repository.upsert_cb_basic(
+                            [self._normalize_basic_row(row, market=market) for row in dataset.cb_basic],
+                            source=provider.name,
+                        ),
+                        "cb_terms_upserted": self.repository.upsert_cb_terms(
+                            [self._normalize_terms_row(row) for row in dataset.cb_terms],
+                            source=provider.name,
+                        ),
+                        "cb_factor_upserted": self.repository.upsert_cb_daily_factors(
+                            [self._normalize_factor_row(row) for row in dataset.cb_daily_factors],
+                            source=provider.name,
+                        ),
+                        "cb_event_upserted": self.repository.upsert_cb_events(
+                            [self._normalize_event_row(row) for row in dataset.cb_events],
+                            source=provider.name,
+                        ),
+                    }
+                self.repository.complete_sync_run(run.id, result=result)
+            except Exception as exc:
+                logger.error("Background provider sync run=%s failed: %s", run.id, exc, exc_info=True)
+                self.repository.fail_sync_run(run.id, str(exc))
+            finally:
+                _PROVIDER_SYNC_LOCK.release()
+
+        threading.Thread(
+            target=_worker,
+            name=f"strategy-lab-sync-{run.id}",
+            daemon=True,
+        ).start()
+        return {"sync_run_id": run.id, "status": "running"}
+
     @staticmethod
     def _normalize_date(value: Any) -> date | None:
         if value in (None, ""):
             return None
         if isinstance(value, date):
             return value
+        if isinstance(value, float) and value != value:  # NaN
+            return None
         text = str(value).strip()
         for candidate in (text, text[:10], text.replace("/", "-")[:10], text.replace(".", "-")[:10]):
             try:

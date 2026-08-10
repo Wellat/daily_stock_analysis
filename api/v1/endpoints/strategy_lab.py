@@ -178,7 +178,7 @@ def sync_data(
             return StrategyLabDataSyncResponse(**service.sync_fixture_convertible_bonds(market=request.market))
         if request.source in {"akshare", "jisilu", "opencli"}:
             return StrategyLabDataSyncResponse(
-                **service.sync_provider_convertible_bonds(
+                **service.start_provider_sync(
                     market=request.market,
                     source=request.source,
                     symbols=request.symbols,
@@ -291,7 +291,7 @@ def list_instrument_bars(
     market: str = Query("cn", description="市场"),
     start_date: date | None = Query(None, description="起始日期"),
     end_date: date | None = Query(None, description="结束日期"),
-    limit: int = Query(200, ge=1, le=2000),
+    limit: int = Query(200, ge=1, le=5000),
     db_manager: DatabaseManager = Depends(get_database_manager),
 ) -> StrategyLabBarListResponse:
     try:

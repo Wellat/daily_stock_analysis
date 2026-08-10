@@ -398,6 +398,7 @@ cd apps/dsa-desktop && npm install && npm run build
 | 行情数据查询 API | 已完成 | `GET /instruments`、`GET /instruments/{bond_code}`、`GET /instruments/{bond_code}/bars`、`GET /instruments/{bond_code}/events` 已实现并挂载到 `/api/v1/strategy-lab`，配套查询测试通过 |
 | 本地初始化同步脚本 | 已完成 | `scripts/sync_cb_local_init.py`（一次性）：从本地 `localhost:5273` 拉取列表/详情/行情/事件入库；行情 OHLCV 共用 `stock_daily`（新增 `instrument_type` 区分可转债/股票），`strategy_lab_cb_basic` 新增 `status`（退市/上市状态）与详情补充元数据（terms_json）；溢价率/剩余规模/条款来源暂无，留空待其他数据源补充 |
 | 行情数据页筛选与股票 Tab | 已完成 | `/market-data` 拆为可转债/股票双 Tab；可转债列表支持 `status`（未退市/已退市）与 `held_only`（仅持仓）筛选（`GET /instruments` 新增参数）；股票 Tab 读取 `stock_daily`（新增 `GET /stocks/list`、`GET /stocks/{code}/bars`），有 OHLCV 时渲染 K 线 |
+| 数据同步 Tab 迁移 | 已完成 | 策略实验室"数据同步"Tab 移至行情数据页（可转债/股票/数据同步），`DataSyncPanel` 移入 `components/market-data` |
 
 ## 10. 后续开发规则
 

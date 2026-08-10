@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from datetime import date
 import json
 import os
+import requests
 import subprocess
 from typing import Any, Dict, List, Optional, Protocol
 
@@ -39,54 +40,106 @@ class AkshareConvertibleBondProvider:
         self.timeout = timeout
 
     def fetch(self, *, market: str, symbols: Optional[List[str]] = None) -> ConvertibleBondSyncPayload:
+        """Fetch the full payload at once (kept for callers that do not batch)."""
+        basics, terms = self.fetch_list(market=market, symbols=symbols)
+        factor_rows: List[Dict[str, Any]] = []
+        for basic in basics:
+            factor_rows.extend(self.fetch_factors(basic["bond_code"]))
+        return ConvertibleBondSyncPayload(
+            cb_basic=basics,
+            cb_terms=terms,
+            cb_daily_factors=factor_rows,
+            cb_events=self.fetch_events(symbols=symbols),
+        )
+
+    def fetch_list(self, *, market: str, symbols: Optional[List[str]] = None) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """Fetch master + terms rows for the convertible-bond list.
+
+        Returns ``(basics, terms)`` so callers can persist them before pulling
+        the (much slower) per-symbol daily bars.
+        """
         if market != "cn":
             raise ValueError("AkShare convertible-bond provider supports cn market only")
-
-        import akshare as ak
-
         symbol_filter = {str(symbol).strip().lower() for symbol in symbols or [] if str(symbol).strip()}
-        basic_df = _akshare_call_with_timeout(
-            ak.bond_zh_cov,
-            timeout=self.timeout,
-            call_name="strategy_lab_cb_basic",
-        )
+        # akshare 的 bond_zh_cov 硬编码 71 个列名，而东财接口实际返回 72 列，
+        # 在 akshare 1.17.x 会直接抛 Length mismatch；这里改为直接请求东财接口按英文
+        # 字段自映射，避免依赖 akshare 的列重命名。
+        records = self._fetch_cb_list()
         basics = [
             row
-            for row in (self._basic_row(record) for record in _records(basic_df))
+            for row in (self._basic_row(record) for record in records)
             if row and self._matches_symbol(row["bond_code"], symbol_filter)
         ]
         terms = [
             terms_row
-            for record in _records(basic_df)
+            for record in records
             for terms_row in [self._terms_row(record)]
             if terms_row and self._matches_symbol(terms_row["bond_code"], symbol_filter)
         ]
+        return basics, terms
 
-        event_rows: List[Dict[str, Any]] = []
+    def fetch_factors(self, bond_code: str) -> List[Dict[str, Any]]:
+        """Fetch daily factor rows for one symbol."""
+        import akshare as ak
+
+        return self._fetch_daily_factors(ak, bond_code, set())
+
+    def fetch_events(self, *, symbols: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+        """Fetch redeem events, best-effort (returns [] on upstream failure)."""
+        import akshare as ak
+
+        symbol_filter = {str(symbol).strip().lower() for symbol in symbols or [] if str(symbol).strip()}
         try:
             redeem_df = _akshare_call_with_timeout(
                 ak.bond_cb_redeem_jsl,
                 timeout=self.timeout,
                 call_name="strategy_lab_cb_redeem_events",
             )
-            event_rows = [
+            return [
                 event
                 for event in (self._redeem_event_row(record) for record in _records(redeem_df))
                 if event and self._matches_symbol(event["bond_code"], symbol_filter)
             ]
         except Exception:
-            event_rows = []
+            return []
 
-        factor_rows: List[Dict[str, Any]] = []
-        for basic in basics:
-            factor_rows.extend(self._fetch_daily_factors(ak, basic["bond_code"], symbol_filter))
-
-        return ConvertibleBondSyncPayload(
-            cb_basic=basics,
-            cb_terms=terms,
-            cb_daily_factors=factor_rows,
-            cb_events=event_rows,
-        )
+    def _fetch_cb_list(self) -> List[Dict[str, Any]]:
+        """Fetch the full convertible-bond list from the Eastmoney datacenter API."""
+        url = "https://datacenter-web.eastmoney.com/api/data/v1/get"
+        base_params = {
+            "sortColumns": "PUBLIC_START_DATE",
+            "sortTypes": "-1",
+            "pageSize": "500",
+            "pageNumber": "1",
+            "reportName": "RPT_BOND_CB_LIST",
+            "columns": "ALL",
+            "quoteColumns": (
+                "f2~01~CONVERT_STOCK_CODE~CONVERT_STOCK_PRICE,"
+                "f235~10~SECURITY_CODE~TRANSFER_PRICE,"
+                "f236~10~SECURITY_CODE~TRANSFER_VALUE,"
+                "f2~10~SECURITY_CODE~CURRENT_BOND_PRICE,"
+                "f237~10~SECURITY_CODE~TRANSFER_PREMIUM_RATIO,"
+                "f239~10~SECURITY_CODE~RESALE_TRIG_PRICE,"
+                "f240~10~SECURITY_CODE~REDEEM_TRIG_PRICE,"
+                "f23~01~CONVERT_STOCK_CODE~PBV_RATIO"
+            ),
+            "source": "WEB",
+            "client": "WEB",
+        }
+        records: List[Dict[str, Any]] = []
+        page = 1
+        while True:
+            params = {**base_params, "pageNumber": page}
+            resp = requests.get(url, params=params, timeout=self.timeout)
+            resp.raise_for_status()
+            result = (resp.json() or {}).get("result")
+            if not result or not result.get("data"):
+                break
+            records.extend(result["data"])
+            if page >= int(result.get("pages") or 1):
+                break
+            page += 1
+        return records
 
     @staticmethod
     def _matches_symbol(bond_code: str, symbol_filter: set[str]) -> bool:
@@ -126,36 +179,41 @@ class AkshareConvertibleBondProvider:
 
     @staticmethod
     def _basic_row(record: Dict[str, Any]) -> Dict[str, Any] | None:
-        bond_code = _first_value(record, "债券代码", "代码", "bond_code", "转债代码")
+        bond_code = _first_value(record, "SECURITY_CODE", "债券代码", "代码", "bond_code", "转债代码")
         if not bond_code:
             return None
         return {
             "bond_code": _strip_code(bond_code),
-            "bond_name": _first_value(record, "债券简称", "转债名称", "名称", "bond_name") or str(bond_code),
-            "stock_code": _strip_code(_first_value(record, "正股代码", "stock_code") or ""),
-            "stock_name": _first_value(record, "正股简称", "正股名称", "stock_name"),
+            "bond_name": _first_value(record, "SECURITY_NAME_ABBR", "债券简称", "转债名称", "名称", "bond_name") or str(bond_code),
+            "stock_code": _strip_code(_first_value(record, "CONVERT_STOCK_CODE", "正股代码", "stock_code") or ""),
+            "stock_name": _first_value(record, "SECURITY_SHORT_NAME", "正股简称", "正股名称", "stock_name"),
             "market": "cn",
-            "list_date": _parse_date(_first_value(record, "上市时间", "上市日期", "list_date")),
-            "maturity_date": _parse_date(_first_value(record, "到期时间", "到期日期", "maturity_date")),
+            "list_date": _parse_date(_first_value(record, "LISTING_DATE", "上市时间", "上市日期", "list_date")),
+            "maturity_date": _parse_date(_first_value(record, "CEASE_DATE", "EXPIRE_DATE", "到期时间", "到期日期", "maturity_date")),
             "remaining_size": _parse_float(_first_value(record, "剩余规模", "余额", "remaining_size")),
-            "current_premium_rate": _parse_float(_first_value(record, "转股溢价率", "溢价率", "current_premium_rate")),
-            "convert_price": _parse_float(_first_value(record, "转股价", "convert_price")),
-            "terms": {"provider": "akshare"},
+            "current_premium_rate": _parse_float(_first_value(record, "TRANSFER_PREMIUM_RATIO", "转股溢价率", "溢价率", "current_premium_rate")),
+            "convert_price": _parse_float(_first_value(record, "TRANSFER_PRICE", "INITIAL_TRANSFER_PRICE", "转股价", "convert_price")),
+            "terms": {
+                "provider": "akshare",
+                "rating": _first_value(record, "RATING", "信用评级"),
+                "issue_scale": _parse_float(_first_value(record, "ACTUAL_ISSUE_SCALE", "发行规模")),
+                "delist_date": _first_value(record, "DELIST_DATE"),
+            },
         }
 
     @staticmethod
     def _terms_row(record: Dict[str, Any]) -> Dict[str, Any] | None:
-        bond_code = _first_value(record, "债券代码", "代码", "bond_code", "转债代码")
+        bond_code = _first_value(record, "SECURITY_CODE", "债券代码", "代码", "bond_code", "转债代码")
         if not bond_code:
             return None
         values = {
             "bond_code": _strip_code(bond_code),
-            "redeem_clause": _first_value(record, "强赎条款", "强赎条件", "redeem_clause"),
-            "down_revise_clause": _first_value(record, "下修条款", "下修条件", "down_revise_clause"),
-            "put_clause": _first_value(record, "回售条款", "回售条件", "put_clause"),
-            "redeem_trigger_price": _parse_float(_first_value(record, "强赎触发价", "redeem_trigger_price")),
+            "redeem_clause": _first_value(record, "REDEEM_CLAUSE", "强赎条款", "强赎条件", "redeem_clause"),
+            "down_revise_clause": _first_value(record, "DOWN_REVISE_CLAUSE", "下修条款", "下修条件", "down_revise_clause"),
+            "put_clause": _first_value(record, "RESALE_CLAUSE", "回售条款", "回售条件", "put_clause"),
+            "redeem_trigger_price": _parse_float(_first_value(record, "REDEEM_TRIG_PRICE", "强赎触发价", "redeem_trigger_price")),
             "down_revise_trigger_price": _parse_float(_first_value(record, "下修触发价", "down_revise_trigger_price")),
-            "put_trigger_price": _parse_float(_first_value(record, "回售触发价", "put_trigger_price")),
+            "put_trigger_price": _parse_float(_first_value(record, "RESALE_TRIG_PRICE", "回售触发价", "put_trigger_price")),
         }
         return values if any(value is not None for key, value in values.items() if key != "bond_code") else None
 
@@ -355,6 +413,8 @@ def _parse_date(value: Any) -> date | None:
         return None
     if isinstance(value, date):
         return value
+    if isinstance(value, float) and value != value:  # NaN
+        return None
     text = str(value).strip()
     if not text:
         return None
@@ -368,6 +428,8 @@ def _parse_date(value: Any) -> date | None:
 
 def _parse_float(value: Any) -> float | None:
     if value in (None, ""):
+        return None
+    if isinstance(value, float) and value != value:  # NaN
         return None
     text = str(value).strip().replace("%", "").replace(",", "")
     if text in {"-", "--", "nan", "None"}:

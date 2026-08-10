@@ -238,9 +238,9 @@ export const strategyLabApi = {
     const { data } = await apiClient.post<StrategyLabSignalItem>(`/api/v1/strategy-lab/signals/${signalId}/confirm`, payload);
     return data;
   },
-  async listSyncRuns() {
-    const { data } = await apiClient.get<{ items: StrategyLabSyncRunItem[] }>('/api/v1/strategy-lab/data-sync/runs');
-    return data.items;
+  async listSyncRuns(params: { page?: number; limit?: number } = {}) {
+    const { data } = await apiClient.get<{ items: StrategyLabSyncRunItem[]; total: number }>('/api/v1/strategy-lab/data-sync/runs', { params });
+    return data;
   },
   async syncData(payload: { market: string; source: string; symbols?: string[] }) {
     const { data } = await apiClient.post('/api/v1/strategy-lab/data-sync', payload);

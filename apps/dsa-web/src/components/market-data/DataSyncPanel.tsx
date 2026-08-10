@@ -1,29 +1,55 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Button, Table, Tag } from 'antd';
+import { Button, Table, Tag, Tooltip } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { ApiErrorAlert } from '../common';
 import type { ParsedApiError } from '../../api/error';
 import { getParsedApiError } from '../../api/error';
 import { strategyLabApi, type StrategyLabSyncRunItem } from '../../api/strategyLab';
-import { SL_INPUT_CLASS, SL_PANEL_CLASS, parseSymbols } from './utils';
+import { SL_INPUT_CLASS, SL_PANEL_CLASS, parseSymbols } from '../strategy-lab/utils';
+
+const TEXT_LIMIT = 200;
 
 const statusTag = (status: string) => {
   const map: Record<string, string> = { completed: 'success', running: 'processing', failed: 'error' };
   return <Tag color={map[status] ?? 'default'}>{status}</Tag>;
 };
 
+const summarizeResult = (run: StrategyLabSyncRunItem): string => {
+  const r = run.result ?? {};
+  if (r.stage && typeof r.processed === 'number' && typeof r.total === 'number') {
+    return `${r.stage} ${r.processed}/${r.total} · 因子=${r.cb_factor_upserted ?? 0}`;
+  }
+  const entries = Object.entries(r);
+  return entries.length ? entries.map(([key, value]) => `${key}=${value}`).join(' · ') : '--';
+};
+
+/** 固定宽度、自动换行、超长省略、hover 展示完整内容 */
+const WrappedCell: React.FC<{ text: string; className?: string }> = ({ text, className }) => {
+  const needsTruncation = text.length > TEXT_LIMIT;
+  const display = needsTruncation ? `${text.slice(0, TEXT_LIMIT)}…` : text;
+  const content = (
+    <span className={`${className ?? ''} block break-all whitespace-normal`}>{display}</span>
+  );
+  return needsTruncation ? <Tooltip title={text}>{content}</Tooltip> : content;
+};
+
 export const DataSyncPanel: React.FC = () => {
   const [syncRuns, setSyncRuns] = useState<StrategyLabSyncRunItem[]>([]);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
+  const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [error, setError] = useState<ParsedApiError | null>(null);
   const [syncSource, setSyncSource] = useState('fixture');
   const [syncSymbols, setSyncSymbols] = useState('');
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (targetPage: number, targetSize: number) => {
     setLoading(true);
     try {
-      setSyncRuns(await strategyLabApi.listSyncRuns());
+      const resp = await strategyLabApi.listSyncRuns({ page: targetPage, limit: targetSize });
+      setSyncRuns(resp.items);
+      setTotal(resp.total);
       setError(null);
     } catch (exc) {
       setError(getParsedApiError(exc));
@@ -32,13 +58,25 @@ export const DataSyncPanel: React.FC = () => {
     }
   }, []);
 
-  useEffect(() => { void refresh(); }, [refresh]);
+  useEffect(() => { void refresh(page, pageSize); }, [page, pageSize, refresh]);
 
-  const runAction = async (key: string, action: () => Promise<unknown>) => {
+  const waitSyncRun = async (runId: number): Promise<StrategyLabSyncRunItem | null> => {
+    for (let attempt = 0; attempt < 120; attempt += 1) {
+      const resp = await strategyLabApi.listSyncRuns({ limit: 50 });
+      const run = resp.items.find((item) => item.id === runId);
+      if (run) setSyncRuns(resp.items); // 实时刷新，展示后台同步进度
+      if (!run || run.status === 'completed' || run.status === 'failed') return run ?? null;
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+    }
+    return null;
+  };
+
+  const runAction = async (key: string, action: () => Promise<{ sync_run_id?: number }>) => {
     setActionLoading(key);
     try {
-      await action();
-      await refresh();
+      const result = await action();
+      if (result.sync_run_id) await waitSyncRun(result.sync_run_id);
+      await refresh(page, pageSize);
       setError(null);
     } catch (exc) {
       setError(getParsedApiError(exc));
@@ -51,17 +89,17 @@ export const DataSyncPanel: React.FC = () => {
     { title: 'ID', dataIndex: 'id', width: 70 },
     { title: '类型', dataIndex: 'sync_type', ellipsis: true },
     { title: '状态', dataIndex: 'status', width: 110, render: statusTag },
-    { title: '结果', key: 'result', width: 200, render: (_, run) => (
-      <span className="text-xs text-secondary-text">
-        {Object.entries(run.result ?? {}).map(([key, value]) => `${key}=${value}`).join(' · ') || '--'}
-      </span>
+    { title: '结果', key: 'result', width: 260, render: (_, run) => (
+      <WrappedCell text={summarizeResult(run)} className="text-xs text-secondary-text" />
     ) },
-    { title: '错误', dataIndex: 'error_message', ellipsis: true, render: (value: string | null) => value ? <span className="text-danger">{value}</span> : '--' },
+    { title: '错误', dataIndex: 'error_message', width: 260, render: (value: string | null) => (
+      value ? <WrappedCell text={value} className="text-danger" /> : '--'
+    ) },
     { title: '时间', dataIndex: 'created_at', width: 160, render: (value: string | null) => value ? value.replace('T', ' ').slice(0, 19) : '--' },
   ];
 
   return (
-    <div className="grid gap-4 xl:grid-cols-2">
+    <div className="flex flex-col gap-4">
       <form
         className={SL_PANEL_CLASS}
         onSubmit={(event) => {
@@ -97,9 +135,20 @@ export const DataSyncPanel: React.FC = () => {
           className="mt-3"
           columns={columns}
           dataSource={syncRuns}
-          pagination={false}
           loading={loading}
           locale={{ emptyText: '暂无同步记录' }}
+          pagination={{
+            current: page,
+            pageSize,
+            total,
+            showSizeChanger: true,
+            pageSizeOptions: [10, 20, 50],
+            showTotal: (count) => `共 ${count} 条`,
+            onChange: (nextPage, nextSize) => {
+              setPage(nextPage);
+              setPageSize(nextSize);
+            },
+          }}
         />
       </div>
     </div>

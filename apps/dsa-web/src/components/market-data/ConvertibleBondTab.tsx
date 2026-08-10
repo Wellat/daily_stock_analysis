@@ -85,7 +85,7 @@ export const ConvertibleBondTab: React.FC = () => {
     try {
       const [detailPayload, barsPayload, eventsPayload] = await Promise.all([
         strategyLabApi.getInstrumentDetail(item.bond_code),
-        strategyLabApi.listInstrumentBars(item.bond_code, { limit: 1000 }),
+        strategyLabApi.listInstrumentBars(item.bond_code, { limit: 500 }),
         strategyLabApi.listInstrumentEvents(item.bond_code),
       ]);
       setDetail(detailPayload);

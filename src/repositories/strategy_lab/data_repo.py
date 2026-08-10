@@ -72,6 +72,15 @@ class StrategyLabDataRepository:
             row.completed_at = datetime.now()
             session.commit()
 
+    def update_sync_run_progress(self, run_id: int, *, result: Dict[str, Any]) -> None:
+        """Write an intermediate result snapshot for a running sync run."""
+        with self.db.get_session() as session:
+            row = session.get(StrategyLabSyncRun, run_id)
+            if row is None:
+                return
+            row.result_json = json.dumps(result, ensure_ascii=False, sort_keys=True)
+            session.commit()
+
     def upsert_cb_basic(self, rows: List[Dict[str, Any]], *, source: str) -> int:
         count = 0
         with self.db.get_session() as session:
@@ -325,7 +334,12 @@ class StrategyLabDataRepository:
         end_date: Any = None,
         limit: int = 200,
     ) -> Dict[str, Any]:
-        """Return persisted daily factors for one instrument, ascending by date."""
+        """Return persisted daily factors for one instrument, ascending by date.
+
+        ``limit`` means the most recent N rows: older rows are dropped when the
+        stored history exceeds the limit, so the chart always ends at the latest
+        available date.
+        """
         with self.db.get_session() as session:
             statement = select(StrategyLabCbDailyFactor).where(
                 StrategyLabCbDailyFactor.bond_code == bond_code
@@ -335,8 +349,9 @@ class StrategyLabDataRepository:
             if end_date is not None:
                 statement = statement.where(StrategyLabCbDailyFactor.trade_date <= end_date)
             rows = session.execute(
-                statement.order_by(StrategyLabCbDailyFactor.trade_date.asc()).limit(limit)
+                statement.order_by(StrategyLabCbDailyFactor.trade_date.desc()).limit(limit)
             ).scalars().all()
+            rows = list(reversed(rows))
             return {
                 "bond_code": bond_code,
                 "total": len(rows),

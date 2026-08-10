@@ -130,10 +130,11 @@ class StrategyLabDataSyncRequest(BaseModel):
 
 class StrategyLabDataSyncResponse(BaseModel):
     sync_run_id: int
-    cb_basic_upserted: int
-    cb_terms_upserted: int
-    cb_factor_upserted: int
-    cb_event_upserted: int
+    status: str = "running"
+    cb_basic_upserted: int = 0
+    cb_terms_upserted: int = 0
+    cb_factor_upserted: int = 0
+    cb_event_upserted: int = 0
 
 
 class StrategyLabSyncRunItem(BaseModel):
