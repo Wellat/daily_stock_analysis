@@ -106,3 +106,42 @@ class StockHistoryResponse(BaseModel):
             "data": []
         }
     })
+
+
+class StockListItem(BaseModel):
+    """行情数据页股票列表项（来自 stock_daily 汇总）"""
+
+    code: str = Field(..., description="代码")
+    instrument_type: str = Field("stock", description="品种类型")
+    latest_date: Optional[str] = Field(None, description="最新交易日")
+    latest_close: Optional[float] = Field(None, description="最新收盘价")
+
+
+class StockListResponse(BaseModel):
+    """行情数据页股票列表响应"""
+
+    total: int = Field(..., description="总数")
+    page: int = Field(..., description="页码")
+    limit: int = Field(..., description="每页数量")
+    items: List[StockListItem] = Field(default_factory=list, description="列表项")
+
+
+class StockDailyBarItem(BaseModel):
+    """stock_daily 单条日线（OHLC 可为空）"""
+
+    date: Optional[str] = Field(None, description="日期")
+    open: Optional[float] = Field(None, description="开盘价")
+    high: Optional[float] = Field(None, description="最高价")
+    low: Optional[float] = Field(None, description="最低价")
+    close: Optional[float] = Field(None, description="收盘价")
+    volume: Optional[float] = Field(None, description="成交量")
+    amount: Optional[float] = Field(None, description="成交额")
+    data_source: Optional[str] = Field(None, description="数据来源")
+
+
+class StockBarsResponse(BaseModel):
+    """行情数据页股票日线响应"""
+
+    code: str = Field(..., description="代码")
+    total: int = Field(..., description="条数")
+    items: List[StockDailyBarItem] = Field(default_factory=list, description="日线列表")

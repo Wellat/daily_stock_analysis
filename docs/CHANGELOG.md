@@ -9,7 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-- [新功能] Agent Chat 按会话持久化 Skill 选择，支持刷新和会话切换恢复，并区分省略 `skills`、显式空列表与非空选择；无持久化状态的历史会话继续使用运行时默认且不会被静默转为显式选择，复用分析 `context` 中残留的 legacy `skills` / `strategies` 也不会覆盖顶层三态或会话状态，非空但全部无效的 Skill 请求不会被当成显式空列表并清空既有选择
+- [新功能] 策略实验室页面改为顶部 Tab 布局（策略研究 / 参数搜索 / 数据同步 / 实盘信号），并引入 antd 与 ECharts 组件体系
+- [新功能] 新增行情数据页 `/market-data`，支持可转债历史行情、价格与溢价率图表、事件记录查看
+- [新功能] 新增可转债数据查询 API（标的列表 / 详情 / 日线因子 / 事件），补齐策略实验室数据查看能力
+- [chore] 新增一次性初始化脚本 `scripts/sync_cb_local_init.py`：从本地 `localhost:5273` 拉取可转债列表/详情/行情/事件并入库（行情共用 `stock_daily`，`instrument_type` 区分品种；`strategy_lab_cb_basic` 新增 `status` 字段）
+- [新功能] 行情数据页改为可转债/股票双 Tab：可转债列表支持"未退市/已退市"状态筛选与"仅持仓"筛选，股票 tab 展示 stock_daily 历史 K 线（数据未同步时列表为空）
+- [新功能] 新增 `GET /api/v1/stocks/list` 与 `GET /api/v1/stocks/{code}/bars` 本地行情查询接口；`GET /api/v1/strategy-lab/instruments` 新增 `status`/`held_only` 筛选参数
+- [Agent Chat 按会话持久化 Skill 选择，支持刷新和会话切换恢复，并区分省略 `skills`、显式空列表与非空选择；无持久化状态的历史会话继续使用运行时默认且不会被静默转为显式选择，复用分析 `context` 中残留的 legacy `skills` / `strategies` 也不会覆盖顶层三态或会话状态，非空但全部无效的 Skill 请求不会被当成显式空列表并清空既有选择
 - [改进] 后端 CI 在不跳过离线测试的前提下按完整测试文件分成三个独立 runner 并行执行，由单一 `backend-gate` 汇总门禁结果；实测文件耗时和首分片静态检查成本共同参与负载平衡，新测试文件自动纳入，现有 pip 安装和测试参数保持不变，避免 xdist 进程内并发的全局状态竞态。
 - [测试] 后端 CI 默认覆盖所有非 Web 改动，仅对已证明安全的纯 Web 路径跳过，并将整个 Web public 目录及前端渠道模板、设置帮助视为跨层运行合同；补充纯 Web、共享 Web 资产及 Web/非 Web 混合改动的过滤语义回归，明确 `predicate-quantifier: every` 按单文件匹配全部规则、再以任一匹配文件触发门禁。Docker CI 继续按构建输入过滤。离线测试保留稳定的串行执行与慢用例摘要，并移除重复用例和测试内真实等待。
 
@@ -48,6 +54,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 <!-- 新条目格式：- [类型] 描述（类型取值：新功能/改进/修复/文档/测试/chore）-->
 <!-- 每条独立一行追加到本段末尾，无需分类标题，合并时冲突最小 -->
 - [文档] FAQ 补充 macOS 桌面应用被 Gatekeeper quarantine 阻止启动时的受信任安装包临时放行步骤（refs #2113）。
+- [文档] 新增策略实验室迁移方案，记录 trading-backtest 迁入 DSA 的命名边界、Portfolio 统一原则、数据层分层、API 路径、前端重做策略、阶段计划与验证命令。
+- [新功能] 新增策略实验室 Phase 1 后端最小闭环，提供 `strategy_lab` 领域骨架、fixture 双低策略回测、结果落库以及 `/api/v1/strategy-lab` 运行查询接口；现有 Portfolio 仍作为唯一持仓真源。
+- [新功能] 策略实验室继续接入可转债 fixture 数据同步、参数批量运行、策略信号记录和 Web `/strategy-lab` 最小工作台；新增 `strategy_lab_cb_*`、sync、batch、signal 表与对应 API，信号仅引用 Portfolio 账户和交易 ID，不新建持仓真源。
+- [改进] 策略实验室信号支持显式确认到现有 Portfolio trades，Web `/strategy-lab` 最小工作台可触发数据同步、样例 run、样例批次、生成信号和确认到持仓。
+- [改进] 策略实验室数据同步支持非 fixture payload 直接写入可转债基础信息、条款、日因子和事件；同时收敛 `/api/v1/history` 与 `/api/v1/decision-signals` 根路径 OpenAPI 契约，避免尾斜杠路径漂移。
+- [新功能] 策略实验室接入 AkShare 可转债数据 provider，支持条款、溢价率、剩余规模、强赎/下修事件同步；同步数据可直接驱动策略回测，并新增结构化事件研究 API。
+- [改进] 策略实验室批次支持失败重试和中断恢复，策略信号增加 Portfolio 账户 active/市场校验，Web 页面升级为真实参数、批次详情、同步历史和 Portfolio 确认工作流。
+- [改进] 策略实验室补齐 MA 交叉策略、Jisilu/OpenCLI 可转债快照 provider、批次删除与后台 SSE 进度流，并增加同规范化快照的迁移回归。
 - [新功能] LLM 渠道新增显式 Chat Completions / Responses API Surface，支持 Anspire GPT-5.6 系列等 Responses-only 模型，并统一连接测试、主分析、筛选、图片识别与状态诊断路由；所有运行路径先按同一规则解析协议再校验 Surface，混合 Surface 的同名路由按未知能力保守处理；显式 Anspire 渠道独占共享 Key，非法 Surface 或协议不匹配时不会把该 Key 回退为旧版 Chat 部署，同时保留无关的 Gemini/OpenAI 等 legacy provider；本地 loopback 渠道可在图片识别路径继续无 Key 调用，远端渠道仍要求凭据；禁用渠道不会因残留 Surface 配置阻断其他兼容 fallback；Web 编辑器不会静默改写非法历史值，并允许将 Hermes 非法 Surface 修复为 Chat Completions。
 - [修复] 将 Responses 渠道的协议、模型 provider、公开 route alias 与 wire-model 构造收敛为统一路由契约，保存校验、运行时加载、状态诊断、选股入口和 Web 编辑器共同使用当前安装的 LiteLLM provider registry，拒绝 `openai` 协议下显式非 OpenAI provider 的模型、拒绝同一 alias 混用 Chat/Responses，并保留 OpenAI-compatible 网关自有的带斜杠模型 ID。
 

@@ -1,6 +1,7 @@
 import type React from 'react';
 import { lazy, useEffect } from 'react';
 import { BrowserRouter as Router, Navigate, Route, Routes, useLocation } from 'react-router-dom';
+import { AntdConfigProvider } from './components/antd/AntdConfigProvider';
 import { ApiErrorAlert, Shell } from './components/common';
 import {
   PageLoadingFallback,
@@ -14,6 +15,8 @@ import './App.css';
 
 const HomePage = lazy(() => import('./pages/HomePage'));
 const BacktestPage = lazy(() => import('./pages/BacktestPage'));
+const StrategyLabPage = lazy(() => import('./pages/StrategyLabPage'));
+const MarketDataPage = lazy(() => import('./pages/MarketDataPage'));
 const SettingsPage = lazy(() => import('./pages/SettingsPage'));
 const LoginPage = lazy(() => import('./pages/LoginPage'));
 const NotFoundPage = lazy(() => import('./pages/NotFoundPage'));
@@ -71,26 +74,30 @@ const AppContent: React.FC = () => {
   }
 
   return (
-    <Routes>
-      <Route
-        element={(
-          <Shell>
-            <RouteOutletBoundary />
-          </Shell>
-        )}
-      >
-        <Route path="/" element={<HomePage />} />
-        <Route path="/chat" element={<ChatPage />} />
-        <Route path="/portfolio" element={<PortfolioPage />} />
-        <Route path="/decision-signals" element={<DecisionSignalsPage />} />
-        <Route path="/screening" element={<StockScreeningPage />} />
-        <Route path="/backtest" element={<BacktestPage />} />
-        <Route path="/alerts" element={<AlertsPage />} />
-        <Route path="/usage" element={<TokenUsagePage />} />
-        <Route path="/settings" element={<SettingsPage />} />
-        <Route path="*" element={<NotFoundPage />} />
-      </Route>
-    </Routes>
+    <AntdConfigProvider>
+      <Routes>
+        <Route
+          element={(
+            <Shell>
+              <RouteOutletBoundary />
+            </Shell>
+          )}
+        >
+          <Route path="/" element={<HomePage />} />
+          <Route path="/chat" element={<ChatPage />} />
+          <Route path="/portfolio" element={<PortfolioPage />} />
+          <Route path="/decision-signals" element={<DecisionSignalsPage />} />
+          <Route path="/screening" element={<StockScreeningPage />} />
+          <Route path="/backtest" element={<BacktestPage />} />
+          <Route path="/strategy-lab" element={<StrategyLabPage />} />
+          <Route path="/market-data" element={<MarketDataPage />} />
+          <Route path="/alerts" element={<AlertsPage />} />
+          <Route path="/usage" element={<TokenUsagePage />} />
+          <Route path="/settings" element={<SettingsPage />} />
+          <Route path="*" element={<NotFoundPage />} />
+        </Route>
+      </Routes>
+    </AntdConfigProvider>
   );
 };
 

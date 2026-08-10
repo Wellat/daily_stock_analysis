@@ -12,22 +12,27 @@
 """
 
 import logging
+from datetime import date
 from typing import Optional
 import re
 
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile, Depends
 
-from api.deps import get_system_config_service
+from api.deps import get_database_manager, get_system_config_service
 
 from api.v1.schemas.stocks import (
     ExtractFromImageResponse,
     ExtractItem,
     KLineData,
+    StockBarsResponse,
     StockHistoryResponse,
+    StockListResponse,
     StockQuote,
 )
 from api.v1.schemas.history import WatchlistRequest, WatchlistResponse
 from api.v1.schemas.common import ErrorResponse
+from src.repositories.stock_repo import StockRepository
+from src.storage import DatabaseManager
 from src.services.image_stock_extractor import (
     ALLOWED_MIME,
     MAX_SIZE_BYTES,
@@ -403,6 +408,61 @@ def remove_from_watchlist(
             status_code=500,
             detail={"error": "internal_error", "message": f"从自选删除失败: {str(e)}"},
         )
+
+
+@router.get(
+    "/list",
+    response_model=StockListResponse,
+    responses={500: {"model": ErrorResponse}},
+    summary="获取本地已有日线数据的股票列表",
+    description="从 stock_daily 汇总非可转债代码（按代码分组取最新收盘）。",
+)
+def list_stock_daily_codes(
+    keyword: str | None = Query(None, description="代码模糊搜索"),
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=200),
+    db_manager: DatabaseManager = Depends(get_database_manager),
+) -> StockListResponse:
+    try:
+        repository = StockRepository(db_manager)
+        payload = repository.list_codes(
+            keyword=keyword,
+            limit=limit,
+            offset=(page - 1) * limit,
+        )
+        return StockListResponse(page=page, limit=limit, **payload)
+    except Exception as exc:
+        logger.error("List stock daily codes failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail={"error": "internal_error", "message": "List stocks failed"})
+
+
+@router.get(
+    "/{stock_code}/bars",
+    response_model=StockBarsResponse,
+    responses={500: {"model": ErrorResponse}},
+    summary="获取本地 stock_daily 历史日线",
+    description="读取本地 stock_daily 表中指定代码的历史 OHLCV。",
+)
+def get_stock_daily_bars(
+    stock_code: str,
+    start_date: date | None = Query(None, description="起始日期"),
+    end_date: date | None = Query(None, description="结束日期"),
+    limit: int = Query(500, ge=1, le=2000),
+    db_manager: DatabaseManager = Depends(get_database_manager),
+) -> StockBarsResponse:
+    try:
+        repository = StockRepository(db_manager)
+        return StockBarsResponse(
+            **repository.get_bars(
+                code=stock_code,
+                start_date=start_date,
+                end_date=end_date,
+                limit=limit,
+            )
+        )
+    except Exception as exc:
+        logger.error("Get stock daily bars failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail={"error": "internal_error", "message": "Get stock bars failed"})
 
 
 @router.get(

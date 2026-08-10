@@ -52,3 +52,32 @@ export const stocksApi = {
     throw new Error('请提供文件或粘贴文本');
   },
 };
+
+export type StockListItem = {
+  code: string;
+  instrument_type: string;
+  latest_date?: string | null;
+  latest_close?: number | null;
+};
+
+export type StockDailyBarItem = {
+  date?: string | null;
+  open?: number | null;
+  high?: number | null;
+  low?: number | null;
+  close?: number | null;
+  volume?: number | null;
+  amount?: number | null;
+  data_source?: string | null;
+};
+
+export const marketStocksApi = {
+  async listStocks(params: { keyword?: string; page?: number; limit?: number } = {}) {
+    const { data } = await apiClient.get<{ total: number; page: number; limit: number; items: StockListItem[] }>('/api/v1/stocks/list', { params });
+    return data;
+  },
+  async getStockBars(code: string, params: { start_date?: string; end_date?: string; limit?: number } = {}) {
+    const { data } = await apiClient.get<{ code: string; total: number; items: StockDailyBarItem[] }>(`/api/v1/stocks/${encodeURIComponent(code)}/bars`, { params });
+    return data;
+  },
+};

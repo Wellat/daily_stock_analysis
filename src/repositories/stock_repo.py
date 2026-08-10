@@ -14,7 +14,7 @@ from datetime import date
 from typing import Optional, List, Dict, Any
 
 import pandas as pd
-from sqlalchemy import and_, desc, select
+from sqlalchemy import and_, desc, func, or_, select
 
 from src.storage import DatabaseManager, StockDaily
 
@@ -76,6 +76,114 @@ class StockRepository:
         except Exception as e:
             logger.error(f"获取日期范围数据失败: {e}")
             return []
+    
+    def list_codes(
+        self,
+        *,
+        keyword: Optional[str] = None,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> Dict[str, Any]:
+        """List distinct non-CB codes from stock_daily with their latest bar.
+
+        用于行情数据页"股票"列表：按 code 分组取最新日期与收盘价。
+        """
+        normalized_keyword = str(keyword).strip() if keyword else None
+        with self.db.get_session() as session:
+            latest = (
+                select(StockDaily.code, func.max(StockDaily.date).label("max_date"))
+                .where(StockDaily.instrument_type != "convertible_bond")
+                .group_by(StockDaily.code)
+                .subquery()
+            )
+            statement = (
+                select(
+                    StockDaily.code,
+                    StockDaily.date,
+                    StockDaily.close,
+                    StockDaily.instrument_type,
+                )
+                .join(
+                    latest,
+                    and_(
+                        latest.c.code == StockDaily.code,
+                        latest.c.max_date == StockDaily.date,
+                    ),
+                )
+                .order_by(StockDaily.code)
+            )
+            if normalized_keyword:
+                pattern = f"%{normalized_keyword}%"
+                statement = statement.where(
+                    or_(
+                        StockDaily.code.like(pattern),
+                        func.lower(StockDaily.code).like(pattern.lower()),
+                    )
+                )
+            total = session.execute(
+                select(func.count()).select_from(latest)
+            ).scalar_one()
+            filtered_total = len(
+                session.execute(
+                    select(latest.c.code).where(
+                        or_(
+                            latest.c.code.like(f"%{normalized_keyword}%"),
+                            func.lower(latest.c.code).like(f"%{normalized_keyword.lower()}%"),
+                        )
+                    )
+                ).scalars().all()
+            ) if normalized_keyword else int(total)
+            rows = session.execute(
+                statement.offset(offset).limit(limit)
+            ).all()
+            return {
+                "total": filtered_total,
+                "items": [
+                    {
+                        "code": row.code,
+                        "instrument_type": row.instrument_type or "stock",
+                        "latest_date": row.date.isoformat() if row.date else None,
+                        "latest_close": row.close,
+                    }
+                    for row in rows
+                ],
+            }
+
+    def get_bars(
+        self,
+        *,
+        code: str,
+        start_date: Optional[date] = None,
+        end_date: Optional[date] = None,
+        limit: int = 500,
+    ) -> Dict[str, Any]:
+        """Return daily bars for one code from stock_daily, ascending by date."""
+        with self.db.get_session() as session:
+            statement = select(StockDaily).where(StockDaily.code == code)
+            if start_date is not None:
+                statement = statement.where(StockDaily.date >= start_date)
+            if end_date is not None:
+                statement = statement.where(StockDaily.date <= end_date)
+            rows = session.execute(
+                statement.order_by(StockDaily.date.asc()).limit(limit)
+            ).scalars().all()
+            return {
+                "code": code,
+                "total": len(rows),
+                "items": [
+                    {
+                        "date": row.date.isoformat() if row.date else None,
+                        "open": row.open,
+                        "high": row.high,
+                        "low": row.low,
+                        "close": row.close,
+                        "volume": row.volume,
+                        "amount": row.amount,
+                        "data_source": row.data_source,
+                    }
+                    for row in rows
+                ],
+            }
     
     def save_dataframe(
         self,
