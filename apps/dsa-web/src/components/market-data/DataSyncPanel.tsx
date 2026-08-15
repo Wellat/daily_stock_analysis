@@ -42,8 +42,8 @@ export const DataSyncPanel: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [error, setError] = useState<ParsedApiError | null>(null);
-  // 同步能力：cb_basic=基础数据（opencli cb-list+cb-detail）/ cb_ohlc=行情（东财优先腾讯兜底）
-  const [syncKind, setSyncKind] = useState<'cb_basic' | 'cb_ohlc'>('cb_basic');
+  // 同步能力：cb_basic=基础数据 / cb_ohlc=行情 / cb_premium_history=补溢价率与剩余规模
+  const [syncKind, setSyncKind] = useState<'cb_basic' | 'cb_ohlc' | 'cb_premium_history'>('cb_basic');
   const [includeDelisted, setIncludeDelisted] = useState(false);
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
@@ -160,9 +160,10 @@ export const DataSyncPanel: React.FC = () => {
         <div className="mt-3 grid gap-3 sm:grid-cols-2">
           <label className="text-sm">
             来源
-            <select aria-label="同步来源" className={`${SL_INPUT_CLASS} mt-1`} value={syncKind} onChange={(event) => setSyncKind(event.target.value as 'cb_basic' | 'cb_ohlc')}>
+            <select aria-label="同步来源" className={`${SL_INPUT_CLASS} mt-1`} value={syncKind} onChange={(event) => setSyncKind(event.target.value as 'cb_basic' | 'cb_ohlc' | 'cb_premium_history')}>
               <option value="cb_basic">可转债基础数据</option>
               <option value="cb_ohlc">可转债行情</option>
+              <option value="cb_premium_history">可转债补溢价/规模</option>
             </select>
           </label>
           <label className="text-sm">

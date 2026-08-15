@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [新功能] 策略实验室数据同步新增可转债溢价历史补数任务：通过 opencli `cb-premium-history` 按“转债代码 + 日期”补写 `strategy_lab_cb_daily_factors` 中缺失的 `premium_rate` / `remaining_size`，支持已退市筛选并接入数据同步页面入口
 - [修复] 可转债基础数据同步入库改为逐只容错：单只转债的入库失败（basic/terms/events）仅记录错误日志并计入失败清单后跳过，不再因单只异常拖垮整个同步任务
 - [修复] 可转债事件落库在同批次出现重复 (bond_code, event_date, event_type) 时触发 UNIQUE 约束冲突：数据源 cb_event_list 可能返回完全相同的重复事件，且 session 使用 autoflush=False 导致未 flush 的新行无法被后续 select 命中；`upsert_cb_events` 现先按去重键在内存去重再入库
 - [修复] 可转债数据同步「包含已退市」语义修正：基础数据同步与 OHLC 行情同步在勾选「包含已退市」时改为合并活跃与已退市标的（去重），而非仅处理已退市列表，避免活跃标的被漏掉

@@ -497,6 +497,250 @@ def test_opencli_provider_detail_failure_includes_subprocess_output(
     assert "adapter failed" in message
 
 
+def test_opencli_provider_fetches_premium_history(monkeypatch: pytest.MonkeyPatch) -> None:
+    history_stdout = json.dumps(
+        {
+            "rows": [
+                {"date": "2026-08-12", "premium_rt": "22.15%", "remain_size": "72.068"},
+                {"tradeDate": "2026/08/13", "premiumRate": "21.8", "remainSize": 71.5},
+                {"date": "-", "premium_rt": "0", "remain_size": "0"},
+            ]
+        }
+    )
+
+    def _run(command, **kwargs):
+        assert kwargs["timeout"] == 5
+        assert command == ["opencli", "jisilu", "cb-premium-history", "110081", "-f", "json"]
+        return SimpleNamespace(stdout=history_stdout)
+
+    monkeypatch.setattr(cb_providers.subprocess, "run", _run)
+
+    rows = OpencliConvertibleBondProvider(timeout=5).fetch_premium_history("110081.SH")
+
+    assert rows == [
+        {
+            "bond_code": "110081",
+            "trade_date": date(2026, 8, 12),
+            "premium_rate": 22.15,
+            "remaining_size": 72.068,
+        },
+        {
+            "bond_code": "110081",
+            "trade_date": date(2026, 8, 13),
+            "premium_rate": 21.8,
+            "remaining_size": 71.5,
+        },
+    ]
+
+
+def test_patch_cb_daily_factor_fields_only_fills_null_existing_cb_rows(
+    db_manager: DatabaseManager,
+) -> None:
+    service = StrategyLabDataSyncService(db_manager)
+    with db_manager.get_session() as session:
+        session.add(
+            StrategyLabCbBasic(
+                bond_code="110081",
+                bond_name="闻泰转债",
+                stock_code="600745",
+                stock_name="闻泰科技",
+                market="cn",
+                status="正常",
+            )
+        )
+        session.add_all(
+            [
+                StrategyLabCbDailyFactor(
+                    bond_code="110081",
+                    trade_date=date(2026, 8, 12),
+                    close=120.0,
+                ),
+                StrategyLabCbDailyFactor(
+                    bond_code="110081",
+                    trade_date=date(2026, 8, 13),
+                    close=121.0,
+                    premium_rate=19.5,
+                    remaining_size=None,
+                    source="cb_ohlc",
+                ),
+            ]
+        )
+        session.commit()
+
+    result = service.repository.patch_cb_daily_factor_fields(
+        [
+            {
+                "bond_code": "110081",
+                "trade_date": date(2026, 8, 12),
+                "premium_rate": "22.15",
+                "remaining_size": "72.068",
+            },
+            {
+                "bond_code": "110081",
+                "trade_date": date(2026, 8, 13),
+                "premium_rate": "21.8",
+                "remaining_size": "71.5",
+            },
+            {
+                "bond_code": "110081",
+                "trade_date": date(2026, 8, 14),
+                "premium_rate": "99",
+                "remaining_size": "99",
+            },
+            {
+                "bond_code": "110081",
+                "trade_date": date(2026, 8, 15),
+                "premium_rate": "20.0",
+                "remaining_size": "70.0",
+            },
+        ],
+        source="opencli",
+    )
+
+    assert result == {
+        "rows_examined": 4,
+        "rows_matched": 2,
+        "rows_updated": 2,
+        "premium_rate_patched": 1,
+        "remaining_size_patched": 2,
+    }
+    with db_manager.get_session() as session:
+        rows = session.execute(
+            select(StrategyLabCbDailyFactor)
+            .where(StrategyLabCbDailyFactor.bond_code == "110081")
+            .order_by(StrategyLabCbDailyFactor.trade_date.asc())
+        ).scalars().all()
+        assert len(rows) == 2
+        assert rows[0].premium_rate == 22.15
+        assert rows[0].remaining_size == 72.068
+        assert rows[0].source == "fixture"
+        assert rows[1].premium_rate == 19.5
+        assert rows[1].remaining_size == 71.5
+        assert rows[1].source == "cb_ohlc"
+
+
+def test_sync_cb_premium_history_patches_existing_rows(
+    db_manager: DatabaseManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import src.services.strategy_lab.data_sync_service as dss
+
+    class _PremiumHistoryProvider:
+        name = "opencli"
+
+        def fetch_premium_history(self, bond_code):
+            assert bond_code == "110081"
+            return [
+                {
+                    "bond_code": bond_code,
+                    "trade_date": date(2026, 8, 12),
+                    "premium_rate": 22.15,
+                    "remaining_size": 72.068,
+                },
+                {
+                    "bond_code": bond_code,
+                    "trade_date": date(2026, 8, 13),
+                    "premium_rate": 21.8,
+                    "remaining_size": 71.5,
+                },
+            ]
+
+    monkeypatch.setattr(dss, "OpencliConvertibleBondProvider", lambda **kwargs: _PremiumHistoryProvider())
+    service = StrategyLabDataSyncService(db_manager)
+    with db_manager.get_session() as session:
+        session.add(
+            StrategyLabCbBasic(
+                bond_code="110081",
+                bond_name="闻泰转债",
+                stock_code="600745",
+                stock_name="闻泰科技",
+                market="cn",
+                status="正常",
+            )
+        )
+        session.add(
+            StrategyLabCbDailyFactor(
+                bond_code="110081",
+                trade_date=date(2026, 8, 12),
+                close=120.0,
+            )
+        )
+        session.commit()
+
+    result = service.sync_cb_premium_history(market="cn", symbols=["110081"])
+
+    assert result["bonds_total"] == 1
+    assert result["rows_examined"] == 2
+    assert result["rows_matched"] == 1
+    assert result["cb_factor_rows_patched"] == 1
+    assert result["premium_rate_patched"] == 1
+    assert result["remaining_size_patched"] == 1
+    assert result["bonds_failed"] == []
+
+
+def test_sync_cb_premium_history_with_delisted_includes_active_and_delisted(
+    db_manager: DatabaseManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import src.services.strategy_lab.data_sync_service as dss
+
+    seen_codes: list[str] = []
+
+    class _PremiumHistoryProvider:
+        name = "opencli"
+
+        def fetch_premium_history(self, bond_code):
+            seen_codes.append(bond_code)
+            trade_date = date(2026, 8, 12 if bond_code == "110081" else 13)
+            return [
+                {
+                    "bond_code": bond_code,
+                    "trade_date": trade_date,
+                    "premium_rate": 22.15,
+                    "remaining_size": 72.068,
+                }
+            ]
+
+    monkeypatch.setattr(dss, "OpencliConvertibleBondProvider", lambda **kwargs: _PremiumHistoryProvider())
+    service = StrategyLabDataSyncService(db_manager)
+    with db_manager.get_session() as session:
+        session.add_all(
+            [
+                StrategyLabCbBasic(
+                    bond_code="110081",
+                    bond_name="闻泰转债",
+                    stock_code="600745",
+                    stock_name="闻泰科技",
+                    market="cn",
+                    status="正常",
+                ),
+                StrategyLabCbBasic(
+                    bond_code="113000",
+                    bond_name="已退市转债",
+                    stock_code="600000",
+                    stock_name="测试正股",
+                    market="cn",
+                    status="已退市",
+                ),
+                StrategyLabCbDailyFactor(
+                    bond_code="110081",
+                    trade_date=date(2026, 8, 12),
+                    close=120.0,
+                ),
+                StrategyLabCbDailyFactor(
+                    bond_code="113000",
+                    trade_date=date(2026, 8, 13),
+                    close=121.0,
+                ),
+            ]
+        )
+        session.commit()
+
+    result = service.sync_cb_premium_history(market="cn", include_delisted=True)
+
+    assert result["bonds_total"] == 2
+    assert seen_codes == ["110081", "113000"]
+    assert result["cb_factor_rows_patched"] == 2
+
+
 def test_upsert_cb_basic_serializes_non_json_terms(db_manager: DatabaseManager) -> None:
     """terms 元数据里混入 date 等非 JSON 类型时，落库不应抛异常（default=str 兜底）。"""
     service = StrategyLabDataSyncService(db_manager)

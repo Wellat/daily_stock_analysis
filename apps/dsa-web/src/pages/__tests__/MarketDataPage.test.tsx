@@ -187,4 +187,28 @@ describe('MarketDataPage', () => {
       symbols: [],
     }));
   }, 15000);
+
+  it('submits a premium-history sync request with the delisted flag', async () => {
+    render(<MarketDataPage />);
+    await screen.findByText('123001');
+    cbApi.syncData.mockResolvedValue({
+      sync_run_id: 10,
+      status: 'running',
+      cb_factor_rows_patched: 0,
+      premium_rate_patched: 0,
+      remaining_size_patched: 0,
+    });
+    fireEvent.click(screen.getByRole('tab', { name: '数据同步' }));
+    fireEvent.change(await screen.findByLabelText('同步来源'), { target: { value: 'cb_premium_history' } });
+    fireEvent.click(screen.getByLabelText('包含已退市'));
+    fireEvent.change(await screen.findByLabelText('同步可转债代码'), { target: { value: '110081' } });
+    fireEvent.click(screen.getByRole('button', { name: '开始同步' }));
+    await waitFor(() => expect(cbApi.syncData).toHaveBeenCalledWith({
+      market: 'cn',
+      source: 'opencli',
+      sync_type: 'cb_premium_history',
+      include_delisted: true,
+      symbols: ['110081'],
+    }));
+  }, 15000);
 });

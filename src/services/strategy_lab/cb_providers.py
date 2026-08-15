@@ -363,6 +363,32 @@ class OpencliConvertibleBondProvider:
         rows = [row for row in _extract_rows(payload) if isinstance(row, dict)]
         return rows[0] if rows else None
 
+    def fetch_premium_history(self, bond_code: str) -> List[Dict[str, Any]]:
+        """Fetch one convertible-bond premium/remaining-size history."""
+        code = _strip_code(bond_code)
+        command = [self.executable, "jisilu", "cb-premium-history", code, "-f", "json"]
+        completed = self._run(command)
+        try:
+            payload = json.loads(completed.stdout)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"OpenCLI cb-premium-history returned invalid JSON for {code}") from exc
+        rows: List[Dict[str, Any]] = []
+        for record in _extract_rows(payload):
+            if not isinstance(record, dict):
+                continue
+            trade_date = _parse_date(_first_value(record, "trade_date", "date", "日期", "tradeDate"))
+            if trade_date is None:
+                continue
+            rows.append(
+                {
+                    "bond_code": code,
+                    "trade_date": trade_date,
+                    "premium_rate": _parse_float(_first_value(record, "premium_rt", "premiumRate", "转股溢价率")),
+                    "remaining_size": _parse_float(_first_value(record, "remain_size", "remainSize", "剩余规模")),
+                }
+            )
+        return rows
+
     def fetch_detail_batch(
         self,
         bond_codes: List[str],
@@ -381,7 +407,7 @@ class OpencliConvertibleBondProvider:
                 try:
                     results[str(code)] = self.fetch_detail(str(code))
                 except Exception as exc:  # noqa: BLE001 - keep going on single failure
-                    logger.warning("cb-detail %s failed: %s", code, exc)
+                    logger.warning("cb-detail %s failed: %s", code, exc, exc_info=True)
                     results[str(code)] = None
             return results
         with ThreadPoolExecutor(max_workers=pool_workers) as executor:
@@ -391,7 +417,7 @@ class OpencliConvertibleBondProvider:
                 try:
                     results[code] = future.result()
                 except Exception as exc:  # noqa: BLE001 - keep going on single failure
-                    logger.warning("cb-detail %s failed: %s", code, exc)
+                    logger.warning("cb-detail %s failed: %s", code, exc, exc_info=True)
                     results[code] = None
         return results
 

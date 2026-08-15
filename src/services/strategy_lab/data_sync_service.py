@@ -681,6 +681,108 @@ class StrategyLabDataSyncService:
             self.repository.fail_sync_run(run_id, str(exc))
             raise
 
+    def sync_cb_premium_history(
+        self,
+        *,
+        market: str = "cn",
+        include_delisted: bool = False,
+        symbols: Optional[List[str]] = None,
+        _run_id: Optional[int] = None,
+        _complete_on_success: bool = True,
+    ) -> Dict[str, Any]:
+        """Backfill missing premium/remaining-size fields on convertible-bond daily-factor rows."""
+        provider = OpencliConvertibleBondProvider()
+        codes = self.repository.list_cb_basic_codes(
+            market=market, status=None if include_delisted else "正常"
+        )
+        symbol_filter = {str(symbol).strip().lower().split(".")[-1] for symbol in symbols or [] if str(symbol).strip()}
+        if symbol_filter:
+            codes = [code for code in codes if code.lower() in symbol_filter]
+        payload = {
+            "market": market,
+            "source": provider.name,
+            "include_delisted": include_delisted,
+            "symbols": symbols or [],
+            "bonds_total": len(codes),
+        }
+        if _run_id is None:
+            run = self.repository.create_sync_run(
+                run_uid=uuid4().hex,
+                sync_type="cb_premium_history",
+                market=market,
+                payload=payload,
+            )
+            run_id = run.id
+        else:
+            run_id = _run_id
+        try:
+            result = {
+                "bonds_total": len(codes),
+                "rows_examined": 0,
+                "rows_matched": 0,
+                "cb_factor_rows_patched": 0,
+                "premium_rate_patched": 0,
+                "remaining_size_patched": 0,
+                "bonds_skipped": 0,
+                "bonds_failed": [],
+            }
+            if not codes:
+                self._raise_if_cancel_requested(run_id)
+                if _complete_on_success:
+                    self.repository.complete_sync_run(run_id, result=result)
+                return {"sync_run_id": run_id, **result}
+            for idx, code in enumerate(codes, 1):
+                self._raise_if_cancel_requested(run_id)
+                try:
+                    rows = provider.fetch_premium_history(code)
+                    self._raise_if_cancel_requested(run_id)
+                    if not rows:
+                        result["bonds_skipped"] += 1
+                        logger.info("[跳过] 可转债 %s 溢价历史为空", code)
+                    else:
+                        patch_result = self.repository.patch_cb_daily_factor_fields(rows, source=provider.name)
+                        result["rows_examined"] += patch_result["rows_examined"]
+                        result["rows_matched"] += patch_result["rows_matched"]
+                        result["cb_factor_rows_patched"] += patch_result["rows_updated"]
+                        result["premium_rate_patched"] += patch_result["premium_rate_patched"]
+                        result["remaining_size_patched"] += patch_result["remaining_size_patched"]
+                        logger.info(
+                            "[完成] 可转债 %s 溢价历史补数：匹配=%d 更新=%d 溢价率=%d 剩余规模=%d",
+                            code,
+                            patch_result["rows_matched"],
+                            patch_result["rows_updated"],
+                            patch_result["premium_rate_patched"],
+                            patch_result["remaining_size_patched"],
+                        )
+                except _DataSyncCancelled:
+                    raise
+                except Exception as exc:  # noqa: BLE001 - single symbol failure never aborts the batch
+                    result["bonds_failed"].append({"bond_code": code, "error": str(exc)})
+                    logger.warning("[失败] 可转债 %s 溢价历史补数失败: %s", code, exc)
+                if idx % 20 == 0 or idx == len(codes):
+                    self.repository.update_sync_run_progress(run_id, result={
+                        "stage": "fetching_premium_history",
+                        "processed": idx,
+                        "total": len(codes),
+                        "rows_examined": result["rows_examined"],
+                        "rows_matched": result["rows_matched"],
+                        "cb_factor_rows_patched": result["cb_factor_rows_patched"],
+                        "premium_rate_patched": result["premium_rate_patched"],
+                        "remaining_size_patched": result["remaining_size_patched"],
+                        "bonds_skipped": result["bonds_skipped"],
+                    })
+            if _complete_on_success:
+                self.repository.complete_sync_run(run_id, result=result)
+            return {"sync_run_id": run_id, **result}
+        except _DataSyncCancelled:
+            result = locals().get("result", {})
+            result["cancelled"] = True
+            self.repository.cancel_sync_run(run_id, result=result)
+            return {"sync_run_id": run_id, "status": "cancelled", **result}
+        except Exception as exc:
+            self.repository.fail_sync_run(run_id, str(exc))
+            raise
+
     def start_data_sync(
         self,
         *,
@@ -694,10 +796,11 @@ class StrategyLabDataSyncService:
         """Start a convertible-bond data sync in a background thread.
 
         ``sync_type``: ``cb_basic``（基础数据）/ ``cb_ohlc``（行情）/
-        ``all``（先基础后行情）。后台任务复用 ``_PROVIDER_SYNC_LOCK`` 互斥，
+        ``cb_premium_history``（补空字段）/ ``all``（先基础后行情）。
+        后台任务复用 ``_PROVIDER_SYNC_LOCK`` 互斥，
         进度通过 ``list_sync_runs`` 轮询。
         """
-        if sync_type not in ("cb_basic", "cb_ohlc", "all"):
+        if sync_type not in ("cb_basic", "cb_ohlc", "cb_premium_history", "all"):
             raise ValueError(f"Unsupported sync_type: {sync_type}")
         if not _PROVIDER_SYNC_LOCK.acquire(blocking=False):
             raise ValueError("已有数据源同步任务进行中，请等待完成后再试")
@@ -744,6 +847,16 @@ class StrategyLabDataSyncService:
                         _complete_on_success=(sync_type == "cb_ohlc"),
                     )
                     if result["cb_ohlc"].get("status") == "cancelled":
+                        return
+                if sync_type == "cb_premium_history":
+                    result["cb_premium_history"] = self.sync_cb_premium_history(
+                        market=market,
+                        include_delisted=include_delisted,
+                        symbols=symbols,
+                        _run_id=run.id,
+                        _complete_on_success=True,
+                    )
+                    if result["cb_premium_history"].get("status") == "cancelled":
                         return
                 if sync_type == "all":
                     self.repository.complete_sync_run(run.id, result=result)

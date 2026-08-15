@@ -121,7 +121,7 @@ class StrategyLabTradeListResponse(BaseModel):
 class StrategyLabDataSyncRequest(BaseModel):
     market: StrategyLabMarket = Field("cn", description="市场")
     source: str = Field("fixture", description="同步来源")
-    sync_type: str = Field("", description="opencli 同步类型：cb_basic / cb_ohlc / all（空则走原 source 逻辑）")
+    sync_type: str = Field("", description="opencli 同步类型：cb_basic / cb_ohlc / cb_premium_history / all（空则走原 source 逻辑）")
     include_delisted: bool = Field(False, description="是否同步已退市可转债（默认仅活跃）")
     start_date: Optional[date] = Field(None, description="行情同步起始日期（缺省时增量）")
     end_date: Optional[date] = Field(None, description="行情同步结束日期（默认今天）")
@@ -142,6 +142,9 @@ class StrategyLabDataSyncResponse(BaseModel):
     cb_event_upserted: int = 0
     ohlc_bars_upserted: int = 0
     ohlc_skipped: int = 0
+    cb_factor_rows_patched: int = 0
+    premium_rate_patched: int = 0
+    remaining_size_patched: int = 0
     failed_bonds: List[Any] = Field(default_factory=list)
 
 

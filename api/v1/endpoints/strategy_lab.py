@@ -178,8 +178,8 @@ def sync_data(
         if request.source == "fixture":
             return StrategyLabDataSyncResponse(**service.sync_fixture_convertible_bonds(market=request.market))
         if request.source in {"akshare", "jisilu", "opencli"}:
-            if request.source == "opencli" and request.sync_type in {"cb_basic", "cb_ohlc", "all"}:
-                # 重构后的可转债同步链路：基础数据（cb-list+cb-detail）/ OHLC 行情 / 两者
+            if request.source == "opencli" and request.sync_type in {"cb_basic", "cb_ohlc", "cb_premium_history", "all"}:
+                # 重构后的可转债同步链路：基础数据（cb-list+cb-detail）/ OHLC 行情 / 溢价历史补数 / 两者
                 return StrategyLabDataSyncResponse(
                     **service.start_data_sync(
                         market=request.market,

@@ -387,6 +387,84 @@ class StrategyLabDataRepository:
                 )
             ).scalar_one_or_none()
 
+    def patch_cb_daily_factor_fields(
+        self,
+        rows: List[Dict[str, Any]],
+        *,
+        source: str,
+    ) -> Dict[str, int]:
+        """Patch missing premium / remaining-size fields on existing CB daily-factor rows."""
+        counts = {
+            "rows_examined": 0,
+            "rows_matched": 0,
+            "rows_updated": 0,
+            "premium_rate_patched": 0,
+            "remaining_size_patched": 0,
+        }
+        if not rows:
+            return counts
+
+        grouped: Dict[str, Dict[date, Dict[str, Any]]] = {}
+        for item in rows:
+            bond_code = str(item.get("bond_code") or "").strip()
+            trade_date = item.get("trade_date")
+            if not bond_code or not isinstance(trade_date, date):
+                continue
+            grouped.setdefault(bond_code, {})[trade_date] = {
+                "premium_rate": self._normalize_patch_float(item.get("premium_rate")),
+                "remaining_size": self._normalize_patch_float(item.get("remaining_size")),
+            }
+            counts["rows_examined"] += 1
+
+        if not grouped:
+            return counts
+
+        now = datetime.now()
+        with self.db.get_session() as session:
+            for bond_code, day_rows in grouped.items():
+                existing_rows = session.execute(
+                    select(StrategyLabCbDailyFactor).where(
+                        and_(
+                            StrategyLabCbDailyFactor.bond_code == bond_code,
+                            StrategyLabCbDailyFactor.trade_date.in_(list(day_rows.keys())),
+                        )
+                    )
+                ).scalars().all()
+                existing_by_date = {row.trade_date: row for row in existing_rows}
+                for trade_date, patch in day_rows.items():
+                    row = existing_by_date.get(trade_date)
+                    if row is None:
+                        continue
+                    counts["rows_matched"] += 1
+                    updated = False
+                    premium_rate = patch["premium_rate"]
+                    if row.premium_rate is None and premium_rate is not None:
+                        row.premium_rate = premium_rate
+                        counts["premium_rate_patched"] += 1
+                        updated = True
+                    remaining_size = patch["remaining_size"]
+                    if row.remaining_size is None and remaining_size is not None:
+                        row.remaining_size = remaining_size
+                        counts["remaining_size_patched"] += 1
+                        updated = True
+                    if updated:
+                        row.updated_at = now
+                        row.source = row.source or source
+                        counts["rows_updated"] += 1
+                session.commit()
+        return counts
+
+    @staticmethod
+    def _normalize_patch_float(value: Any) -> Optional[float]:
+        if value in (None, ""):
+            return None
+        if isinstance(value, float) and value != value:
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
     def get_cb_instrument_detail(self, *, bond_code: str, market: str) -> Dict[str, Any] | None:
         """Return convertible-bond basic + terms detail, or None when missing."""
         with self.db.get_session() as session:

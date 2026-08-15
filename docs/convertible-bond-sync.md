@@ -1,6 +1,6 @@
 # 可转债数据同步
 
-本文档说明本项目可转债数据同步的两个能力、入口用法，以及 opencli / 行情接口源字段到数据库表字段的完整映射。
+本文档说明本项目可转债数据同步的三个能力、入口用法，以及 opencli / 行情接口源字段到数据库表字段的完整映射。
 
 ## 能力总览
 
@@ -8,6 +8,7 @@
 |---|---|---|---|
 | 基础数据同步 | 本机 opencli（`cb-list` + `cb-detail`） | `strategy_lab_cb_basic` / `strategy_lab_cb_terms` / `strategy_lab_cb_events` | 默认先拉列表，再对每只转债逐个填充详情；传入 `symbols` 时直接按目标代码拉详情，跳过列表抓取 |
 | 行情同步（OHLC） | 东财优先，腾讯兜底 | `stock_daily`（`instrument_type='convertible_bond'`）+ `strategy_lab_cb_daily_factors.close` 回填 | 支持选择起始日期，非每次全量 |
+| 补数同步（溢价率/剩余规模） | 本机 opencli（`cb-premium-history`） | `stock_daily`（仅补 `premium_rate` / `remaining_size` 空值） | 按“可转债代码 + 日期”匹配已有日线记录，不新建行、不覆盖已有非空值 |
 
 两个能力统一支持：
 
@@ -47,7 +48,7 @@ python scripts/sync_cb_data.py --basic --bond 113709       # 单只
 ```json
 {
   "source": "opencli",
-  "sync_type": "cb_basic",          // cb_basic / cb_ohlc / all
+  "sync_type": "cb_basic",          // cb_basic / cb_ohlc / cb_premium_history / all
   "include_delisted": false,
   "start_date": "2026-01-01",       // 行情同步有效
   "end_date": "2026-12-31",
@@ -56,6 +57,7 @@ python scripts/sync_cb_data.py --basic --bond 113709       # 单只
 ```
 
 `symbols` 在 `cb_basic` 场景下会直接触发单只/少量标的详情拉取，不再先执行 `cb-list`。
+`cb_premium_history` 会按可转债代码 + 日期补写已有 `strategy_lab_cb_daily_factors` 行中的 `premium_rate` / `remaining_size` 空值；已有值和不存在的行都会跳过。
 
 返回 `running` 后通过 `GET /api/v1/strategy-lab/data-sync/runs` 轮询进度。
 

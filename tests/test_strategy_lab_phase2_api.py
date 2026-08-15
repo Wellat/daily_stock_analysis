@@ -8,7 +8,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from fastapi.testclient import TestClient
 
@@ -135,6 +135,42 @@ class StrategyLabPhase2ApiTestCase(unittest.TestCase):
         self.assertEqual(sync_resp.status_code, 200, sync_resp.text)
         self.assertEqual(sync_resp.json()["cb_basic_upserted"], 1)
         self.assertEqual(sync_resp.json()["cb_factor_upserted"], 1)
+
+    def test_opencli_premium_history_sync_contract(self) -> None:
+        with patch("api.v1.endpoints.strategy_lab.StrategyLabDataSyncService.start_data_sync") as mocked_sync:
+            mocked_sync.return_value = {
+                "sync_run_id": 7,
+                "status": "running",
+                "sync_type": "cb_premium_history",
+                "cb_factor_rows_patched": 3,
+                "premium_rate_patched": 2,
+                "remaining_size_patched": 1,
+                "failed_bonds": [],
+            }
+            sync_resp = self.client.post(
+                "/api/v1/strategy-lab/data-sync",
+                json={
+                    "market": "cn",
+                    "source": "opencli",
+                    "sync_type": "cb_premium_history",
+                    "include_delisted": True,
+                    "symbols": ["110081"],
+                },
+            )
+
+        self.assertEqual(sync_resp.status_code, 200, sync_resp.text)
+        self.assertEqual(sync_resp.json()["sync_type"], "cb_premium_history")
+        self.assertEqual(sync_resp.json()["cb_factor_rows_patched"], 3)
+        self.assertEqual(sync_resp.json()["premium_rate_patched"], 2)
+        self.assertEqual(sync_resp.json()["remaining_size_patched"], 1)
+        mocked_sync.assert_called_once_with(
+            market="cn",
+            sync_type="cb_premium_history",
+            include_delisted=True,
+            start_date=None,
+            end_date=None,
+            symbols=["110081"],
+        )
 
     def test_cancel_data_sync_run_contract(self) -> None:
         sync_resp = self.client.post("/api/v1/strategy-lab/data-sync", json={"market": "cn", "source": "fixture"})
