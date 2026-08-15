@@ -55,6 +55,9 @@ class StrategyLabDataRepository:
             row = session.get(StrategyLabSyncRun, run_id)
             if row is None:
                 raise ValueError(f"Strategy Lab sync run not found: {run_id}")
+            if row.status == "cancelled":
+                session.expunge(row)
+                return row
             row.status = "completed"
             row.result_json = json.dumps(result, ensure_ascii=False, sort_keys=True)
             row.completed_at = datetime.now()
@@ -73,11 +76,46 @@ class StrategyLabDataRepository:
             row.completed_at = datetime.now()
             session.commit()
 
+    def request_sync_run_cancel(self, run_id: int) -> Optional[Dict[str, Any]]:
+        """Request cooperative cancellation for a sync run.
+
+        Terminal runs are returned unchanged so the cancel endpoint is idempotent.
+        """
+        with self.db.get_session() as session:
+            row = session.get(StrategyLabSyncRun, run_id)
+            if row is None:
+                return None
+            if row.status == "running":
+                row.cancel_requested = True
+                session.commit()
+                session.refresh(row)
+            return self._sync_run_payload(row)
+
+    def is_sync_run_cancel_requested(self, run_id: int) -> bool:
+        with self.db.get_session() as session:
+            row = session.get(StrategyLabSyncRun, run_id)
+            return bool(row and row.status == "running" and row.cancel_requested)
+
+    def cancel_sync_run(self, run_id: int, *, result: Dict[str, Any]) -> StrategyLabSyncRun:
+        with self.db.get_session() as session:
+            row = session.get(StrategyLabSyncRun, run_id)
+            if row is None:
+                raise ValueError(f"Strategy Lab sync run not found: {run_id}")
+            row.status = "cancelled"
+            row.result_json = json.dumps(result, ensure_ascii=False, sort_keys=True)
+            row.completed_at = datetime.now()
+            session.commit()
+            session.refresh(row)
+            session.expunge(row)
+            return row
+
     def update_sync_run_progress(self, run_id: int, *, result: Dict[str, Any]) -> None:
         """Write an intermediate result snapshot for a running sync run."""
         with self.db.get_session() as session:
             row = session.get(StrategyLabSyncRun, run_id)
             if row is None:
+                return
+            if row.status != "running":
                 return
             row.result_json = json.dumps(result, ensure_ascii=False, sort_keys=True)
             session.commit()
@@ -92,8 +130,12 @@ class StrategyLabDataRepository:
                     row = StrategyLabCbBasic(bond_code=bond_code)
                     session.add(row)
                 row.bond_name = str(item.get("bond_name") or bond_code)
-                row.stock_code = str(item.get("stock_code") or "")
-                row.stock_name = item.get("stock_name")
+                stock_code = str(item.get("stock_code") or "").strip()
+                if stock_code or row.stock_code is None:
+                    row.stock_code = stock_code
+                stock_name = item.get("stock_name")
+                if stock_name not in (None, "") or row.stock_name is None:
+                    row.stock_name = stock_name
                 row.market = str(item.get("market") or "cn")
                 row.list_date = item.get("list_date")
                 row.maturity_date = item.get("maturity_date")
@@ -171,9 +213,26 @@ class StrategyLabDataRepository:
         event_type 归一化为小写，并用 ``func.lower`` 比对已有记录，避免同一
         事件因大小写变体被重复录入；命中已有记录时更新 event_detail。
         """
+        # 数据源可能返回重复的 (bond_code, event_date, event_type)（实测 jisilu
+        # 的 cb_event_list 会出现完全相同的重复事件）。本 session 使用
+        # autoflush=False，未 flush 的新行无法被后续 select 命中，若不去重会在
+        # commit 时触发 UNIQUE 约束冲突，因此先在内存按去重键过滤。
+        seen: set[tuple] = set()
+        unique_rows: List[Dict[str, Any]] = []
+        for item in rows:
+            key = (
+                str(item["bond_code"]),
+                item["event_date"],
+                str(item["event_type"]).strip().lower(),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            unique_rows.append(item)
+
         count = 0
         with self.db.get_session() as session:
-            for item in rows:
+            for item in unique_rows:
                 bond_code = str(item["bond_code"])
                 event_date = item["event_date"]
                 event_type = str(item["event_type"]).strip().lower()
@@ -563,6 +622,7 @@ class StrategyLabDataRepository:
             "sync_type": row.sync_type,
             "market": row.market,
             "status": row.status,
+            "cancel_requested": bool(row.cancel_requested),
             "result": json.loads(row.result_json) if row.result_json else {},
             "error_message": row.error_message,
             "created_at": row.created_at.isoformat() if row.created_at else None,

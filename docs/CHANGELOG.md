@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] 可转债基础数据同步入库改为逐只容错：单只转债的入库失败（basic/terms/events）仅记录错误日志并计入失败清单后跳过，不再因单只异常拖垮整个同步任务
+- [修复] 可转债事件落库在同批次出现重复 (bond_code, event_date, event_type) 时触发 UNIQUE 约束冲突：数据源 cb_event_list 可能返回完全相同的重复事件，且 session 使用 autoflush=False 导致未 flush 的新行无法被后续 select 命中；`upsert_cb_events` 现先按去重键在内存去重再入库
+- [修复] 可转债数据同步「包含已退市」语义修正：基础数据同步与 OHLC 行情同步在勾选「包含已退市」时改为合并活跃与已退市标的（去重），而非仅处理已退市列表，避免活跃标的被漏掉
+- [改进] OpenCLI 可转债详情拉取默认并发降为 1（串行），避免并发启动多个浏览器会话互相串扰或失败导致单只详情拉取异常
+- [改进] OpenCLI 可转债详情同步失败日志补充命令、退出码、stderr/stdout 摘要，便于定位单只 `cb-detail` 拉取失败原因
+- [新功能] 策略实验室数据同步新增按 run 取消能力：`POST /api/v1/strategy-lab/data-sync/runs/{run_id}/cancel` 可请求后台任务在安全检查点停止，已入库数据保留，前端同步记录为运行中任务提供取消按钮
+- [改进] 行情数据页数据同步记录新增 10 秒静默轮询刷新，减少后台同步状态依赖手动刷新
 - [改进] 可转债基础同步在传入 `symbols` 时改为直接逐只拉 `cb-detail` 入库，跳过 `cb-list` 全量列表抓取；同时补正 `cb-detail` 中正股代码 / 名称字段映射，避免调试单只同步时正股信息落空
 - [改进] 可转债事件落库去重键改为「债券代码 + 事件日期 + 小写 event_type」：写入前统一将 event_type 归一化为小写，并按小写比对已有记录，避免同一事件因大小写变体被重复录入；命中已有记录时更新详情
 - [修复] 修复可转债基础数据同步在同步已退市标的时，因 `terms` 元数据混入 `date` 对象导致 `json.dumps` 序列化失败、整个同步任务中断的问题；`last_trade_date` 落库改为 isoformat 字符串，`terms_json` 序列化增加 `default=str` 兜底

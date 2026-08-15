@@ -219,6 +219,114 @@ def test_sync_cb_basic_with_symbols_skips_list_and_maps_underlying_stock(
         assert json.loads(row.terms_json)["industry"] == "电子-半导体-分立器件"
 
 
+def test_sync_cb_basic_stops_at_cancel_checkpoint(
+    db_manager: DatabaseManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import src.services.strategy_lab.data_sync_service as dss
+
+    service = StrategyLabDataSyncService(db_manager)
+    requested_batches: list[list[str]] = []
+
+    class _CancelAfterFirstBatchProvider:
+        name = "opencli"
+
+        def __init__(self, **kwargs):
+            pass
+
+        def fetch_list(self, *, include_delisted=False):
+            raise AssertionError("symbol-scoped sync must not call cb-list")
+
+        def fetch_detail_batch(self, bond_codes, workers=3):
+            requested_batches.append(list(bond_codes))
+            run_id = service.list_sync_runs(page=1, limit=1)["items"][0]["id"]
+            service.request_data_sync_cancel(run_id)
+            return {
+                code: {
+                    "bond_code": code,
+                    "bond_name": f"{code}转债",
+                    "stockCode": "600000",
+                    "stockName": "测试正股",
+                    "delisted": False,
+                    "cb_event_list": [],
+                }
+                for code in bond_codes
+            }
+
+        @staticmethod
+        def normalize_detail(record):
+            return cb_providers._cb_detail_normalize(record)
+
+        @staticmethod
+        def normalize_list_row(record):
+            return cb_providers._cb_list_basic_row(record)
+
+    monkeypatch.setattr(dss, "OpencliConvertibleBondProvider", _CancelAfterFirstBatchProvider)
+    symbols = [f"11{i:04d}" for i in range(21)]
+
+    result = service.sync_cb_basic(market="cn", symbols=symbols)
+
+    assert result["status"] == "cancelled"
+    assert len(requested_batches) == 1
+    runs = service.list_sync_runs(page=1, limit=5)
+    assert runs["items"][0]["status"] == "cancelled"
+    assert runs["items"][0]["cancel_requested"] is True
+    with db_manager.get_session() as session:
+        assert session.execute(select(func.count(StrategyLabCbBasic.bond_code))).scalar() == 0
+
+
+def test_request_data_sync_cancel_is_idempotent_for_terminal_run(db_manager: DatabaseManager) -> None:
+    service = StrategyLabDataSyncService(db_manager)
+    run = service.repository.create_sync_run(
+        run_uid="terminal-run",
+        sync_type="cb_basic",
+        market="cn",
+        payload={"market": "cn"},
+    )
+    service.repository.complete_sync_run(run.id, result={"done": True})
+
+    payload = service.request_data_sync_cancel(run.id)
+
+    assert payload is not None
+    assert payload["status"] == "completed"
+    assert payload["cancel_requested"] is False
+
+
+def test_upsert_cb_basic_preserves_stock_fields_when_update_omits_them(
+    db_manager: DatabaseManager,
+) -> None:
+    service = StrategyLabDataSyncService(db_manager)
+    service.repository.upsert_cb_basic(
+        [
+            {
+                "bond_code": "110081",
+                "bond_name": "闻泰转债",
+                "stock_code": "600745",
+                "stock_name": "闻泰科技",
+                "market": "cn",
+            }
+        ],
+        source="opencli",
+    )
+    service.repository.upsert_cb_basic(
+        [
+            {
+                "bond_code": "110081",
+                "bond_name": "闻泰转债",
+                "stock_code": "",
+                "stock_name": None,
+                "market": "cn",
+                "terms": {"industry": "电子-半导体-分立器件"},
+            }
+        ],
+        source="opencli",
+    )
+
+    with db_manager.get_session() as session:
+        row = session.get(StrategyLabCbBasic, "110081")
+        assert row.stock_code == "600745"
+        assert row.stock_name == "闻泰科技"
+
+
 def test_akshare_provider_normalizes_master_terms_daily_and_events(monkeypatch: pytest.MonkeyPatch) -> None:
     fake_akshare = SimpleNamespace(
         bond_zh_cov=lambda: [
@@ -365,6 +473,30 @@ def test_opencli_provider_delisted_list_flag(monkeypatch: pytest.MonkeyPatch) ->
     assert basic["terms"]["last_trade_date"] == "2026-01-15"
 
 
+def test_opencli_provider_detail_failure_includes_subprocess_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _run(command, **kwargs):
+        raise cb_providers.subprocess.CalledProcessError(
+            returncode=1,
+            cmd=command,
+            output='{"error":"adapter failed"}',
+            stderr="bond not found: 123059",
+        )
+
+    monkeypatch.setattr(cb_providers.subprocess, "run", _run)
+    provider = OpencliConvertibleBondProvider(timeout=5)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        provider.fetch_detail("123059")
+
+    message = str(exc_info.value)
+    assert "cb-detail" in message
+    assert "returncode=1" in message
+    assert "bond not found: 123059" in message
+    assert "adapter failed" in message
+
+
 def test_upsert_cb_basic_serializes_non_json_terms(db_manager: DatabaseManager) -> None:
     """terms 元数据里混入 date 等非 JSON 类型时，落库不应抛异常（default=str 兜底）。"""
     service = StrategyLabDataSyncService(db_manager)
@@ -397,7 +529,8 @@ def test_sync_cb_basic_with_delisted_last_trade_date(
         name = "opencli"
 
         def fetch_list(self, *, include_delisted=False):
-            assert include_delisted is True
+            if not include_delisted:
+                return []  # 活跃列表为空
             return [
                 {
                     "bondId": "110001",
@@ -431,6 +564,70 @@ def test_sync_cb_basic_with_delisted_last_trade_date(
     assert runs["items"][0]["status"] == "completed"
 
 
+def test_sync_cb_basic_single_bond_persist_failure_does_not_abort(
+    db_manager: DatabaseManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """单只入库失败应记录日志并跳过，不应拖垮整个同步任务。"""
+    import src.services.strategy_lab.data_sync_service as dss
+
+    class _Provider:
+        name = "opencli"
+
+        def __init__(self, **kwargs):
+            pass
+
+        def fetch_list(self, *, include_delisted=False):
+            raise AssertionError("symbol-scoped sync must not call cb-list")
+
+        def fetch_detail_batch(self, bond_codes, workers=1):
+            return {
+                code: {
+                    "bond_code": code,
+                    "bond_name": f"{code}转债",
+                    "stockCode": "600000",
+                    "stockName": "测试正股",
+                    "delisted": False,
+                    "cb_event_list": [
+                        {"event_time": "2025-01-01", "event_type": "bonus", "detail": "测试事件"}
+                    ],
+                }
+                for code in bond_codes
+            }
+
+        @staticmethod
+        def normalize_detail(record):
+            return cb_providers._cb_detail_normalize(record)
+
+        @staticmethod
+        def normalize_list_row(record):
+            return cb_providers._cb_list_basic_row(record)
+
+    monkeypatch.setattr(dss, "OpencliConvertibleBondProvider", _Provider)
+    service = StrategyLabDataSyncService(db_manager)
+
+    original_upsert_events = service.repository.upsert_cb_events
+
+    def _flaky_upsert_events(rows, *, source):
+        if any(r["bond_code"] == "110001" for r in rows):
+            raise RuntimeError("simulated db failure for 110001")
+        return original_upsert_events(rows, source=source)
+
+    monkeypatch.setattr(service.repository, "upsert_cb_events", _flaky_upsert_events)
+
+    result = service.sync_cb_basic(market="cn", symbols=["110001", "110002"])
+
+    assert result["bonds_total"] == 2
+    assert "110001" in result["bonds_failed"]
+    assert "110002" not in result["bonds_failed"]
+    assert result["cb_basic_upserted"] == 2
+    assert result["cb_terms_upserted"] == 2
+    assert result["cb_event_upserted"] == 1  # 只有 110002 的事件成功入库
+    with db_manager.get_session() as session:
+        rows = session.execute(select(StrategyLabCbEvent)).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].bond_code == "110002"
+
+
 def test_upsert_cb_events_dedupes_by_lowercase_event_type(db_manager: DatabaseManager) -> None:
     """同一 (bond_code, event_date) 的 event_type 大小写变体应去重，只保留一条并更新 detail。"""
     service = StrategyLabDataSyncService(db_manager)
@@ -461,6 +658,32 @@ def test_upsert_cb_events_dedupes_by_lowercase_event_type(db_manager: DatabaseMa
         assert len(rows) == 1
         assert rows[0].event_type == "down_revise"
         assert rows[0].event_detail == "v2"
+
+
+def test_upsert_cb_events_dedupes_identical_rows_in_same_batch(db_manager: DatabaseManager) -> None:
+    """同批次内完全相同的 (bond_code, event_date, event_type) 应去重，避免 UNIQUE 冲突。"""
+    service = StrategyLabDataSyncService(db_manager)
+    service.repository.upsert_cb_events(
+        [
+            {
+                "bond_code": "123233",
+                "event_date": date(2025, 4, 30),
+                "event_type": "bonus",
+                "event_detail": "20.060 | 其它 | 成功 | 2024年每10股派0.5元",
+            },
+            {
+                "bond_code": "123233",
+                "event_date": date(2025, 4, 30),
+                "event_type": "bonus",
+                "event_detail": "20.060 | 其它 | 成功 | 2024年每10股派0.5元",
+            },
+        ],
+        source="opencli",
+    )
+    with db_manager.get_session() as session:
+        rows = session.execute(select(StrategyLabCbEvent)).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].event_type == "bonus"
 
 
 def test_upsert_cb_events_repairs_preexisting_case_variant_duplicates(

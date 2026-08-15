@@ -79,7 +79,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--bond", default="", help="只处理单只转债代码")
     parser.add_argument("--symbols", default="", help="逗号分隔的转债代码筛选")
     parser.add_argument("--market", default="cn", help="市场（默认 cn）")
-    parser.add_argument("--workers", type=int, default=3, help="opencli 详情并发数（默认 3）")
+    parser.add_argument("--workers", type=int, default=1, help="opencli 详情并发数（默认 1）")
     parser.add_argument("--limit", type=int, default=0, help="只处理前 N 只（调试用）")
     parser.add_argument("--dry-run", action="store_true", help="只打印映射与请求计划，不落库")
     return parser

@@ -34,6 +34,7 @@ from api.v1.schemas.strategy_lab import (
     StrategyLabSignalItem,
     StrategyLabSignalListResponse,
     StrategyLabSyncRunListResponse,
+    StrategyLabSyncRunItem,
     StrategyLabTradeListResponse,
 )
 from src.core.strategy_lab.models import StrategyLabRunConfig
@@ -233,6 +234,31 @@ def list_sync_runs(
     except Exception as exc:
         logger.error("List Strategy Lab sync runs failed: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail={"error": "internal_error", "message": "List sync runs failed"})
+
+
+@router.post(
+    "/data-sync/runs/{run_id}/cancel",
+    response_model=StrategyLabSyncRunItem,
+    responses={404: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
+    summary="Cancel a Strategy Lab data-sync run",
+)
+def cancel_sync_run(
+    run_id: int,
+    db_manager: DatabaseManager = Depends(get_database_manager),
+) -> StrategyLabSyncRunItem:
+    try:
+        payload = StrategyLabDataSyncService(db_manager).request_data_sync_cancel(run_id)
+        if payload is None:
+            raise HTTPException(
+                status_code=404,
+                detail={"error": "not_found", "message": "Strategy Lab sync run not found"},
+            )
+        return StrategyLabSyncRunItem(**payload)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Cancel Strategy Lab sync run failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail={"error": "internal_error", "message": "Cancel sync run failed"})
 
 
 @router.get(

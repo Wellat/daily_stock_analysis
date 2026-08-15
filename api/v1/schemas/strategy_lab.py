@@ -151,6 +151,7 @@ class StrategyLabSyncRunItem(BaseModel):
     sync_type: str
     market: str
     status: str
+    cancel_requested: bool = False
     result: Dict[str, Any] = Field(default_factory=dict)
     error_message: Optional[str] = None
     created_at: Optional[str] = None

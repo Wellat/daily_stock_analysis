@@ -897,6 +897,7 @@ class StrategyLabSyncRun(Base):
     sync_type = Column(String(32), nullable=False, index=True)
     market = Column(String(16), nullable=False, default='cn', index=True)
     status = Column(String(16), nullable=False, default='running', index=True)
+    cancel_requested = Column(Boolean, nullable=False, default=False, index=True)
     payload_json = Column(Text)
     result_json = Column(Text)
     error_message = Column(Text)
@@ -1698,6 +1699,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         migrations = [
             (StockDaily.__tablename__, "instrument_type", "VARCHAR(16) DEFAULT 'stock'"),
             (StrategyLabCbBasic.__tablename__, "status", "VARCHAR(32)"),
+            (StrategyLabSyncRun.__tablename__, "cancel_requested", "BOOLEAN NOT NULL DEFAULT 0"),
         ]
         for table_name, column_name, ddl in migrations:
             if not inspector.has_table(table_name):
@@ -1722,6 +1724,10 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             connection.exec_driver_sql(
                 "CREATE INDEX IF NOT EXISTS ix_strategy_lab_cb_basic_status "
                 "ON strategy_lab_cb_basic (status)"
+            )
+            connection.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_strategy_lab_sync_runs_cancel_requested "
+                "ON strategy_lab_sync_runs (cancel_requested)"
             )
 
     def _ensure_decision_signal_profile_schema(self) -> None:

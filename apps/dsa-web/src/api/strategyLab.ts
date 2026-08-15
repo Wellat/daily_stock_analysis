@@ -91,12 +91,15 @@ export type StrategyLabSignalItem = {
 
 export type StrategyLabSyncRunItem = {
   id: number;
+  run_uid?: string;
   sync_type: string;
   market: string;
   status: string;
-  result: Record<string, number>;
+  cancel_requested?: boolean;
+  result: Record<string, unknown>;
   error_message?: string | null;
   created_at?: string | null;
+  completed_at?: string | null;
 };
 
 export type StrategyLabEventStudyResponse = {
@@ -241,6 +244,10 @@ export const strategyLabApi = {
   },
   async listSyncRuns(params: { page?: number; limit?: number } = {}) {
     const { data } = await apiClient.get<{ items: StrategyLabSyncRunItem[]; total: number }>('/api/v1/strategy-lab/data-sync/runs', { params });
+    return data;
+  },
+  async cancelSyncRun(runId: number) {
+    const { data } = await apiClient.post<StrategyLabSyncRunItem>(`/api/v1/strategy-lab/data-sync/runs/${runId}/cancel`);
     return data;
   },
   async syncData(payload: {

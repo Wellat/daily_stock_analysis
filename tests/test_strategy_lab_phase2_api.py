@@ -136,6 +136,19 @@ class StrategyLabPhase2ApiTestCase(unittest.TestCase):
         self.assertEqual(sync_resp.json()["cb_basic_upserted"], 1)
         self.assertEqual(sync_resp.json()["cb_factor_upserted"], 1)
 
+    def test_cancel_data_sync_run_contract(self) -> None:
+        sync_resp = self.client.post("/api/v1/strategy-lab/data-sync", json={"market": "cn", "source": "fixture"})
+        self.assertEqual(sync_resp.status_code, 200, sync_resp.text)
+        run_id = sync_resp.json()["sync_run_id"]
+
+        cancel_resp = self.client.post(f"/api/v1/strategy-lab/data-sync/runs/{run_id}/cancel")
+
+        self.assertEqual(cancel_resp.status_code, 200, cancel_resp.text)
+        self.assertEqual(cancel_resp.json()["status"], "completed")
+
+        missing_resp = self.client.post("/api/v1/strategy-lab/data-sync/runs/999999/cancel")
+        self.assertEqual(missing_resp.status_code, 404, missing_resp.text)
+
     def test_event_study_contract(self) -> None:
         self.client.post(
             "/api/v1/strategy-lab/data-sync",

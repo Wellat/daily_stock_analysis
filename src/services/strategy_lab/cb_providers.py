@@ -295,7 +295,7 @@ class OpencliConvertibleBondProvider:
 
     name = "opencli"
 
-    def __init__(self, *, timeout: float = 120.0, executable: Optional[str] = None, workers: int = 3):
+    def __init__(self, *, timeout: float = 120.0, executable: Optional[str] = None, workers: int = 1):
         self.timeout = timeout
         self.executable = executable or os.getenv("OPENCLI_BIN", "opencli")
         self.workers = max(1, workers)
@@ -371,8 +371,8 @@ class OpencliConvertibleBondProvider:
         """Concurrently fetch details; returns ``{bond_code: detail_or_None}``.
 
         A single detail failure never aborts the batch (the code maps to None).
-        opencli drives a browser per invocation, so keep the default worker
-        count low (3) to avoid exhausting the local browser pool.
+        opencli drives a browser per invocation, so the default worker count is
+        serial (1) to avoid concurrent browser sessions stepping on each other.
         """
         pool_workers = max(1, workers or self.workers)
         results: Dict[str, Optional[Dict[str, Any]]] = {}
@@ -396,13 +396,32 @@ class OpencliConvertibleBondProvider:
         return results
 
     def _run(self, command: List[str]) -> subprocess.CompletedProcess:
-        return subprocess.run(
-            command,
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=self.timeout,
-        )
+        try:
+            return subprocess.run(
+                command,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=self.timeout,
+            )
+        except subprocess.CalledProcessError as exc:
+            raise RuntimeError(
+                _format_opencli_failure(
+                    command,
+                    returncode=exc.returncode,
+                    stdout=exc.stdout,
+                    stderr=exc.stderr,
+                )
+            ) from exc
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(
+                _format_opencli_failure(
+                    command,
+                    returncode="timeout",
+                    stdout=exc.stdout,
+                    stderr=exc.stderr,
+                )
+            ) from exc
 
     def normalize_list_row(self, record: Dict[str, Any]) -> Dict[str, Any] | None:
         """Public wrapper around ``_cb_list_basic_row`` for the sync service."""
@@ -554,6 +573,37 @@ def _parse_float(value: Any) -> float | None:
         return float(text)
     except ValueError:
         return None
+
+
+def _format_opencli_failure(
+    command: List[str],
+    *,
+    returncode: int | str,
+    stdout: Any = None,
+    stderr: Any = None,
+) -> str:
+    """Render a compact diagnostic message for failed OpenCLI subprocess calls."""
+
+    def _clip(value: Any, *, limit: int = 1200) -> str:
+        if value in (None, ""):
+            return ""
+        text = value.decode("utf-8", errors="replace") if isinstance(value, bytes) else str(value)
+        text = text.strip()
+        if len(text) <= limit:
+            return text
+        return f"{text[:limit]}..."
+
+    stdout_text = _clip(stdout)
+    stderr_text = _clip(stderr)
+    parts = [
+        f"OpenCLI command failed: {command}",
+        f"returncode={returncode}",
+    ]
+    if stderr_text:
+        parts.append(f"stderr={stderr_text}")
+    if stdout_text:
+        parts.append(f"stdout={stdout_text}")
+    return " | ".join(parts)
 
 
 def _akshare_cov_symbol(bond_code: str) -> str:

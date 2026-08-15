@@ -8,9 +8,10 @@ import { strategyLabApi, type StrategyLabSyncRunItem } from '../../api/strategyL
 import { SL_INPUT_CLASS, SL_PANEL_CLASS, parseSymbols } from '../strategy-lab/utils';
 
 const TEXT_LIMIT = 200;
+const SYNC_RUN_POLL_INTERVAL_MS = 10_000;
 
 const statusTag = (status: string) => {
-  const map: Record<string, string> = { completed: 'success', running: 'processing', failed: 'error' };
+  const map: Record<string, string> = { completed: 'success', running: 'processing', failed: 'error', cancelled: 'default' };
   return <Tag color={map[status] ?? 'default'}>{status}</Tag>;
 };
 
@@ -48,8 +49,8 @@ export const DataSyncPanel: React.FC = () => {
   const [endDate, setEndDate] = useState('');
   const [syncSymbols, setSyncSymbols] = useState('');
 
-  const refresh = useCallback(async (targetPage: number, targetSize: number) => {
-    setLoading(true);
+  const refresh = useCallback(async (targetPage: number, targetSize: number, showLoading = true) => {
+    if (showLoading) setLoading(true);
     try {
       const resp = await strategyLabApi.listSyncRuns({ page: targetPage, limit: targetSize });
       setSyncRuns(resp.items);
@@ -58,18 +59,25 @@ export const DataSyncPanel: React.FC = () => {
     } catch (exc) {
       setError(getParsedApiError(exc));
     } finally {
-      setLoading(false);
+      if (showLoading) setLoading(false);
     }
   }, []);
 
   useEffect(() => { void refresh(page, pageSize); }, [page, pageSize, refresh]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      void refresh(page, pageSize, false);
+    }, SYNC_RUN_POLL_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [page, pageSize, refresh]);
 
   const waitSyncRun = async (runId: number): Promise<StrategyLabSyncRunItem | null> => {
     for (let attempt = 0; attempt < 120; attempt += 1) {
       const resp = await strategyLabApi.listSyncRuns({ limit: 50 });
       const run = resp.items.find((item) => item.id === runId);
       if (run) setSyncRuns(resp.items); // 实时刷新，展示后台同步进度
-      if (!run || run.status === 'completed' || run.status === 'failed') return run ?? null;
+      if (!run || run.status === 'completed' || run.status === 'failed' || run.status === 'cancelled') return run ?? null;
       await new Promise((resolve) => setTimeout(resolve, 3000));
     }
     return null;
@@ -100,6 +108,24 @@ export const DataSyncPanel: React.FC = () => {
       value ? <WrappedCell text={value} className="text-danger" /> : '--'
     ) },
     { title: '时间', dataIndex: 'created_at', width: 160, render: (value: string | null) => value ? value.replace('T', ' ').slice(0, 19) : '--' },
+    { title: '操作', key: 'actions', width: 90, render: (_, run) => (
+      run.status === 'running' ? (
+        <Button
+          aria-label="取消同步"
+          size="small"
+          danger
+          loading={actionLoading === `cancel-${run.id}`}
+          onClick={() => {
+            void runAction(`cancel-${run.id}`, async () => {
+              await strategyLabApi.cancelSyncRun(run.id);
+              return {};
+            });
+          }}
+        >
+          取消
+        </Button>
+      ) : '--'
+    ) },
   ];
 
   return (
@@ -143,10 +169,6 @@ export const DataSyncPanel: React.FC = () => {
             可转债代码
             <input aria-label="同步可转债代码" className={`${SL_INPUT_CLASS} mt-1`} value={syncSymbols} onChange={(event) => setSyncSymbols(event.target.value)} placeholder="可选，逗号分隔" />
           </label>
-          <label className="text-sm flex items-center gap-2">
-            <input aria-label="包含已退市" type="checkbox" className="accent-primary" checked={includeDelisted} onChange={(event) => setIncludeDelisted(event.target.checked)} />
-            包含已退市可转债
-          </label>
           {syncKind === 'cb_ohlc' ? (
             <>
               <label className="text-sm">
@@ -159,6 +181,10 @@ export const DataSyncPanel: React.FC = () => {
               </label>
             </>
           ) : null}
+          <label className="text-sm flex items-center gap-2">
+            <input aria-label="包含已退市" type="checkbox" className="accent-primary" checked={includeDelisted} onChange={(event) => setIncludeDelisted(event.target.checked)} />
+            包含已退市可转债
+          </label>
         </div>
         <Button type="primary" htmlType="submit" className="mt-4" loading={actionLoading === 'sync'}>开始同步</Button>
         {error ? <ApiErrorAlert error={error} className="mt-4" /> : null}

@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { DataSyncPanel } from '../../components/market-data/DataSyncPanel';
 import MarketDataPage from '../MarketDataPage';
 
 const cbApi = vi.hoisted(() => ({
@@ -8,6 +9,7 @@ const cbApi = vi.hoisted(() => ({
   listInstrumentBars: vi.fn(),
   listInstrumentEvents: vi.fn(),
   listSyncRuns: vi.fn(),
+  cancelSyncRun: vi.fn(),
   syncData: vi.fn(),
 }));
 
@@ -26,6 +28,7 @@ describe('MarketDataPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     cbApi.listSyncRuns.mockResolvedValue({ items: [], total: 0 });
+    cbApi.cancelSyncRun.mockResolvedValue({ id: 1, sync_type: 'cb_basic', market: 'cn', status: 'running', result: {} });
     cbApi.syncData.mockResolvedValue({ sync_run_id: 1 });
     cbApi.listInstruments.mockResolvedValue({
       market: 'cn',
@@ -148,6 +151,20 @@ describe('MarketDataPage', () => {
     fireEvent.click(screen.getByRole('tab', { name: '数据同步' }));
     fireEvent.click(screen.getByRole('button', { name: '开始同步' }));
     await waitFor(() => expect(cbApi.syncData).toHaveBeenCalledWith({ market: 'cn', source: 'opencli', sync_type: 'cb_basic', include_delisted: false, symbols: [] }));
+  }, 15000);
+
+  it('cancels a running data-sync run from the sync table', async () => {
+    cbApi.listSyncRuns.mockResolvedValue({
+      total: 1,
+      items: [
+        { id: 9, run_uid: 'x', sync_type: 'cb_ohlc', market: 'cn', status: 'running', result: { stage: 'fetching_ohlc', processed: 1, total: 10 }, created_at: '2026-08-10T00:00:00' },
+      ],
+    });
+    cbApi.cancelSyncRun.mockResolvedValue({ id: 9, sync_type: 'cb_ohlc', market: 'cn', status: 'running', result: {} });
+    render(<DataSyncPanel />);
+    fireEvent.click(await screen.findByRole('button', { name: '取消同步' }));
+
+    await waitFor(() => expect(cbApi.cancelSyncRun).toHaveBeenCalledWith(9));
   }, 15000);
 
   it('submits an OHLC sync request with the delisted flag and a date range', async () => {
