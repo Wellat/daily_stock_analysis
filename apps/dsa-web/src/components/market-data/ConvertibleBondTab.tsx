@@ -16,6 +16,7 @@ import {
 
 const formatNumber = (value?: number | null, digits = 2): string => (value == null ? '--' : value.toFixed(digits));
 const formatPct = (value?: number | null): string => (value == null ? '--' : `${value.toFixed(2)}%`);
+const formatPrice = (value?: number | null): string => (value == null ? '--' : value.toFixed(2));
 
 const eventTypeTag = (eventType: string) => {
   const map: Record<string, string> = {
@@ -139,6 +140,12 @@ export const ConvertibleBondTab: React.FC = () => {
     { title: '来源', dataIndex: 'source', width: 100 },
   ];
 
+  const stockCode = detail?.stock_code || selected?.stock_code || '--';
+  const stockName = detail?.stock_name || selected?.stock_name || '--';
+  const industry = detail?.industry || (typeof detail?.terms?.industry === 'string' ? detail.terms.industry : null) || '--';
+  const currentPremiumRate = detail?.current_premium_rate ?? selected?.current_premium_rate ?? detail?.latest_premium_rate ?? selected?.latest_premium_rate;
+  const latestClose = detail?.latest_close ?? selected?.latest_close;
+
   return (
     <div className="grid gap-4 lg:grid-cols-[320px_1fr]">
       <div className="glass-panel px-4 py-4">
@@ -184,7 +191,7 @@ export const ConvertibleBondTab: React.FC = () => {
               <div className="mt-0.5 flex items-center justify-between gap-2 text-xs text-secondary-text">
                 <span className="truncate">{item.bond_name}</span>
                 <span className={item.status === '已退市' ? 'text-danger' : ''}>
-                  {item.status ?? '--'} · {item.latest_close == null ? '--' : item.latest_close}
+                  {item.status ?? '--'} / {item.latest_close == null ? '--' : item.latest_close}
                 </span>
               </div>
             </button>
@@ -208,26 +215,24 @@ export const ConvertibleBondTab: React.FC = () => {
                   <div className="flex flex-wrap items-baseline justify-between gap-2">
                     <h2 className="text-base font-semibold text-foreground">
                       {detail.bond_code} {detail.bond_name}
-                      <span className="ml-2 text-sm font-normal text-secondary-text">{detail.stock_name || detail.stock_code}</span>
+                      <span className="ml-2 text-sm font-normal text-secondary-text">
+                        {stockName} · {stockCode}
+                      </span>
                       <Tag className="ml-2" color={detail.status === '已退市' ? 'error' : 'success'}>{detail.status ?? '--'}</Tag>
                     </h2>
-                    <span className="font-mono text-lg font-semibold text-cyan">{formatNumber(detail.current_premium_rate)}%</span>
+                    <span className="font-mono text-lg font-semibold text-cyan">{formatPct(currentPremiumRate)}</span>
                   </div>
                   <Descriptions size="small" column={{ xs: 2, md: 3, xl: 4 }} className="mt-3">
                     <Descriptions.Item label="转股价">{formatNumber(detail.convert_price)}</Descriptions.Item>
-                    <Descriptions.Item label="当前溢价率">{formatPct(detail.current_premium_rate)}</Descriptions.Item>
+                    <Descriptions.Item label="当前溢价率">{formatPct(currentPremiumRate)}</Descriptions.Item>
+                    <Descriptions.Item label="最新价">{formatPrice(latestClose)}</Descriptions.Item>
                     <Descriptions.Item label="剩余规模">{formatNumber(detail.remaining_size, 1)} 亿</Descriptions.Item>
-                    <Descriptions.Item label="最新收盘">{formatNumber(detail.latest_close)}</Descriptions.Item>
                     <Descriptions.Item label="上市日期">{detail.list_date ?? '--'}</Descriptions.Item>
                     <Descriptions.Item label="到期日期">{detail.maturity_date ?? '--'}</Descriptions.Item>
+                    <Descriptions.Item label="行业">{industry}</Descriptions.Item>
                     <Descriptions.Item label="日线条数">{detail.bar_count}</Descriptions.Item>
                     <Descriptions.Item label="事件数量">{detail.event_count}</Descriptions.Item>
                   </Descriptions>
-                  <div className="mt-3 grid gap-2 text-xs text-secondary-text lg:grid-cols-3">
-                    <div><span className="text-muted-text">强赎条款：</span>{detail.redeem_clause || '--'}</div>
-                    <div><span className="text-muted-text">下修条款：</span>{detail.down_revise_clause || '--'}</div>
-                    <div><span className="text-muted-text">回售条款：</span>{detail.put_clause || '--'}</div>
-                  </div>
                 </>
               )}
             </div>

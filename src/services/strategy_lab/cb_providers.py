@@ -3,15 +3,28 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import date
 import json
+import logging
 import os
 import requests
 import subprocess
+import time
 from typing import Any, Dict, List, Optional, Protocol
 
+import pandas as pd
+
 from data_provider.akshare_fetcher import _akshare_call_with_timeout
+from src.config import get_config
+
+try:
+    from src.patches.eastmoney_patch import eastmoney_patch
+except ImportError:  # pragma: no cover - patch is optional at runtime
+    eastmoney_patch = None
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -271,30 +284,133 @@ class JisiluConvertibleBondProvider:
 
 
 class OpencliConvertibleBondProvider:
-    """Use an installed OpenCLI Jisilu adapter without coupling Strategy Lab to it."""
+    """Fetch convertible-bond master data via the local OpenCLI Jisilu adapter.
+
+    Data chain: ``opencli jisilu cb-list``（列表）→ 逐只 ``opencli jisilu
+    cb-detail``（详情）。支持活跃 / 已退市两种状态，活跃与退市的处理差异：
+    退市列表走 ``--delisted`` 参数，且详情中的退市字段
+    （``delist_reason``/``last_trading_date``/``last_conversion_date`` 等）
+    一并落入元数据。
+    """
 
     name = "opencli"
 
-    def __init__(self, *, timeout: float = 45.0, executable: Optional[str] = None):
+    def __init__(self, *, timeout: float = 120.0, executable: Optional[str] = None, workers: int = 3):
         self.timeout = timeout
         self.executable = executable or os.getenv("OPENCLI_BIN", "opencli")
+        self.workers = max(1, workers)
 
-    def fetch(self, *, market: str, symbols: Optional[List[str]] = None) -> ConvertibleBondSyncPayload:
+    def fetch(
+        self,
+        *,
+        market: str,
+        symbols: Optional[List[str]] = None,
+        include_delisted: bool = False,
+    ) -> ConvertibleBondSyncPayload:
+        """Fetch list + per-symbol detail at once (kept for callers that do not batch)."""
         if market != "cn":
             raise ValueError("OpenCLI Jisilu provider supports cn market only")
-        command = [self.executable, "jisilu", "cb", "-f", "json"]
-        completed = subprocess.run(
+        symbol_filter = {str(symbol).strip().lower().split(".")[-1] for symbol in symbols or [] if str(symbol).strip()}
+        basics: List[Dict[str, Any]] = []
+        codes: List[str] = []
+        for row in self.fetch_list(include_delisted=include_delisted):
+            basic = _cb_list_basic_row(row)
+            if not basic:
+                continue
+            if symbol_filter and basic["bond_code"].lower() not in symbol_filter:
+                continue
+            basics.append(basic)
+            codes.append(basic["bond_code"])
+        terms: List[Dict[str, Any]] = []
+        events: List[Dict[str, Any]] = []
+        detail_map = self.fetch_detail_batch(codes, workers=self.workers)
+        for basic in basics:
+            detail = detail_map.get(basic["bond_code"])
+            if not detail:
+                continue
+            normalized = _cb_detail_normalize(detail)
+            if not normalized:
+                continue
+            basic.update({key: value for key, value in normalized["basic"].items() if value is not None})
+            basic["terms"] = {**(basic.get("terms") or {}), **normalized["meta"]}
+            if normalized["status"]:
+                basic["status"] = normalized["status"]
+            terms.append(normalized["terms"])
+            events.extend(normalized["events"])
+        return ConvertibleBondSyncPayload(cb_basic=basics, cb_terms=terms, cb_events=events)
+
+    def fetch_list(self, *, include_delisted: bool = False) -> List[Dict[str, Any]]:
+        """Fetch the convertible-bond list (active by default, or delisted)."""
+        if include_delisted:
+            command = [self.executable, "jisilu", "cb-list", "--delisted", "-f", "json"]
+        else:
+            command = [self.executable, "jisilu", "cb-list", "-f", "json"]
+        completed = self._run(command)
+        try:
+            payload = json.loads(completed.stdout)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"OpenCLI cb-list returned invalid JSON for {command}") from exc
+        return [row for row in _extract_rows(payload) if isinstance(row, dict)]
+
+    def fetch_detail(self, bond_code: str) -> Optional[Dict[str, Any]]:
+        """Fetch one convertible-bond detail row, or None when the adapter returns nothing."""
+        command = [self.executable, "jisilu", "cb-detail", _strip_code(bond_code), "-f", "json"]
+        completed = self._run(command)
+        try:
+            payload = json.loads(completed.stdout)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"OpenCLI cb-detail returned invalid JSON for {_strip_code(bond_code)}") from exc
+        rows = [row for row in _extract_rows(payload) if isinstance(row, dict)]
+        return rows[0] if rows else None
+
+    def fetch_detail_batch(
+        self,
+        bond_codes: List[str],
+        workers: Optional[int] = None,
+    ) -> Dict[str, Optional[Dict[str, Any]]]:
+        """Concurrently fetch details; returns ``{bond_code: detail_or_None}``.
+
+        A single detail failure never aborts the batch (the code maps to None).
+        opencli drives a browser per invocation, so keep the default worker
+        count low (3) to avoid exhausting the local browser pool.
+        """
+        pool_workers = max(1, workers or self.workers)
+        results: Dict[str, Optional[Dict[str, Any]]] = {}
+        if pool_workers <= 1 or len(bond_codes) <= 1:
+            for code in bond_codes:
+                try:
+                    results[str(code)] = self.fetch_detail(str(code))
+                except Exception as exc:  # noqa: BLE001 - keep going on single failure
+                    logger.warning("cb-detail %s failed: %s", code, exc)
+                    results[str(code)] = None
+            return results
+        with ThreadPoolExecutor(max_workers=pool_workers) as executor:
+            future_map = {executor.submit(self.fetch_detail, str(code)): str(code) for code in bond_codes}
+            for future in as_completed(future_map):
+                code = future_map[future]
+                try:
+                    results[code] = future.result()
+                except Exception as exc:  # noqa: BLE001 - keep going on single failure
+                    logger.warning("cb-detail %s failed: %s", code, exc)
+                    results[code] = None
+        return results
+
+    def _run(self, command: List[str]) -> subprocess.CompletedProcess:
+        return subprocess.run(
             command,
             check=True,
             capture_output=True,
             text=True,
             timeout=self.timeout,
         )
-        try:
-            payload = json.loads(completed.stdout)
-        except json.JSONDecodeError as exc:
-            raise ValueError("OpenCLI returned invalid JSON") from exc
-        return _snapshot_payload(_extract_rows(payload), symbols=symbols, source=self.name)
+
+    def normalize_list_row(self, record: Dict[str, Any]) -> Dict[str, Any] | None:
+        """Public wrapper around ``_cb_list_basic_row`` for the sync service."""
+        return _cb_list_basic_row(record)
+
+    def normalize_detail(self, record: Dict[str, Any]) -> Dict[str, Any] | None:
+        """Public wrapper around ``_cb_detail_normalize`` for the sync service."""
+        return _cb_detail_normalize(record)
 
 
 def get_convertible_bond_provider(source: str) -> ConvertibleBondDataProvider:
@@ -445,3 +561,303 @@ def _akshare_cov_symbol(bond_code: str) -> str:
     if code.startswith(("11", "12")):
         return f"sh{code}" if code.startswith("11") else f"sz{code}"
     return code
+
+
+# ---------------------------------------------------------------------------
+# OpenCLI cb-list / cb-detail 解析（opencli 接口文档 .trae/documents/opencli-cb.md）
+# ---------------------------------------------------------------------------
+
+# cb-detail 中无独立列的字段，统一收进 strategy_lab_cb_basic.terms_json 元数据
+CB_DETAIL_META_FIELDS = [
+    "industry",
+    "start_date",
+    "convert_start_date",
+    "put_start_date",
+    "put_price",
+    "redemption_price",
+    "issue_size",
+    "bond_rating",
+    "force_redeem_countdown",
+    "down_revise_countdown",
+    "put_countdown",
+    "delist_reason",
+    "redemption_announcement_date",
+    "last_trading_date",
+    "last_conversion_date",
+]
+
+
+def _cb_list_basic_row(record: Dict[str, Any]) -> Dict[str, Any] | None:
+    """Map one ``cb-list`` row onto a ``strategy_lab_cb_basic`` row stub."""
+    bond_code = _first_value(record, "bondId", "bond_id", "bond_code", "债券代码", "代码")
+    if not bond_code:
+        return None
+    code = _strip_code(bond_code)
+    status_raw = str(_first_value(record, "status", "状态") or "active").strip().lower()
+    status = "已退市" if status_raw in ("delisted", "已退市") else "正常"
+    terms: Dict[str, Any] = {"provider": "opencli"}
+    last_price = _parse_float(_first_value(record, "lastPrice", "last_price", "最后价格"))
+    last_trade_date = _parse_date(_first_value(record, "lastTradeDate", "last_trade_date", "最后交易日"))
+    if last_price is not None:
+        terms["last_price"] = last_price
+    if last_trade_date is not None:
+        # terms_json 最终会 json.dumps 落库，date 对象需先转 isoformat 字符串
+        terms["last_trade_date"] = last_trade_date.isoformat()
+    return {
+        "bond_code": code,
+        "bond_name": _first_value(record, "bondName", "bond_nm", "bond_name", "债券简称") or code,
+        "stock_code": _strip_code(_first_value(record, "stockId", "stock_id", "stock_code", "正股代码") or ""),
+        "stock_name": _first_value(record, "stockName", "stock_nm", "stock_name", "正股简称"),
+        "market": "cn",
+        "status": status,
+        "terms": terms,
+    }
+
+
+def _cb_detail_normalize(record: Dict[str, Any]) -> Dict[str, Any] | None:
+    """Map one ``cb-detail`` row onto basic/meta/terms/events rows."""
+    bond_code = _first_value(record, "bond_code", "bondCode", "代码", "债券代码")
+    if not bond_code:
+        return None
+    code = _strip_code(bond_code)
+    meta: Dict[str, Any] = {}
+    for key in CB_DETAIL_META_FIELDS:
+        value = record.get(key)
+        if value not in (None, "", "-"):
+            meta[key] = value
+    delisted = record.get("delisted")
+    if delisted in (True, "true", "True", "1", 1):
+        meta["delisted"] = True
+        status = "已退市"
+    elif delisted in (False, "false", "False", "0", 0):
+        status = "正常"
+    else:
+        status = None
+    stock_code_value = _first_value(
+        record,
+        "stock_code",
+        "stockCode",
+        "stock_id",
+        "stockId",
+        "convert_stock_code",
+        "convertStockCode",
+        "正股代码",
+    )
+    stock_name_value = _first_value(
+        record,
+        "stock_name",
+        "stockName",
+        "stock_nm",
+        "正股简称",
+        "正股名称",
+    )
+    basic = {
+        "bond_code": code,
+        # 详情可能不返回 bond_name（如 EB 债），保持 None 以保留列表提供的名称
+        "bond_name": _first_value(record, "bond_name", "bondName"),
+        "stock_code": _strip_code(stock_code_value) if stock_code_value else None,
+        "stock_name": stock_name_value,
+        "list_date": _parse_date(_first_value(record, "list_date", "listDate", "上市日期")),
+        "maturity_date": _parse_date(_first_value(record, "maturity_date", "maturityDate", "到期日期")),
+        "remaining_size": _parse_float(_first_value(record, "remaining_size", "remain_size", "剩余规模")),
+        "convert_price": _parse_float(_first_value(record, "convert_price", "convertPrice", "转股价")),
+    }
+    terms = {
+        "bond_code": code,
+        "redeem_trigger_price": _parse_float(_first_value(record, "force_redemption_trigger_price")),
+        "down_revise_trigger_price": _parse_float(_first_value(record, "adjust_trigger_price")),
+        "put_trigger_price": _parse_float(_first_value(record, "put_trigger_price")),
+    }
+    events: List[Dict[str, Any]] = []
+    for event in record.get("cb_event_list") or []:
+        if not isinstance(event, dict):
+            continue
+        event_date = _parse_date(_first_value(event, "event_time", "event_date", "date"))
+        event_type = str(_first_value(event, "event_type", "type") or "").strip()
+        if event_date is None or not event_type:
+            continue
+        detail_text = str(event.get("detail") or "")
+        if event_type == "bond_rating_change":
+            rating_from, rating_to = event.get("rating_from"), event.get("rating_to")
+            if rating_from is not None or rating_to is not None:
+                rating_text = f"{rating_from or '-'} -> {rating_to or '-'}"
+                detail_text = f"{detail_text}；{rating_text}" if detail_text else rating_text
+        events.append(
+            {
+                "bond_code": code,
+                "event_date": event_date,
+                "event_type": event_type,
+                "event_detail": detail_text or None,
+            }
+        )
+    return {"basic": basic, "meta": meta, "status": status, "terms": terms, "events": events}
+
+
+# ---------------------------------------------------------------------------
+# 可转债 OHLC 行情（东财优先，腾讯兜底）
+# ---------------------------------------------------------------------------
+
+_DEFAULT_UA_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json,text/plain,*/*",
+}
+
+_OHLC_COLUMNS = ["date", "open", "high", "low", "close", "volume", "amount"]
+
+
+class ConvertibleBondOhlcFetcher:
+    """Fetch convertible-bond daily OHLC bars (Eastmoney first, Tencent fallback).
+
+    The returned frame uses standardized columns
+    ``date/open/high/low/close/volume/amount`` and can be persisted straight
+    into ``stock_daily`` with ``instrument_type='convertible_bond'``.
+    Code prefix mapping: ``11xxxx -> sh / secid=1.*``, ``12xxxx -> sz / secid=0.*``.
+    """
+
+    name = "cb_ohlc"
+    _EASTMONEY_KLINE_URL = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
+    _TENCENT_KLINE_URL = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+
+    def __init__(self, *, timeout: float = 15.0):
+        self.timeout = timeout
+        self.last_source: Optional[str] = None
+        if get_config().enable_eastmoney_patch and eastmoney_patch is not None:
+            eastmoney_patch()
+
+    def fetch_daily(self, bond_code: str, start_date: date, end_date: date) -> pd.DataFrame:
+        """Fetch daily OHLC within ``[start_date, end_date]``; empty frame on total failure.
+
+        ``self.last_source`` reports which upstream served the last frame
+        ("eastmoney" / "tencent" / None when empty).
+        """
+        code = _strip_code(bond_code)
+        self.last_source = None
+        if not code.isdigit() or len(code) != 6:
+            return _empty_ohlc_frame()
+        try:
+            frame = self._fetch_eastmoney(code, start_date, end_date)
+            if not frame.empty:
+                self.last_source = "eastmoney"
+                return frame
+            logger.info("Eastmoney CB daily empty for %s %s~%s", code, start_date, end_date)
+        except Exception as exc:  # noqa: BLE001 - fall through to Tencent
+            logger.warning("Eastmoney CB daily failed for %s: %s", code, exc)
+        try:
+            frame = self._fetch_tencent(code, start_date, end_date)
+            if not frame.empty:
+                self.last_source = "tencent"
+            return frame
+        except Exception as exc:  # noqa: BLE001 - single symbol failure never aborts a batch
+            logger.warning("Tencent CB daily failed for %s: %s", code, exc)
+            return _empty_ohlc_frame()
+
+    def _fetch_eastmoney(self, code: str, start_date: date, end_date: date) -> pd.DataFrame:
+        secid = f"{'1' if code.startswith('11') else '0'}.{code}"
+        params = {
+            "secid": secid,
+            "klt": "101",
+            "fqt": "0",
+            "beg": start_date.strftime("%Y%m%d"),
+            "end": end_date.strftime("%Y%m%d"),
+            "fields1": "f1,f2,f3,f4,f5,f6,f7,f8",
+            "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
+            "_": str(int(time.time() * 1000)),
+        }
+        response = requests.get(
+            self._EASTMONEY_KLINE_URL,
+            params=params,
+            headers=_DEFAULT_UA_HEADERS,
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        data = (response.json() or {}).get("data") or {}
+        rows: List[Dict[str, Any]] = []
+        for line in data.get("klines") or []:
+            parts = str(line).split(",")
+            if len(parts) < 6:
+                continue
+            rows.append(
+                {
+                    "date": parts[0],
+                    "open": parts[1],
+                    "close": parts[2],
+                    "high": parts[3],
+                    "low": parts[4],
+                    "volume": parts[5],
+                    "amount": parts[6] if len(parts) > 6 else None,
+                }
+            )
+        if not rows:
+            return _empty_ohlc_frame()
+        return _normalize_ohlc_frame(pd.DataFrame(rows))
+
+    def _fetch_tencent(self, code: str, start_date: date, end_date: date) -> pd.DataFrame:
+        symbol = f"{'sh' if code.startswith('11') else 'sz'}{code}"
+        # 腾讯对可转债不支持显式日期窗口（带 start/end 一律返回空），只能按
+        # count 拉最近 N 根再在本地按 [start, end] 过滤；count 上限约 800。
+        count = min(800, max(30, int((end_date - start_date).days * 1.8) + 40))
+        param = f"{symbol},day,,,{count},qfq"
+        response = requests.get(
+            self._TENCENT_KLINE_URL,
+            params={"param": param},
+            headers=_DEFAULT_UA_HEADERS,
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        rows = _extract_tencent_kline_rows(response.json(), symbol=symbol)
+        if not rows:
+            return _empty_ohlc_frame()
+        frame = _normalize_ohlc_frame(pd.DataFrame(rows))
+        if frame.empty:
+            return frame
+        return frame[(frame["date"] >= start_date) & (frame["date"] <= end_date)].reset_index(drop=True)
+
+
+def _extract_tencent_kline_rows(payload: Any, *, symbol: str) -> List[Dict[str, Any]]:
+    """Parse Tencent kline rows, keeping the raw volume unit (手).
+
+    ``tencent_fetcher._extract_kline_rows`` multiplies volume by 100 for A
+    shares; for convertible bonds we keep the source unit so the value is
+    comparable with the Eastmoney kline volume.
+    """
+    data = payload.get("data") if isinstance(payload, dict) else None
+    item = data.get(symbol) if isinstance(data, dict) else None
+    if not isinstance(item, dict):
+        return []
+    rows = item.get("qfqday") or item.get("day") or []
+    result: List[Dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, list) or len(row) < 6:
+            continue
+        result.append(
+            {
+                "date": str(row[0]),
+                "open": row[1],
+                "close": row[2],
+                "high": row[3],
+                "low": row[4],
+                "volume": row[5],
+                "amount": row[6] if len(row) > 6 else None,
+            }
+        )
+    return result
+
+
+def _normalize_ohlc_frame(df: pd.DataFrame) -> pd.DataFrame:
+    normalized = df.copy()
+    for column in ("open", "high", "low", "close", "volume", "amount"):
+        if column in normalized.columns:
+            normalized[column] = pd.to_numeric(normalized[column], errors="coerce")
+    normalized["date"] = pd.to_datetime(normalized["date"], errors="coerce")
+    normalized = normalized.dropna(subset=["date"])
+    normalized["date"] = normalized["date"].dt.date
+    normalized = normalized[normalized["close"].notna()]
+    normalized = normalized.sort_values("date").reset_index(drop=True)
+    return normalized[_OHLC_COLUMNS]
+
+
+def _empty_ohlc_frame() -> pd.DataFrame:
+    return pd.DataFrame(columns=_OHLC_COLUMNS)

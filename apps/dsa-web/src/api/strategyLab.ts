@@ -128,6 +128,7 @@ export type StrategyLabInstrumentItem = {
 };
 
 export type StrategyLabInstrumentDetail = StrategyLabInstrumentItem & {
+  industry?: string | null;
   terms: Record<string, unknown>;
   redeem_clause?: string | null;
   down_revise_clause?: string | null;
@@ -242,7 +243,15 @@ export const strategyLabApi = {
     const { data } = await apiClient.get<{ items: StrategyLabSyncRunItem[]; total: number }>('/api/v1/strategy-lab/data-sync/runs', { params });
     return data;
   },
-  async syncData(payload: { market: string; source: string; symbols?: string[] }) {
+  async syncData(payload: {
+    market: string;
+    source: string;
+    sync_type?: string;
+    include_delisted?: boolean;
+    start_date?: string;
+    end_date?: string;
+    symbols?: string[];
+  }) {
     const { data } = await apiClient.post('/api/v1/strategy-lab/data-sync', payload);
     return data;
   },

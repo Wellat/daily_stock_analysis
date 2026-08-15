@@ -56,13 +56,13 @@ describe('MarketDataPage', () => {
       status: '正常',
       current_premium_rate: 18.5,
       convert_price: 100,
+      latest_close: 101.2,
+      latest_premium_rate: 17.8,
+      industry: '电子-半导体-分立器件',
       remaining_size: 12.3,
       list_date: '2024-01-01',
       maturity_date: '2028-01-01',
       terms: { strategy: 'double-low' },
-      redeem_clause: '强赎条款',
-      down_revise_clause: null,
-      put_clause: null,
       bar_count: 2,
       event_count: 1,
     });
@@ -114,6 +114,9 @@ describe('MarketDataPage', () => {
 
     await waitFor(() => expect(cbApi.getInstrumentDetail).toHaveBeenCalledWith('123001'));
     expect(await screen.findByText('测试转债')).toBeInTheDocument();
+    expect(screen.getByText('电子-半导体-分立器件')).toBeInTheDocument();
+    expect(screen.getByText('101.20')).toBeInTheDocument();
+    expect(screen.queryByText('强赎条款：')).not.toBeInTheDocument();
     expect(screen.getByLabelText('价格与溢价率图表')).toBeInTheDocument();
     expect(screen.getByText('董事会提议下修')).toBeInTheDocument();
   }, 15000);
@@ -132,19 +135,39 @@ describe('MarketDataPage', () => {
     expect(screen.getAllByText('6.93').length).toBeGreaterThan(0);
   }, 15000);
 
-  it('switches to the data-sync tab and submits a sync request', async () => {
+  it('switches to the data-sync tab and submits a basic-data sync request', async () => {
     render(<MarketDataPage />);
     await screen.findByText('123001');
     cbApi.syncData.mockResolvedValue({ sync_run_id: 7, status: 'running', cb_basic_upserted: 0, cb_terms_upserted: 0, cb_factor_upserted: 0, cb_event_upserted: 0 });
     cbApi.listSyncRuns.mockResolvedValue({
       total: 1,
       items: [
-        { id: 7, run_uid: 'x', sync_type: 'akshare_convertible_bond', market: 'cn', status: 'completed', result: {}, created_at: '2026-08-10T00:00:00' },
+        { id: 7, run_uid: 'x', sync_type: 'opencli_cb_basic', market: 'cn', status: 'completed', result: {}, created_at: '2026-08-10T00:00:00' },
       ],
     });
     fireEvent.click(screen.getByRole('tab', { name: '数据同步' }));
-    fireEvent.change(await screen.findByLabelText('同步来源'), { target: { value: 'akshare' } });
     fireEvent.click(screen.getByRole('button', { name: '开始同步' }));
-    await waitFor(() => expect(cbApi.syncData).toHaveBeenCalledWith({ market: 'cn', source: 'akshare', symbols: [] }));
+    await waitFor(() => expect(cbApi.syncData).toHaveBeenCalledWith({ market: 'cn', source: 'opencli', sync_type: 'cb_basic', include_delisted: false, symbols: [] }));
+  }, 15000);
+
+  it('submits an OHLC sync request with the delisted flag and a date range', async () => {
+    render(<MarketDataPage />);
+    await screen.findByText('123001');
+    cbApi.syncData.mockResolvedValue({ sync_run_id: 8, status: 'running', ohlc_bars_upserted: 0, ohlc_skipped: 0 });
+    fireEvent.click(screen.getByRole('tab', { name: '数据同步' }));
+    fireEvent.change(await screen.findByLabelText('同步来源'), { target: { value: 'cb_ohlc' } });
+    fireEvent.click(screen.getByLabelText('包含已退市'));
+    fireEvent.change(await screen.findByLabelText('起始日期'), { target: { value: '2026-01-01' } });
+    fireEvent.change(await screen.findByLabelText('结束日期'), { target: { value: '2026-08-10' } });
+    fireEvent.click(screen.getByRole('button', { name: '开始同步' }));
+    await waitFor(() => expect(cbApi.syncData).toHaveBeenCalledWith({
+      market: 'cn',
+      source: 'opencli',
+      sync_type: 'cb_ohlc',
+      include_delisted: true,
+      start_date: '2026-01-01',
+      end_date: '2026-08-10',
+      symbols: [],
+    }));
   }, 15000);
 });

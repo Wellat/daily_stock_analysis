@@ -121,6 +121,10 @@ class StrategyLabTradeListResponse(BaseModel):
 class StrategyLabDataSyncRequest(BaseModel):
     market: StrategyLabMarket = Field("cn", description="市场")
     source: str = Field("fixture", description="同步来源")
+    sync_type: str = Field("", description="opencli 同步类型：cb_basic / cb_ohlc / all（空则走原 source 逻辑）")
+    include_delisted: bool = Field(False, description="是否同步已退市可转债（默认仅活跃）")
+    start_date: Optional[date] = Field(None, description="行情同步起始日期（缺省时增量）")
+    end_date: Optional[date] = Field(None, description="行情同步结束日期（默认今天）")
     symbols: List[str] = Field(default_factory=list, description="可选标的筛选")
     cb_basic: List[Dict[str, Any]] = Field(default_factory=list, description="可选可转债基础数据")
     cb_terms: List[Dict[str, Any]] = Field(default_factory=list, description="可选可转债条款数据")
@@ -129,12 +133,16 @@ class StrategyLabDataSyncRequest(BaseModel):
 
 
 class StrategyLabDataSyncResponse(BaseModel):
-    sync_run_id: int
+    sync_run_id: int = 0
     status: str = "running"
+    sync_type: str = ""
     cb_basic_upserted: int = 0
     cb_terms_upserted: int = 0
     cb_factor_upserted: int = 0
     cb_event_upserted: int = 0
+    ohlc_bars_upserted: int = 0
+    ohlc_skipped: int = 0
+    failed_bonds: List[Any] = Field(default_factory=list)
 
 
 class StrategyLabSyncRunItem(BaseModel):
@@ -195,6 +203,9 @@ class StrategyLabInstrumentDetailItem(BaseModel):
     remaining_size: Optional[float] = None
     current_premium_rate: Optional[float] = None
     convert_price: Optional[float] = None
+    latest_close: Optional[float] = None
+    latest_premium_rate: Optional[float] = None
+    industry: Optional[str] = None
     terms: Dict[str, Any] = Field(default_factory=dict)
     redeem_clause: Optional[str] = None
     down_revise_clause: Optional[str] = None

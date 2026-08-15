@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import and_, desc, func, or_, select
@@ -13,6 +13,7 @@ from src.storage import (
     DatabaseManager,
     PortfolioAccount,
     PortfolioPosition,
+    StockDaily,
     StrategyLabCbBasic,
     StrategyLabCbDailyFactor,
     StrategyLabCbEvent,
@@ -100,7 +101,12 @@ class StrategyLabDataRepository:
                 row.remaining_size = item.get("remaining_size")
                 row.current_premium_rate = item.get("current_premium_rate")
                 row.convert_price = item.get("convert_price")
-                row.terms_json = json.dumps(item.get("terms") or {}, ensure_ascii=False, sort_keys=True)
+                row.terms_json = json.dumps(
+                    item.get("terms") or {},
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    default=str,  # 兜底：任何非 JSON 类型降级为字符串，避免单行拖垮整个同步
+                )
                 row.source = source
                 row.updated_at = datetime.now()
                 count += 1
@@ -159,25 +165,39 @@ class StrategyLabDataRepository:
         return count
 
     def upsert_cb_events(self, rows: List[Dict[str, Any]], *, source: str) -> int:
+        """Upsert convertible-bond events.
+
+        去重键：(bond_code, event_date, 小写 event_type)。写入前统一把
+        event_type 归一化为小写，并用 ``func.lower`` 比对已有记录，避免同一
+        事件因大小写变体被重复录入；命中已有记录时更新 event_detail。
+        """
         count = 0
         with self.db.get_session() as session:
             for item in rows:
-                row = session.execute(
+                bond_code = str(item["bond_code"])
+                event_date = item["event_date"]
+                event_type = str(item["event_type"]).strip().lower()
+                matches = session.execute(
                     select(StrategyLabCbEvent).where(
                         and_(
-                            StrategyLabCbEvent.bond_code == str(item["bond_code"]),
-                            StrategyLabCbEvent.event_date == item["event_date"],
-                            StrategyLabCbEvent.event_type == str(item["event_type"]),
+                            StrategyLabCbEvent.bond_code == bond_code,
+                            StrategyLabCbEvent.event_date == event_date,
+                            func.lower(StrategyLabCbEvent.event_type) == event_type,
                         )
-                    )
-                ).scalar_one_or_none()
-                if row is None:
+                    ).order_by(StrategyLabCbEvent.id.asc())
+                ).scalars().all()
+                if matches:
+                    row = matches[0]
+                    for duplicate in matches[1:]:
+                        session.delete(duplicate)
+                else:
                     row = StrategyLabCbEvent(
-                        bond_code=str(item["bond_code"]),
-                        event_date=item["event_date"],
-                        event_type=str(item["event_type"]),
+                        bond_code=bond_code,
+                        event_date=event_date,
+                        event_type=event_type,
                     )
                     session.add(row)
+                row.event_type = event_type
                 row.event_detail = item.get("event_detail")
                 row.source = source
                 count += 1
@@ -284,6 +304,30 @@ class StrategyLabDataRepository:
                 ],
             }
 
+    def list_cb_basic_codes(self, *, market: str, status: Optional[str] = None) -> List[str]:
+        """Return bond codes in the master table, optionally filtered by status.
+
+        ``status`` accepts "正常" (active) or "已退市" (delisted); None returns
+        every code. Used by the OHLC sync to decide which symbols to walk.
+        """
+        with self.db.get_session() as session:
+            statement = select(StrategyLabCbBasic.bond_code).where(StrategyLabCbBasic.market == market)
+            if status:
+                statement = statement.where(StrategyLabCbBasic.status == status)
+            return list(
+                session.execute(statement.order_by(StrategyLabCbBasic.bond_code.asc())).scalars().all()
+            )
+
+    def get_cb_ohlc_latest_date(self, *, bond_code: str) -> Optional[date]:
+        """Return the latest persisted ``stock_daily`` date for a convertible bond, or None."""
+        with self.db.get_session() as session:
+            return session.execute(
+                select(func.max(StockDaily.date)).where(
+                    StockDaily.code == str(bond_code),
+                    StockDaily.instrument_type == "convertible_bond",
+                )
+            ).scalar_one_or_none()
+
     def get_cb_instrument_detail(self, *, bond_code: str, market: str) -> Dict[str, Any] | None:
         """Return convertible-bond basic + terms detail, or None when missing."""
         with self.db.get_session() as session:
@@ -291,6 +335,13 @@ class StrategyLabDataRepository:
             if basic is None or basic.market != market:
                 return None
             terms = session.get(StrategyLabCbTerms, bond_code)
+            latest_factor = session.execute(
+                select(StrategyLabCbDailyFactor)
+                .where(StrategyLabCbDailyFactor.bond_code == bond_code)
+                .order_by(desc(StrategyLabCbDailyFactor.trade_date), desc(StrategyLabCbDailyFactor.id))
+                .limit(1)
+            ).scalar_one_or_none()
+            terms_data = json.loads(basic.terms_json) if basic.terms_json else {}
             bar_count = session.execute(
                 select(func.count(StrategyLabCbDailyFactor.id)).where(
                     StrategyLabCbDailyFactor.bond_code == bond_code
@@ -313,7 +364,10 @@ class StrategyLabDataRepository:
                 "remaining_size": basic.remaining_size,
                 "current_premium_rate": basic.current_premium_rate,
                 "convert_price": basic.convert_price,
-                "terms": json.loads(basic.terms_json) if basic.terms_json else {},
+                "latest_close": latest_factor.close if latest_factor else None,
+                "latest_premium_rate": latest_factor.premium_rate if latest_factor else None,
+                "industry": terms_data.get("industry"),
+                "terms": terms_data,
                 "redeem_clause": terms.redeem_clause if terms else None,
                 "down_revise_clause": terms.down_revise_clause if terms else None,
                 "put_clause": terms.put_clause if terms else None,

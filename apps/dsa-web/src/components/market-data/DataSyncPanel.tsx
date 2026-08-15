@@ -41,7 +41,11 @@ export const DataSyncPanel: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [error, setError] = useState<ParsedApiError | null>(null);
-  const [syncSource, setSyncSource] = useState('fixture');
+  // 同步能力：cb_basic=基础数据（opencli cb-list+cb-detail）/ cb_ohlc=行情（东财优先腾讯兜底）
+  const [syncKind, setSyncKind] = useState<'cb_basic' | 'cb_ohlc'>('cb_basic');
+  const [includeDelisted, setIncludeDelisted] = useState(false);
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
   const [syncSymbols, setSyncSymbols] = useState('');
 
   const refresh = useCallback(async (targetPage: number, targetSize: number) => {
@@ -104,24 +108,57 @@ export const DataSyncPanel: React.FC = () => {
         className={SL_PANEL_CLASS}
         onSubmit={(event) => {
           event.preventDefault();
-          void runAction('sync', () => strategyLabApi.syncData({ market: 'cn', source: syncSource, symbols: parseSymbols(syncSymbols) }));
+          const payload: {
+            market: string;
+            source: string;
+            sync_type: string;
+            include_delisted: boolean;
+            start_date?: string;
+            end_date?: string;
+            symbols: string[];
+          } = {
+            market: 'cn',
+            source: 'opencli',
+            sync_type: syncKind,
+            include_delisted: includeDelisted,
+            symbols: parseSymbols(syncSymbols),
+          };
+          if (syncKind === 'cb_ohlc') {
+            if (startDate) payload.start_date = startDate;
+            if (endDate) payload.end_date = endDate;
+          }
+          void runAction('sync', () => strategyLabApi.syncData(payload));
         }}
       >
         <h2 className="text-base font-semibold text-foreground">数据同步</h2>
         <div className="mt-3 grid gap-3 sm:grid-cols-2">
           <label className="text-sm">
             来源
-            <select aria-label="同步来源" className={`${SL_INPUT_CLASS} mt-1`} value={syncSource} onChange={(event) => setSyncSource(event.target.value)}>
-              <option value="fixture">内置样例</option>
-              <option value="akshare">AkShare</option>
-              <option value="jisilu">集思录</option>
-              <option value="opencli">OpenCLI</option>
+            <select aria-label="同步来源" className={`${SL_INPUT_CLASS} mt-1`} value={syncKind} onChange={(event) => setSyncKind(event.target.value as 'cb_basic' | 'cb_ohlc')}>
+              <option value="cb_basic">可转债基础数据</option>
+              <option value="cb_ohlc">可转债行情</option>
             </select>
           </label>
           <label className="text-sm">
             可转债代码
             <input aria-label="同步可转债代码" className={`${SL_INPUT_CLASS} mt-1`} value={syncSymbols} onChange={(event) => setSyncSymbols(event.target.value)} placeholder="可选，逗号分隔" />
           </label>
+          <label className="text-sm flex items-center gap-2">
+            <input aria-label="包含已退市" type="checkbox" className="accent-primary" checked={includeDelisted} onChange={(event) => setIncludeDelisted(event.target.checked)} />
+            包含已退市可转债
+          </label>
+          {syncKind === 'cb_ohlc' ? (
+            <>
+              <label className="text-sm">
+                起始日期
+                <input aria-label="起始日期" type="date" className={`${SL_INPUT_CLASS} mt-1`} value={startDate} onChange={(event) => setStartDate(event.target.value)} />
+              </label>
+              <label className="text-sm">
+                结束日期
+                <input aria-label="结束日期" type="date" className={`${SL_INPUT_CLASS} mt-1`} value={endDate} onChange={(event) => setEndDate(event.target.value)} />
+              </label>
+            </>
+          ) : null}
         </div>
         <Button type="primary" htmlType="submit" className="mt-4" loading={actionLoading === 'sync'}>开始同步</Button>
         {error ? <ApiErrorAlert error={error} className="mt-4" /> : null}

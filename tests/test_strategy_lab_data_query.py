@@ -83,6 +83,12 @@ def test_get_instrument_detail_merges_terms_and_counts(db_manager: DatabaseManag
 
     assert detail is not None
     assert detail["bond_code"] == items[0]["bond_code"]
+    assert detail["stock_code"]
+    assert detail["stock_name"]
+    assert detail["current_premium_rate"] is not None
+    assert detail["latest_close"] is not None
+    assert detail["latest_premium_rate"] is not None
+    assert detail["industry"] == detail["terms"].get("industry")
     assert detail["redeem_clause"] is not None
     assert detail["redeem_trigger_price"] == 130.0
     assert detail["bar_count"] > 0
@@ -286,6 +292,9 @@ class StrategyLabDataQueryApiTestCase(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         payload = response.json()
         self.assertEqual(payload["bond_code"], code)
+        self.assertIn("latest_close", payload)
+        self.assertIn("latest_premium_rate", payload)
+        self.assertIn("industry", payload)
         self.assertIn("redeem_clause", payload)
         self.assertIn("terms", payload)
 
