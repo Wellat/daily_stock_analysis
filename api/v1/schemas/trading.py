@@ -27,6 +27,9 @@ class TradingOrderItem(BaseModel):
     id: int
     order_uid: str
     symbol: str
+    symbol_name: Optional[str] = None
+    live_run_id: Optional[int] = None
+    rebalance_batch_id: Optional[int] = None
     market: str
     instrument_type: str
     side: str

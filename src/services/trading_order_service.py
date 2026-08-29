@@ -36,6 +36,9 @@ class TradingOrderService:
         limit_price: Optional[float],
         source: str = "api",
         reason: Optional[str] = None,
+        symbol_name: Optional[str] = None,
+        live_run_id: Optional[int] = None,
+        rebalance_batch_id: Optional[int] = None,
     ) -> Dict[str, Any]:
         symbol = (symbol or "").strip()
         if not symbol.isdigit() or len(symbol) != 6:
@@ -61,6 +64,9 @@ class TradingOrderService:
             status="pending",
             source=source or "api",
             reason=reason,
+            symbol_name=symbol_name,
+            live_run_id=live_run_id,
+            rebalance_batch_id=rebalance_batch_id,
         )
         return self.repository._payload(row)
 
@@ -120,6 +126,16 @@ class TradingOrderService:
 
         if row.status == "submitted" and status == "submitted":
             return self.repository._payload(row)
+
+        if status == "filled":
+            if filled_quantity is None or float(filled_quantity) <= 0:
+                raise ValueError("filled callback requires positive filled_quantity")
+            if abs(float(filled_quantity) - float(row.quantity)) > 1e-9:
+                raise ValueError("partial fills are not supported; filled_quantity must equal quantity")
+            if filled_price is None or float(filled_price) <= 0:
+                raise ValueError("filled callback requires positive filled_price")
+        if status == "rejected" and not (error_message or "").strip():
+            raise ValueError("rejected callback requires error_message")
 
         fields: Dict[str, Any] = {"status": status}
         if status == "submitted":

@@ -29,6 +29,13 @@ def list_builtin_strategies() -> List[dict]:
             "instrument_types": ["convertible_bond"],
             "markets": ["cn"],
             "description": "Select instruments by close price plus convertible-bond premium rate.",
+            "parameters": [
+                {"key": "max_positions", "label": "最大持仓数", "type": "integer", "default": 2, "min": 1, "max": 50},
+                {"key": "per_position_cash", "label": "单债目标资金", "type": "number", "default": 10000, "min": 100},
+                {"key": "lot_size", "label": "最小交易单位", "type": "integer", "default": 10, "min": 1},
+                {"key": "max_abs_premium", "label": "最大溢价率", "type": "number", "default": 200, "min": 0},
+                {"key": "exclude_event_blocked", "label": "排除风险事件", "type": "boolean", "default": True},
+            ],
         },
         {
             "strategy_id": "low-premium",
@@ -36,6 +43,13 @@ def list_builtin_strategies() -> List[dict]:
             "instrument_types": ["convertible_bond"],
             "markets": ["cn"],
             "description": "Select convertible bonds by the lowest conversion premium rate.",
+            "parameters": [
+                {"key": "max_positions", "label": "最大持仓数", "type": "integer", "default": 2, "min": 1, "max": 50},
+                {"key": "per_position_cash", "label": "单债目标资金", "type": "number", "default": 10000, "min": 100},
+                {"key": "lot_size", "label": "最小交易单位", "type": "integer", "default": 10, "min": 1},
+                {"key": "max_abs_premium", "label": "最大溢价率", "type": "number", "default": 200, "min": 0},
+                {"key": "exclude_event_blocked", "label": "排除风险事件", "type": "boolean", "default": True},
+            ],
         },
         {
             "strategy_id": "ma-crossover",
@@ -43,5 +57,12 @@ def list_builtin_strategies() -> List[dict]:
             "instrument_types": ["convertible_bond"],
             "markets": ["cn"],
             "description": "Buy on a fast/slow moving-average golden cross and exit on a death cross or event block.",
+            "parameters": [
+                {"key": "fast_period", "label": "快速均线周期", "type": "integer", "default": 5, "min": 1},
+                {"key": "slow_period", "label": "慢速均线周期", "type": "integer", "default": 20, "min": 2},
+                {"key": "premium_rate_threshold", "label": "溢价率上限", "type": "number", "default": 30, "min": 0},
+                {"key": "position_pct", "label": "仓位比例", "type": "number", "default": 0.95, "min": 0, "max": 1},
+                {"key": "lot_size", "label": "最小交易单位", "type": "integer", "default": 10, "min": 1},
+            ],
         },
     ]

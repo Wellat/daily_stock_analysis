@@ -97,6 +97,28 @@ def build_agent_event_monitor_background_tasks(
     }]
 
 
+def build_live_strategy_background_tasks(config: Config) -> List[Dict[str, Any]]:
+    """Run the enabled live strategy once at 14:30 on trading days."""
+    from src.services.live_strategy_service import LiveStrategyService
+    last_run_key = {"value": None}
+
+    def live_strategy_task() -> None:
+        now = datetime.now()
+        if now.strftime("%H:%M") != "14:30":
+            return
+        key = now.date().isoformat()
+        if last_run_key["value"] == key:
+            return
+        service = LiveStrategyService()
+        live_config = service.get_config()
+        if not live_config or not live_config.get("enabled"):
+            return
+        service.run(trade_date=now.date())
+        last_run_key["value"] = key
+
+    return [{"task": live_strategy_task, "interval_seconds": 30, "run_immediately": False, "name": "live_strategy_1430"}]
+
+
 class RuntimeSchedulerService:
     """Manage scheduled analysis inside the current API/Web/Desktop process."""
 
@@ -213,7 +235,9 @@ class RuntimeSchedulerService:
     def _current_background_tasks(self, config: Config) -> List[Dict[str, Any]]:
         if self._background_tasks_provider is not None:
             return self._background_tasks_provider(config)
-        return self._current_agent_event_monitor_background_tasks(config)
+        tasks = self._current_agent_event_monitor_background_tasks(config)
+        tasks.extend(build_live_strategy_background_tasks(config))
+        return tasks
 
     def _current_agent_event_monitor_background_tasks(self, config: Config) -> List[Dict[str, Any]]:
         name = "agent_event_monitor"

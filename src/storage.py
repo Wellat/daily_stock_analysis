@@ -982,6 +982,9 @@ class TradingOrder(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     order_uid = Column(String(64), nullable=False, unique=True, index=True)
     symbol = Column(String(16), nullable=False, index=True)
+    symbol_name = Column(String(64))
+    live_run_id = Column(Integer, ForeignKey('live_strategy_runs.id'), nullable=True, index=True)
+    rebalance_batch_id = Column(Integer, ForeignKey('live_rebalance_batches.id'), nullable=True, index=True)
     market = Column(String(8), nullable=False, default='cn', index=True)
     instrument_type = Column(String(32), nullable=False, default='convertible_bond', index=True)
     side = Column(String(8), nullable=False)  # buy/sell
@@ -1024,6 +1027,63 @@ class QmtPosition(Base):
     __table_args__ = (
         UniqueConstraint('account', 'symbol', name='uq_qmt_position_account_symbol'),
     )
+
+
+class LiveStrategyConfig(Base):
+    """Persisted configuration for the single-account live strategy instance."""
+
+    __tablename__ = 'live_strategy_configs'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(100), nullable=False, default='default')
+    strategy_id = Column(String(64), nullable=False, default='double-low')
+    strategy_version = Column(String(64), nullable=False, default='v1')
+    qmt_account = Column(String(64), nullable=False)
+    enabled = Column(Boolean, nullable=False, default=False, index=True)
+    symbols_json = Column(Text)
+    parameters_json = Column(Text)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, index=True)
+
+
+class LiveStrategyRun(Base):
+    """One deterministic live strategy calculation for a trading date."""
+
+    __tablename__ = 'live_strategy_runs'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    run_uid = Column(String(64), nullable=False, unique=True, index=True)
+    config_id = Column(Integer, ForeignKey('live_strategy_configs.id'), nullable=False, index=True)
+    qmt_account = Column(String(64), nullable=False, index=True)
+    trade_date = Column(Date, nullable=False, index=True)
+    status = Column(String(16), nullable=False, default='running', index=True)
+    data_snapshot_at = Column(DateTime)
+    target_json = Column(Text)
+    current_json = Column(Text)
+    rebalance_json = Column(Text)
+    risk_json = Column(Text)
+    error_message = Column(Text)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+    completed_at = Column(DateTime, index=True)
+
+    __table_args__ = (
+        UniqueConstraint('config_id', 'trade_date', name='uq_live_strategy_config_trade_date'),
+    )
+
+
+class LiveRebalanceBatch(Base):
+    """Orders generated from one live strategy run."""
+
+    __tablename__ = 'live_rebalance_batches'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    batch_uid = Column(String(64), nullable=False, unique=True, index=True)
+    run_id = Column(Integer, ForeignKey('live_strategy_runs.id'), nullable=False, unique=True, index=True)
+    qmt_account = Column(String(64), nullable=False, index=True)
+    status = Column(String(16), nullable=False, default='pending', index=True)
+    summary_json = Column(Text)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 
 class ConversationMessage(Base):
@@ -1691,6 +1751,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             self._ensure_llm_usage_telemetry_columns()
             self._ensure_decision_signal_profile_schema()
             self._ensure_strategy_lab_and_stock_type_columns()
+            self._ensure_live_trading_columns()
             self._ensure_intelligence_item_scope_values()
             self._ensure_schema_migration_record()
             self._ensure_intelligence_items_unique_index()
@@ -1711,6 +1772,20 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             self._SessionLocal = None
             self.__class__._instance = None
             raise
+
+    def _ensure_live_trading_columns(self) -> None:
+        """Add live-order columns for databases created before live trading."""
+        if not self._is_sqlite_engine:
+            return
+        with self._engine.begin() as conn:
+            columns = {row[1] for row in conn.execute(text("PRAGMA table_info(trading_orders)"))}
+            for name, ddl in {
+                "symbol_name": "VARCHAR(64)",
+                "live_run_id": "INTEGER",
+                "rebalance_batch_id": "INTEGER",
+            }.items():
+                if name not in columns:
+                    conn.execute(text(f"ALTER TABLE trading_orders ADD COLUMN {name} {ddl}"))
 
     def _ensure_schema_migration_record(self) -> None:
         session = self._SessionLocal()

@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [文档] 在 `docs/convertible-bond-trading.md` 增加 DSA 可转债实盘自动调仓闭环、数据对象、风控、API、Web 工作台和分阶段验收方案草稿
+- [修复] 可转债实盘调仓过滤 QMT 全量持仓中的股票和基金，避免非可转债标的被误生成卖单
 - [新功能] 新增 QMT 持仓上报接口 `POST /api/v1/trading/qmt/positions`（按 account 全量替换，未上报标的自动清理，空列表视为清仓）
 - [新功能] 新增持仓查询接口 `GET /api/v1/trading/positions`
 - [改进] 前端新增「实盘」页面，交易记录与持仓作为子 tab 展示

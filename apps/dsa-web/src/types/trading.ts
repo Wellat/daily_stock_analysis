@@ -6,6 +6,7 @@ export interface TradingOrderItem {
   id: number;
   orderUid: string;
   symbol: string;
+  symbolName?: string | null;
   market: string;
   instrumentType: string;
   side: TradingOrderSide;

@@ -14,6 +14,7 @@ import {
 } from '../common';
 import type { TradingOrderItem, TradingOrderStatus } from '../../types/trading';
 import { formatDateTime } from '../../utils/format';
+import { Tooltip } from 'antd';
 
 const PAGE_SIZE = 20;
 
@@ -128,28 +129,25 @@ export const TradingOrdersTab: React.FC = () => {
               <thead>
                 <tr className="border-b border-border/60 text-left text-xs uppercase tracking-wide text-secondary-text">
                   <th className="px-4 py-3">ID</th>
-                  <th className="px-4 py-3">代码</th>
+                  <th className="px-4 py-3">标的</th>
                   <th className="px-4 py-3">方向</th>
                   <th className="px-4 py-3">数量</th>
                   <th className="px-4 py-3">类型</th>
-                  <th className="px-4 py-3">限价</th>
                   <th className="px-4 py-3">状态</th>
                   <th className="px-4 py-3">成交数量</th>
                   <th className="px-4 py-3">成交价</th>
-                  <th className="px-4 py-3">QMT 订单号</th>
-                  <th className="px-4 py-3">创建时间</th>
-                  <th className="px-4 py-3">失败原因</th>
+                  <th className="px-4 py-3">成交时间</th>
+                  <th className="px-4 py-3">更多</th>
                 </tr>
               </thead>
               <tbody>
                 {orders.map((order) => (
                   <tr key={order.id} className="border-b border-border/40 hover:bg-hover">
                     <td className="px-4 py-3 text-muted-text">{order.id}</td>
-                    <td className="px-4 py-3 font-medium text-foreground">{order.symbol}</td>
+                    <td className="px-4 py-3 font-medium text-foreground"><div>{order.symbol}</div><div className="text-xs text-secondary-text">{order.symbolName ?? '名称未同步'}</div></td>
                     <td className="px-4 py-3">{sideLabel(order.side)}</td>
                     <td className="px-4 py-3">{order.quantity}</td>
                     <td className="px-4 py-3">{orderTypeLabel(order.orderType)}</td>
-                    <td className="px-4 py-3">{order.limitPrice ?? '—'}</td>
                     <td className="px-4 py-3">
                       <Badge variant={STATUS_BADGE_VARIANTS[order.status]}>
                         {STATUS_LABELS[order.status]}
@@ -157,9 +155,8 @@ export const TradingOrdersTab: React.FC = () => {
                     </td>
                     <td className="px-4 py-3">{order.filledQuantity ?? '—'}</td>
                     <td className="px-4 py-3">{order.filledPrice ?? '—'}</td>
-                    <td className="px-4 py-3">{order.qmtOrderId ?? '—'}</td>
-                    <td className="px-4 py-3">{formatDateTime(order.createdAt)}</td>
-                    <td className="px-4 py-3 text-danger">{order.errorMessage ?? '—'}</td>
+                    <td className="px-4 py-3">{formatDateTime(order.completedAt)}</td>
+                    <td className="px-4 py-3"><Tooltip title={<div><div>原因：{order.reason ?? '—'}</div><div>QMT：{order.qmtOrderId ?? '—'}</div><div>创建：{formatDateTime(order.createdAt)}</div><div>提交：{formatDateTime(order.submittedAt)}</div><div>失败：{order.errorMessage ?? '—'}</div></div>}><span className="cursor-help text-cyan">查看</span></Tooltip></td>
                   </tr>
                 ))}
               </tbody>

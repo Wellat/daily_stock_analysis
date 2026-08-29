@@ -27,6 +27,7 @@ from api.v1.endpoints import (
     strategy_lab,
     system_config,
     trading,
+    live_strategy,
     usage,
 )
 
@@ -122,6 +123,12 @@ router.include_router(
     trading.router,
     prefix="/trading",
     tags=["Trading"]
+)
+
+router.include_router(
+    live_strategy.router,
+    prefix="/live-strategy",
+    tags=["LiveStrategy"],
 )
 
 router.include_router(
