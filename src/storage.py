@@ -974,6 +974,58 @@ class StrategyLabSignal(Base):
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, index=True)
 
 
+class TradingOrder(Base):
+    """可转债实盘交易指令（QMT 拉取执行，HTTP 回调回写结果）。"""
+
+    __tablename__ = 'trading_orders'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    order_uid = Column(String(64), nullable=False, unique=True, index=True)
+    symbol = Column(String(16), nullable=False, index=True)
+    market = Column(String(8), nullable=False, default='cn', index=True)
+    instrument_type = Column(String(32), nullable=False, default='convertible_bond', index=True)
+    side = Column(String(8), nullable=False)  # buy/sell
+    quantity = Column(Float, nullable=False)
+    order_type = Column(String(16), nullable=False, default='limit')  # limit/market
+    limit_price = Column(Float)
+    status = Column(String(16), nullable=False, default='pending', index=True)
+    qmt_order_id = Column(String(64), index=True)
+    filled_quantity = Column(Float)
+    filled_price = Column(Float)
+    error_message = Column(Text)
+    source = Column(String(32), nullable=False, default='api')
+    reason = Column(Text)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, index=True)
+    submitted_at = Column(DateTime)
+    completed_at = Column(DateTime)
+
+    __table_args__ = (
+        Index('ix_trading_order_status_created', 'status', 'created_at'),
+    )
+
+
+class QmtPosition(Base):
+    """QMT 上报的账户持仓快照（按 account + symbol 幂等覆盖）。"""
+
+    __tablename__ = 'qmt_positions'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    account = Column(String(64), nullable=False, index=True)
+    symbol = Column(String(16), nullable=False, index=True)
+    name = Column(String(64))
+    volume = Column(Float, nullable=False)
+    can_use_volume = Column(Float, nullable=False)
+    open_price = Column(Float)
+    float_profit = Column(Float)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    __table_args__ = (
+        UniqueConstraint('account', 'symbol', name='uq_qmt_position_account_symbol'),
+    )
+
+
 class ConversationMessage(Base):
     """
     Agent 对话历史记录表

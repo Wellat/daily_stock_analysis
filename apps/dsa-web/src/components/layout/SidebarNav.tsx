@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Activity, BarChart3, Bell, BriefcaseBusiness, CandlestickChart, FlaskConical, Gauge, Home, LogOut, MessageSquareQuote, Search, Settings2 } from 'lucide-react';
+import { Activity, BarChart3, Bell, BriefcaseBusiness, CandlestickChart, FlaskConical, Gauge, Home, LogOut, MessageSquareQuote, Receipt, Search, Settings2 } from 'lucide-react';
 import { NavLink } from 'react-router-dom';
 import { SCREENING_CONFIG_CHANGED_EVENT, SYSTEM_CONFIG_CHANGED_EVENT, screeningApi } from '../../api/screening';
 import { useAuth } from '../../contexts/AuthContext';
@@ -32,6 +32,7 @@ const NAV_ITEMS: NavItem[] = [
   { key: 'chat', labelKey: 'layout.nav.chat', to: '/chat', icon: MessageSquareQuote, badge: 'completion' },
   { key: 'screening', labelKey: 'layout.nav.screening', to: '/screening', icon: Search },
   { key: 'portfolio', labelKey: 'layout.nav.portfolio', to: '/portfolio', icon: BriefcaseBusiness },
+  { key: 'trading', labelKey: 'layout.nav.trading', to: '/trading', icon: Receipt },
   { key: 'decision-signals', labelKey: 'layout.nav.decisionSignals', to: '/decision-signals', icon: Activity },
   { key: 'backtest', labelKey: 'layout.nav.backtest', to: '/backtest', icon: BarChart3 },
   { key: 'strategy-lab', labelKey: 'layout.nav.strategyLab', to: '/strategy-lab', icon: FlaskConical },

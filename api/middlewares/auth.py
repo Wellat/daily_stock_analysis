@@ -27,11 +27,22 @@ EXEMPT_PATHS = frozenset({
     "/openapi.json",
 })
 
+# QMT 拉取/回调走独立 token 校验（见 api/v1/endpoints/trading.py），
+# 不参与管理员会话 Cookie 校验。
+EXEMPT_PATH_PREFIXES = frozenset({
+    "/api/v1/trading/qmt",
+})
+
 
 def _path_exempt(path: str) -> bool:
     """Check if path is exempt from auth."""
     normalized = path.rstrip("/") or "/"
     return normalized in EXEMPT_PATHS
+
+
+def _path_prefix_exempt(path: str) -> bool:
+    """Check if path is exempt from auth by prefix."""
+    return any(path.startswith(prefix) for prefix in EXEMPT_PATH_PREFIXES)
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
@@ -46,7 +57,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         path = request.url.path
-        if _path_exempt(path):
+        if _path_exempt(path) or _path_prefix_exempt(path):
             return await call_next(request)
 
         if not path.startswith("/api/v1/"):

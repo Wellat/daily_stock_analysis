@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [新功能] 新增 QMT 持仓上报接口 `POST /api/v1/trading/qmt/positions`（按 account 全量替换，未上报标的自动清理，空列表视为清仓）
+- [新功能] 新增持仓查询接口 `GET /api/v1/trading/positions`
+- [改进] 前端新增「实盘」页面，交易记录与持仓作为子 tab 展示
+- [新功能] 新增交易记录页（`/trading`），展示可转债实盘交易指令列表，支持状态筛选、分页与刷新
+- [文档] 新增 `docs/convertible-bond-qmt-api.md`：面向 QMT 脚本开发者的实盘交易对接接口说明（拉取/回调契约、状态约定与接入示例）
+- [新功能] 新增可转债实盘交易指令表 `trading_orders` 与创建/查询/取消 API
+- [新功能] 新增 QMT 待交易指令拉取与执行结果回调 API（HTTP token 鉴权，支持 `submitted`/`filled`/`rejected` 状态回写）
+- [文档] 新增 `docs/convertible-bond-trading.md`：可转债实盘交易链路对接契约与 QMT 接入说明
 - [新功能] 策略实验室数据同步新增可转债溢价历史补数任务：通过 opencli `cb-premium-history` 按“转债代码 + 日期”补写 `strategy_lab_cb_daily_factors` 中缺失的 `premium_rate` / `remaining_size`，支持已退市筛选并接入数据同步页面入口
 - [修复] 可转债基础数据同步入库改为逐只容错：单只转债的入库失败（basic/terms/events）仅记录错误日志并计入失败清单后跳过，不再因单只异常拖垮整个同步任务
 - [修复] 可转债事件落库在同批次出现重复 (bond_code, event_date, event_type) 时触发 UNIQUE 约束冲突：数据源 cb_event_list 可能返回完全相同的重复事件，且 session 使用 autoflush=False 导致未 flush 的新行无法被后续 select 命中；`upsert_cb_events` 现先按去重键在内存去重再入库

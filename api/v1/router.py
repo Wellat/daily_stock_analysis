@@ -26,6 +26,7 @@ from api.v1.endpoints import (
     stocks,
     strategy_lab,
     system_config,
+    trading,
     usage,
 )
 
@@ -115,6 +116,12 @@ router.include_router(
     intelligence.router,
     prefix="/intelligence",
     tags=["Intelligence"]
+)
+
+router.include_router(
+    trading.router,
+    prefix="/trading",
+    tags=["Trading"]
 )
 
 router.include_router(
