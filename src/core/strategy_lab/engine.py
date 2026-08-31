@@ -21,8 +21,11 @@ class StrategyLabEngine(ABC):
 
 def list_builtin_strategies() -> List[dict]:
     """Return strategies exposed by the Strategy Lab backend."""
-
-    return [
+    # The new strategy registry is the source of truth for migrated strategies;
+    # retain legacy entries until they are migrated.
+    from src.core.strategies.registry import list_builtin_strategies as registry_list
+    migrated = {item["strategy_id"]: item for item in registry_list()}
+    legacy = [
         {
             "strategy_id": "double-low",
             "name": "Double Low Rotation",
@@ -66,3 +69,9 @@ def list_builtin_strategies() -> List[dict]:
             ],
         },
     ]
+    result = []
+    for item in legacy:
+        result.append(migrated.get(item["strategy_id"], item))
+    for key, item in migrated.items():
+        if key not in {x["strategy_id"] for x in legacy}: result.append(item)
+    return result

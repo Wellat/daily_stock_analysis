@@ -895,6 +895,11 @@ class StrategyLabSyncRun(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     run_uid = Column(String(64), nullable=False, unique=True, index=True)
     sync_type = Column(String(32), nullable=False, index=True)
+    run_kind = Column(String(16), nullable=False, default='after_close', index=True)
+    trade_date = Column(Date, index=True)
+    data_snapshot_at = Column(DateTime)
+    quality_status = Column(String(16), default='unknown', index=True)
+    notification_status = Column(String(16), default='pending')
     market = Column(String(16), nullable=False, default='cn', index=True)
     status = Column(String(16), nullable=False, default='running', index=True)
     cancel_requested = Column(Boolean, nullable=False, default=False, index=True)
@@ -981,6 +986,7 @@ class TradingOrder(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     order_uid = Column(String(64), nullable=False, unique=True, index=True)
+    decision_id = Column(Integer, ForeignKey('strategy_decisions.id'), nullable=True, index=True)
     symbol = Column(String(16), nullable=False, index=True)
     symbol_name = Column(String(64))
     live_run_id = Column(Integer, ForeignKey('live_strategy_runs.id'), nullable=True, index=True)
@@ -1006,6 +1012,34 @@ class TradingOrder(Base):
     __table_args__ = (
         Index('ix_trading_order_status_created', 'status', 'created_at'),
     )
+
+
+class StrategyDecisionRecord(Base):
+    """Auditable strategy intent, independent from execution orders."""
+    __tablename__ = 'strategy_decisions'
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    decision_uid = Column(String(64), nullable=False, unique=True, index=True)
+    strategy_id = Column(String(64), nullable=False, index=True)
+    strategy_version = Column(String(64), nullable=False, default='v1')
+    mode = Column(String(16), nullable=False, index=True)
+    market = Column(String(16), nullable=False, default='cn')
+    instrument_type = Column(String(32), nullable=False, default='convertible_bond')
+    account = Column(String(64), index=True)
+    trade_date = Column(Date, nullable=False, index=True)
+    as_of = Column(DateTime)
+    action = Column(String(16), nullable=False)
+    symbol = Column(String(32), index=True)
+    symbol_name = Column(String(64))
+    target_weight = Column(Float)
+    target_amount = Column(Float)
+    suggested_quantity = Column(Float)
+    reason = Column(Text)
+    decision_data_json = Column(Text)
+    risk_status = Column(String(16), default='passed')
+    status = Column(String(16), default='created', index=True)
+    live_run_id = Column(Integer, ForeignKey('live_strategy_runs.id'), nullable=True)
+    backtest_run_id = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=datetime.now)
 
 
 class QmtPosition(Base):
@@ -1042,6 +1076,10 @@ class LiveStrategyConfig(Base):
     enabled = Column(Boolean, nullable=False, default=False, index=True)
     symbols_json = Column(Text)
     parameters_json = Column(Text)
+    rebalance_frequency_days = Column(Integer, nullable=False, default=1)
+    event_check_enabled = Column(Boolean, nullable=False, default=True)
+    data_sync_before_run = Column(Boolean, nullable=False, default=True)
+    data_max_age_minutes = Column(Integer, nullable=True)
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, index=True)
 
@@ -1057,6 +1095,13 @@ class LiveStrategyRun(Base):
     qmt_account = Column(String(64), nullable=False, index=True)
     trade_date = Column(Date, nullable=False, index=True)
     status = Column(String(16), nullable=False, default='running', index=True)
+    mode = Column(String(16), nullable=False, default='rebalance', index=True)
+    strategy_id = Column(String(64), index=True)
+    strategy_version = Column(String(64))
+    decision_count = Column(Integer, default=0)
+    order_count = Column(Integer, default=0)
+    risk_status = Column(String(16), default='passed')
+    skip_reason = Column(Text)
     data_snapshot_at = Column(DateTime)
     target_json = Column(Text)
     current_json = Column(Text)
@@ -1067,7 +1112,7 @@ class LiveStrategyRun(Base):
     completed_at = Column(DateTime, index=True)
 
     __table_args__ = (
-        UniqueConstraint('config_id', 'trade_date', name='uq_live_strategy_config_trade_date'),
+        UniqueConstraint('config_id', 'trade_date', 'mode', name='uq_live_strategy_config_trade_date_mode'),
     )
 
 
@@ -1783,9 +1828,19 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                 "symbol_name": "VARCHAR(64)",
                 "live_run_id": "INTEGER",
                 "rebalance_batch_id": "INTEGER",
+                "decision_id": "INTEGER",
             }.items():
                 if name not in columns:
                     conn.execute(text(f"ALTER TABLE trading_orders ADD COLUMN {name} {ddl}"))
+            # Columns added to live strategy tables after the initial release.
+            run_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(live_strategy_runs)"))}
+            for name, ddl in {"mode": "VARCHAR(16) DEFAULT 'rebalance'", "strategy_id": "VARCHAR(64)", "strategy_version": "VARCHAR(64)", "decision_count": "INTEGER DEFAULT 0", "order_count": "INTEGER DEFAULT 0", "risk_status": "VARCHAR(16) DEFAULT 'passed'", "skip_reason": "TEXT"}.items():
+                if name not in run_columns:
+                    conn.execute(text(f"ALTER TABLE live_strategy_runs ADD COLUMN {name} {ddl}"))
+            config_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(live_strategy_configs)"))}
+            for name, ddl in {"rebalance_frequency_days": "INTEGER DEFAULT 1", "event_check_enabled": "BOOLEAN DEFAULT 1", "data_sync_before_run": "BOOLEAN DEFAULT 1", "data_max_age_minutes": "INTEGER"}.items():
+                if name not in config_columns:
+                    conn.execute(text(f"ALTER TABLE live_strategy_configs ADD COLUMN {name} {ddl}"))
 
     def _ensure_schema_migration_record(self) -> None:
         session = self._SessionLocal()

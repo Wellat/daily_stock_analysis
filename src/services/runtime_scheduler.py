@@ -118,6 +118,26 @@ def build_live_strategy_background_tasks(config: Config) -> List[Dict[str, Any]]
 
     return [{"task": live_strategy_task, "interval_seconds": 30, "run_immediately": False, "name": "live_strategy_1430"}]
 
+def build_convertible_bond_sync_background_tasks(config: Config) -> List[Dict[str, Any]]:
+    """Schedule intraday and after-close CB data sync without provider fallback."""
+    from src.services.strategy_lab.data_sync_service import StrategyLabDataSyncService
+    state = {"intraday": None, "after_close": None}
+    def make_task(kind: str, hhmm: str):
+        def task() -> None:
+            now = datetime.now()
+            if now.strftime("%H:%M") != hhmm or state[kind] == now.date(): return
+            if not getattr(config, "cb_sync_enabled", True): return
+            try:
+                StrategyLabDataSyncService().run_scheduled_sync(run_kind=kind, trade_date=now.date())
+                state[kind] = now.date()
+            except Exception:
+                logger.exception("CB %s sync failed", kind)
+        return task
+    return [
+        {"task": make_task("intraday", getattr(config, "cb_intraday_sync_time", "14:20")), "interval_seconds": 30, "run_immediately": False, "name": "cb_intraday_sync"},
+        {"task": make_task("after_close", getattr(config, "cb_after_close_sync_time", "20:00")), "interval_seconds": 30, "run_immediately": False, "name": "cb_after_close_sync"},
+    ]
+
 
 class RuntimeSchedulerService:
     """Manage scheduled analysis inside the current API/Web/Desktop process."""
@@ -237,6 +257,7 @@ class RuntimeSchedulerService:
             return self._background_tasks_provider(config)
         tasks = self._current_agent_event_monitor_background_tasks(config)
         tasks.extend(build_live_strategy_background_tasks(config))
+        tasks.extend(build_convertible_bond_sync_background_tasks(config))
         return tasks
 
     def _current_agent_event_monitor_background_tasks(self, config: Config) -> List[Dict[str, Any]]:

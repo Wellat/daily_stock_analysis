@@ -35,12 +35,16 @@ class StrategyLabDataRepository:
         sync_type: str,
         market: str,
         payload: Dict[str, Any],
+        run_kind: str = "after_close",
+        trade_date: Optional[date] = None,
     ) -> StrategyLabSyncRun:
         with self.db.get_session() as session:
             row = StrategyLabSyncRun(
                 run_uid=run_uid,
                 sync_type=sync_type,
                 market=market,
+                run_kind=run_kind,
+                trade_date=trade_date,
                 status="running",
                 payload_json=json.dumps(payload, ensure_ascii=False, sort_keys=True),
             )

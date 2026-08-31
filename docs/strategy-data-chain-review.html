@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>策略数据链路审阅报告</title>
+<style>
+body{margin:0;background:#f4f7fb;color:#172033;font:15px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif}main{max-width:1180px;margin:auto;padding:42px 28px 80px}h1{font-size:36px;line-height:1.2;margin:0 0 10px;color:#102a56}h2{margin-top:42px;color:#173d73;border-bottom:1px solid #d7e0ee;padding-bottom:8px}h3{color:#21518e}.lead{font-size:18px;color:#52627a}.meta,.card{background:#fff;border:1px solid #dbe4f0;border-radius:14px;padding:20px 24px;box-shadow:0 5px 18px #1a4b7d0b;margin:16px 0}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:14px}.badge{display:inline-block;border-radius:99px;padding:3px 11px;font-size:12px;font-weight:700}.red{background:#ffe5e5;color:#a51d2d}.amber{background:#fff1cf;color:#8b5a00}.green{background:#def7e8;color:#12733f}.blue{background:#e3efff;color:#185da5}table{width:100%;border-collapse:collapse;background:#fff;border-radius:12px;overflow:hidden}th,td{text-align:left;padding:11px 13px;border-bottom:1px solid #e5ebf3;vertical-align:top}th{background:#edf3fa;color:#24466f}code{background:#eef3f8;border-radius:4px;padding:1px 5px}li{margin:5px 0}.flow{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:18px 0}.flow span{background:#e8f1fc;border:1px solid #bfd4ee;border-radius:9px;padding:10px 13px}.arrow{color:#7392b5;font-weight:bold}@media(max-width:700px){main{padding:25px 15px}h1{font-size:29px}}
+</style></head>
+<body><main>
+<div class="meta"><div class="badge blue">架构/功能审阅</div><div class="badge amber">基于当前工作区</div><h1>策略数据同步 → 决策 → 回测/实盘 → 订单链路审阅报告</h1><p class="lead">审阅范围：可转债一期统一策略架构、现有 Strategy Lab、Live Strategy、QMT 订单链路、RuntimeScheduler、数据同步页面及 Web API。结论不是“代码能编译”式检查，而是对真实运行闭环、失败边界、数据一致性和可观测性的审计。</p><p><strong>总体结论：</strong>当前实现已具备若干可复用基础组件，但尚未达到可安全运行的端到端闭环。存在 <span class="badge red">2 项高风险阻断</span>、<span class="badge amber">7 项中风险缺口</span> 和若干清理/一致性问题。当前不建议直接开启自动实盘。</p></div>
+
+<h2>一、目标链路与当前实现</h2>
+<div class="flow"><span>Provider / StrategyLabDataSyncService</span><b class="arrow">→</b><span>StrategyLabSyncRun</span><b class="arrow">→</b><span>MarketContext</span><b class="arrow">→</b><span>StrategyBase.evaluate</span><b class="arrow">→</b><span>StrategyDecision</span><b class="arrow">→</b><span>ExecutionPlanner</span><b class="arrow">→</b><span>TradingOrder</span><b class="arrow">→</b><span>QMT pending/callback</span></div>
+<div class="grid"><div class="card"><h3>已存在并可复用</h3><ul><li><code>StrategyLabDataSyncService</code> 已有 provider 拉取、分阶段 upsert、运行状态和取消机制。</li><li><code>RuntimeSchedulerService</code> 支持后台任务、按日期防重复和异常隔离。</li><li><code>TradingOrderService</code> 与 QMT pending/callback API 已形成基本执行链路。</li><li>新策略包提供 <code>MarketContext</code>、<code>StrategyDecision</code>、low-premium 和执行器骨架。</li></ul></div><div class="card"><h3>当前新增但未完全接通</h3><ul><li>策略决策表与订单 <code>decision_id</code> 已定义，但决策记录没有完整 API/生命周期管理。</li><li>14:20/20:00 scheduler 任务已注册，但盘中结果没有成为实盘下单的强制门禁。</li><li>回测执行器是独立适配器，尚未接入 <code>StrategyLabService/Engine</code> 的真实回测路径。</li></ul></div></div>
+
+<h2>二、严重问题（必须先修）</h2>
+<table><thead><tr><th>等级</th><th>问题与证据</th><th>影响</th><th>修复要求</th></tr></thead><tbody>
+<tr><td><span class="badge red">高</span></td><td>盘中同步没有门禁。scheduler 的 <code>cb_intraday_sync</code> 只调用同步；<code>LiveStrategyService.run()</code> 不查询当日 <code>intraday</code> 的 <code>StrategyLabSyncRun</code>，14:30 任务仍可直接决策和建单。</td><td>14:20 网络失败、数据过期或只完成部分阶段时仍可能生成实盘订单，违反 fail-closed 目标。</td><td>新增唯一的“可用快照”查询服务；run/preview 均先校验状态、关键阶段、快照年龄。正式 run 不通过则绝不创建订单；preview 仅返回阻断诊断。</td></tr>
+<tr><td><span class="badge red">高</span></td><td>所谓盘后增量尚未实现。<code>run_scheduled_sync()</code> 最终调用 <code>sync_provider_convertible_bonds()</code>，provider 仍按现有契约拉取全量数据；没有按各表最新成功日期计算缺口。</td><td>运行时间、上游压力和重复写入不可控；“一期严格增量”的产品承诺与实际行为不一致。</td><td>为 basic/terms/factor/event 分别计算水位；provider 支持日期范围/标的范围；只补缺口并保持幂等。没有日期范围能力时必须明确记录为全量而非伪称增量。</td></tr>
+</tbody></table>
+
+<h2>三、中风险功能缺口</h2>
+<table><thead><tr><th>领域</th><th>发现</th><th>建议</th></tr></thead><tbody>
+<tr><td>同步状态</td><td>模型增加了 <code>run_kind/data_snapshot_at/quality_status/notification_status</code>，但完成/失败流程没有统一写入这些字段；现有查询 payload 也没有展示。</td><td>将状态更新集中在编排器，增加阶段状态 JSON、质量诊断和通知结果 API。</td></tr>
+<tr><td>通知</td><td>邮件在 <code>run_scheduled_sync</code> 外层发送，手工/异步 provider sync 路径不会统一通知；通知结果也未持久化。</td><td>统一编排器负责 success/failure 通知，并写回 notification_status；避免重复发送。</td></tr>
+<tr><td>调度</td><td>时间匹配依赖 30 秒轮询的精确 <code>HH:MM</code> 字符串；进程重启、时钟漂移或任务执行跨分钟时可能漏触发。未见交易日判断。</td><td>用“目标时间窗口 + 运行记录幂等”替代精确字符串；统一复用 trading-day 检查。</td></tr>
+<tr><td>回测</td><td><code>BacktestExecutor</code>/<code>ExecutionPlanner</code> 未接入旧 StrategyLabEngine。low-premium 新类只服务 LiveStrategy，无法证明回测与实盘同一上下文得到一致组合。</td><td>增加兼容 adapter，在 StrategyLabService 的单日循环中调用新策略；补充同上下文双执行器一致性测试。</td></tr>
+<tr><td>事件检查</td><td>策略层支持 event_check，但同步上下文只把 <code>event_blocked</code> 压成通用事件，强赎/下修/回售的事件类型和详情未完整注入。</td><td>从 <code>StrategyLabCbEvent</code> 映射完整事件类型、日期和详情，并覆盖无可用持仓只记风险不下单。</td></tr>
+<tr><td>配置兼容</td><td>新增 Config 字段已解析，但 Web 实盘面板未完整展示同步门禁、数据年龄和同步状态；保存配置字段与 UI 仍不完全对称。</td><td>增加状态卡、阻断原因、最后成功快照；保存/读取字段双向测试。</td></tr>
+<tr><td>数据库迁移</td><td>SQLite 已补 <code>trading_orders.decision_id</code> 等列，但新同步字段、<code>strategy_decisions</code> 表在既有生产库上的迁移/索引/外键完整性没有独立迁移版本。</td><td>增加显式 schema migration 版本和 upgrade 测试，检查旧库、空库、重复启动三种场景。</td></tr>
+</tbody></table>
+
+<h2>四、订单与前后端闭环审阅</h2>
+<div class="card"><h3>已闭环部分</h3><ul><li>Web 可调用 <code>/api/v1/trading/orders</code>，订单列表字段与 QMT 状态字段基本对应。</li><li>实盘运行创建 <code>LiveStrategyRun</code>、<code>LiveRebalanceBatch</code> 和 <code>TradingOrder</code>，订单可通过 run/batch 查询。</li><li>QMT 拉取 pending、回调 submitted/filled/rejected 的旧链路未被策略架构直接破坏。</li></ul><h3>尚未闭环部分</h3><ul><li>Web 实盘工作台没有“盘中数据可用/不可用”强门禁展示，也没有 event_check/rebalance 的清晰运行切换。</li><li>策略决策列表 API 仅提供 live run 下的查询；回测成交与决策没有 <code>decision_id</code> 关联。</li><li>交易记录页面没有显示决策 UID、运行 UID、批次 UID、失败原因等审计字段的完整契约。</li><li>订单幂等键 <code>client_order_key</code> 只在规划器内生成，当前 TradingOrder 表/服务没有持久化或唯一约束，重复运行保护仍主要依赖 run 记录。</li></ul></div>
+
+<h2>五、重复造轮子与应清理项</h2>
+<ul><li>旧 <code>engine.list_builtin_strategies()</code> 保留一整份 legacy 元数据，新 registry 又生成一份；应让 registry 成为唯一元数据源，通过兼容转换保留旧字段。</li><li><code>LiveStrategyService</code> 内仍手工构造 MarketContext，和新建的 <code>StrategyContextService</code> 重复；应删除手工映射，统一由 context service 负责。</li><li><code>LiveExecutor</code> 已存在，但 LiveStrategyService 仍直接循环调用 <code>TradingOrderService.create_order()</code>；应二选一，避免两条执行语义漂移。</li><li><code>run_scheduled_sync()</code> 目前只是 provider sync 的薄包装，尚不是真正的 orchestrator；应避免以“scheduled”命名掩盖未实现的阶段质量、增量和门禁逻辑。</li><li>策略代码存在大量压缩式单行语句，降低审计可读性；实盘风控路径应改为清晰分支并补结构化日志。</li></ul>
+
+<h2>六、建议的落地顺序</h2>
+<ol><li><strong>先修安全阻断：</strong>实现盘中同步可用性查询和 run 前 fail-closed 门禁；补“失败/过期/阶段不全绝不下单”测试。</li><li><strong>收敛同步编排：</strong>统一创建/完成/失败/通知状态，真实实现严格缺口增量；为旧 SQLite 增加显式迁移版本。</li><li><strong>收敛执行层：</strong>LiveStrategyService 使用 ExecutionPlanner + LiveExecutor；StrategyLabService 使用同一策略与 BacktestExecutor。</li><li><strong>完善事件与审计：</strong>注入完整事件详情，持久化 decision UID/client key，并补决策→成交→订单查询。</li><li><strong>完成 UI 闭环：</strong>同步状态卡、快照年龄、门禁原因、模式区分、决策详情和订单审计字段；再考虑自动启用实盘。</li></ol>
+
+<h2>七、验证矩阵</h2>
+<table><thead><tr><th>检查</th><th>当前证据</th><th>结论</th></tr></thead><tbody>
+<tr><td>Python 静态编译</td><td>新增/修改 Python 文件可编译</td><td><span class="badge green">通过</span> 只能证明语法，不证明运行契约</td></tr>
+<tr><td>Web lint/build</td><td>此前 lint 与 build 均通过</td><td><span class="badge green">通过</span> 不覆盖后端同步/订单链路</td></tr>
+<tr><td>数据库初始化</td><td>虚拟环境内存 SQLite 初始化曾通过</td><td><span class="badge amber">部分</span> 未覆盖已有生产库升级</td></tr>
+<tr><td>pytest 后端回归</td><td>当前环境此前缺少依赖/未完成全量执行</td><td><span class="badge red">缺失</span></td></tr>
+<tr><td>真实 provider/QMT 联调</td><td>未执行在线 provider 和 QMT</td><td><span class="badge red">缺失</span></td></tr>
+</tbody></table>
+
+<h2>八、最终判断</h2><div class="card"><p><strong>功能完整性：</strong>基础骨架约 40%–50% 完成，旧链路可用，新链路尚未形成可证明的一致闭环。</p><p><strong>严重 bug：</strong>盘中同步失败仍可能下单是最高优先级问题；“增量同步”当前名不副实是第二个高风险问题。</p><p><strong>上线建议：</strong>保持自动实盘关闭。先完成门禁、真实增量、迁移、统一执行器和回归测试，再进行小账户/模拟账户灰度。</p><p><strong>回滚策略：</strong>保留旧 StrategyLab/TradingOrder 路径；新策略运行通过配置关闭。数据库字段采用向前兼容 nullable/default 迁移，必要时停止新 scheduler 任务即可回退到旧同步入口。</p></div>
+<p style="color:#66758b;margin-top:36px">报告生成于当前工作区审阅；文件本身是长期技术文档，不包含 issue/PR 临时截图或外部凭证。</p>
+</main></body></html>

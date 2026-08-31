@@ -1188,6 +1188,11 @@ class Config:
     # === 定时任务配置 ===
     schedule_enabled: bool = False            # 是否启用定时任务
     schedule_time: str = "18:00"              # 每日推送时间（HH:MM 格式）
+    cb_sync_enabled: bool = True
+    cb_intraday_sync_time: str = "14:20"
+    cb_after_close_sync_time: str = "20:00"
+    cb_intraday_data_max_age_minutes: int = 15
+    cb_sync_notify_email_enabled: bool = True
     schedule_times: List[str] = field(default_factory=lambda: ["18:00"])
     schedule_run_immediately: bool = True     # 启动时是否立即执行一次
     run_immediately: bool = True              # 启动时是否立即执行一次（非定时模式）
@@ -2143,6 +2148,11 @@ class Config:
                 prefer_env_file=True,
             ).lower() == 'true',
             schedule_time=(schedule_time_value or '18:00').strip() or '18:00',
+            cb_sync_enabled=parse_env_bool(os.getenv('CB_SYNC_ENABLED'), default=True),
+            cb_intraday_sync_time=(os.getenv('CB_INTRADAY_SYNC_TIME') or '14:20').strip(),
+            cb_after_close_sync_time=(os.getenv('CB_AFTER_CLOSE_SYNC_TIME') or '20:00').strip(),
+            cb_intraday_data_max_age_minutes=parse_env_int(os.getenv('CB_INTRADAY_DATA_MAX_AGE_MINUTES'), 15, field_name='CB_INTRADAY_DATA_MAX_AGE_MINUTES', minimum=1),
+            cb_sync_notify_email_enabled=parse_env_bool(os.getenv('CB_SYNC_NOTIFY_EMAIL_ENABLED'), default=True),
             schedule_times=normalize_schedule_times(
                 schedule_times_value,
                 fallback_time=(schedule_time_value or '18:00').strip() or '18:00',

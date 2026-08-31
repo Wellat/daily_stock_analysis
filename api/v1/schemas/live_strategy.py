@@ -10,6 +10,10 @@ class LiveStrategyConfigRequest(BaseModel):
     enabled: bool = False
     symbols: List[str] = Field(default_factory=list)
     parameters: Dict[str, Any] = Field(default_factory=dict)
+    rebalance_frequency_days: int = Field(1, ge=1)
+    event_check_enabled: bool = True
+    data_sync_before_run: bool = True
+    data_max_age_minutes: Optional[int] = Field(None, ge=1)
 
 class LiveStrategyConfigResponse(LiveStrategyConfigRequest):
     id: Optional[int] = None
@@ -31,3 +35,4 @@ class LiveStrategyRunListResponse(BaseModel):
 
 class LiveStrategyRunRequest(BaseModel):
     trade_date: Optional[date] = None
+    mode: str = Field("rebalance", pattern="^(rebalance|event_check)$")

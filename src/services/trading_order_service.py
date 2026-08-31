@@ -39,6 +39,7 @@ class TradingOrderService:
         symbol_name: Optional[str] = None,
         live_run_id: Optional[int] = None,
         rebalance_batch_id: Optional[int] = None,
+        decision_id: Optional[int] = None,
     ) -> Dict[str, Any]:
         symbol = (symbol or "").strip()
         if not symbol.isdigit() or len(symbol) != 6:
@@ -67,6 +68,7 @@ class TradingOrderService:
             symbol_name=symbol_name,
             live_run_id=live_run_id,
             rebalance_batch_id=rebalance_batch_id,
+            decision_id=decision_id,
         )
         return self.repository._payload(row)
 

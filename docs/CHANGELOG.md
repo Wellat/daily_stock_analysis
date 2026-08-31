@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] 为既有 SQLite 数据库补齐实盘策略新增字段，避免交易订单列表因缺少 `decision_id` 列而查询失败
+- [新功能] 新增统一策略上下文、策略基类/注册器、low-premium 决策实现及共享执行规划器，保持 Strategy Lab 既有策略列表接口兼容
+- [新功能] 新增回测/实盘执行器适配层与策略决策仓储，支持同一执行计划输出回测成交或 QMT 订单
+- [改进] 实盘运行记录按策略模式幂等，支持调仓周期跳过并允许事件检查与调仓在同一交易日分别运行
 - [文档] 在 `docs/convertible-bond-trading.md` 增加 DSA 可转债实盘自动调仓闭环、数据对象、风控、API、Web 工作台和分阶段验收方案草稿
 - [修复] 可转债实盘调仓过滤 QMT 全量持仓中的股票和基金，避免非可转债标的被误生成卖单
 - [新功能] 新增 QMT 持仓上报接口 `POST /api/v1/trading/qmt/positions`（按 account 全量替换，未上报标的自动清理，空列表视为清仓）

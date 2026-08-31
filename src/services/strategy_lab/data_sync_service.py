@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import threading
 from datetime import date, timedelta
 from typing import Any, Dict, List, Optional, Set
@@ -19,6 +20,7 @@ from src.services.strategy_lab.cb_providers import (
     get_convertible_bond_provider,
 )
 from src.storage import DatabaseManager
+from src.config import get_config
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +37,30 @@ class StrategyLabDataSyncService:
 
     def __init__(self, db_manager: Optional[DatabaseManager] = None):
         self.repository = StrategyLabDataRepository(db_manager)
+
+    def run_scheduled_sync(self, *, run_kind: str, market: str = "cn", source: str = "akshare", trade_date: Optional[date] = None) -> Dict[str, Any]:
+        """Run the configured provider synchronously for scheduler use."""
+        if run_kind not in {"intraday", "after_close"}:
+            raise ValueError("run_kind must be intraday or after_close")
+        try:
+            result = self.sync_provider_convertible_bonds(market=market, source=source, run_kind=run_kind, trade_date=trade_date)
+            result.update({"run_kind": run_kind, "trade_date": (trade_date or date.today()).isoformat(), "quality_status": "usable"})
+            self._notify_sync(run_kind, result, success=True)
+            return result
+        except Exception as exc:
+            self._notify_sync(run_kind, {"run_kind": run_kind, "error": str(exc)}, success=False)
+            raise
+
+    @staticmethod
+    def _notify_sync(run_kind: str, result: Dict[str, Any], *, success: bool) -> None:
+        try:
+            config = get_config()
+            if not getattr(config, "cb_sync_notify_email_enabled", True): return
+            from src.notification_sender import EmailSender
+            title = f"可转债{'盘中' if run_kind == 'intraday' else '盘后'}同步{'成功' if success else '失败'}"
+            EmailSender(config).send_to_email(json.dumps(result, ensure_ascii=False, indent=2), subject=title, timeout_seconds=20)
+        except Exception:
+            logger.exception("CB sync notification failed")
 
     def sync_fixture_convertible_bonds(self, *, market: str = "cn") -> Dict[str, Any]:
         dataset = build_default_fixture_dataset()
@@ -242,6 +268,8 @@ class StrategyLabDataSyncService:
         source: str,
         symbols: Optional[List[str]] = None,
         provider: Optional[ConvertibleBondDataProvider] = None,
+        run_kind: str = "after_close",
+        trade_date: Optional[date] = None,
     ) -> Dict[str, Any]:
         provider = provider or get_convertible_bond_provider(source)
         payload = {
@@ -253,6 +281,8 @@ class StrategyLabDataSyncService:
             run_uid=uuid4().hex,
             sync_type=f"{provider.name}_convertible_bond",
             market=market,
+            run_kind=run_kind,
+            trade_date=trade_date or date.today(),
             payload=payload,
         )
         try:
