@@ -72,6 +72,12 @@ class LiveStrategyService:
         config = self._latest_config()
         if config is None:
             raise ValueError("live strategy config is not configured")
+        sync = self.data.latest_sync_run(run_kind="intraday", trade_date=trade_date)
+        stale = bool(sync and sync.completed_at and config.data_max_age_minutes and (datetime.now() - sync.completed_at).total_seconds() > config.data_max_age_minutes * 60)
+        if config.data_sync_before_run and (sync is None or sync.status != "completed" or getattr(sync, "quality_status", "usable") not in ("usable", "unknown") or stale):
+            payload = {"trade_date": trade_date.isoformat(), "mode": mode, "target": {}, "current": {}, "rebalance": [], "decisions": [], "strategy_version": config.strategy_version, "risk": {"passed": False, "reason": "intraday_sync_unavailable"}, "skip_reason": "intraday_sync_unavailable"}
+            if preview: return payload
+            raise ValueError("intraday data sync is not completed; order generation is blocked")
         with self.db.get_session() as session:
             existing = session.execute(select(LiveStrategyRun).where(
                 LiveStrategyRun.config_id == config.id, LiveStrategyRun.trade_date == trade_date, LiveStrategyRun.mode == mode,

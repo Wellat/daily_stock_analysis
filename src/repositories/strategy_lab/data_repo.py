@@ -63,6 +63,8 @@ class StrategyLabDataRepository:
                 session.expunge(row)
                 return row
             row.status = "completed"
+            if hasattr(row, "quality_status"):
+                row.quality_status = "usable"
             row.result_json = json.dumps(result, ensure_ascii=False, sort_keys=True)
             row.completed_at = datetime.now()
             session.commit()
@@ -702,6 +704,10 @@ class StrategyLabDataRepository:
             "id": row.id,
             "run_uid": row.run_uid,
             "sync_type": row.sync_type,
+            "run_kind": getattr(row, "run_kind", "after_close"),
+            "trade_date": row.trade_date.isoformat() if getattr(row, "trade_date", None) else None,
+            "quality_status": getattr(row, "quality_status", "unknown"),
+            "notification_status": getattr(row, "notification_status", "pending"),
             "market": row.market,
             "status": row.status,
             "cancel_requested": bool(row.cancel_requested),
@@ -710,3 +716,10 @@ class StrategyLabDataRepository:
             "created_at": row.created_at.isoformat() if row.created_at else None,
             "completed_at": row.completed_at.isoformat() if row.completed_at else None,
         }
+
+    def latest_sync_run(self, *, run_kind: str, trade_date: date) -> Optional[StrategyLabSyncRun]:
+        with self.db.get_session() as session:
+            return session.execute(select(StrategyLabSyncRun).where(
+                StrategyLabSyncRun.run_kind == run_kind,
+                StrategyLabSyncRun.trade_date == trade_date,
+            ).order_by(desc(StrategyLabSyncRun.id))).scalars().first()

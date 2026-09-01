@@ -1882,6 +1882,11 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             (StockDaily.__tablename__, "instrument_type", "VARCHAR(16) DEFAULT 'stock'"),
             (StrategyLabCbBasic.__tablename__, "status", "VARCHAR(32)"),
             (StrategyLabSyncRun.__tablename__, "cancel_requested", "BOOLEAN NOT NULL DEFAULT 0"),
+            (StrategyLabSyncRun.__tablename__, "run_kind", "VARCHAR(16) NOT NULL DEFAULT 'after_close'"),
+            (StrategyLabSyncRun.__tablename__, "trade_date", "DATE"),
+            (StrategyLabSyncRun.__tablename__, "data_snapshot_at", "DATETIME"),
+            (StrategyLabSyncRun.__tablename__, "quality_status", "VARCHAR(16) DEFAULT 'unknown'"),
+            (StrategyLabSyncRun.__tablename__, "notification_status", "VARCHAR(16) DEFAULT 'pending'"),
         ]
         for table_name, column_name, ddl in migrations:
             if not inspector.has_table(table_name):

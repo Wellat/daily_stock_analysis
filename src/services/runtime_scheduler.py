@@ -99,6 +99,9 @@ def build_agent_event_monitor_background_tasks(
 
 def build_live_strategy_background_tasks(config: Config) -> List[Dict[str, Any]]:
     """Run the enabled live strategy once at 14:30 on trading days."""
+    if os.getenv("LIVE_STRATEGY_SCHEDULE_ENABLED", "true").strip().lower() in {"0", "false", "no", "off"}:
+        logger.info("Live strategy schedule disabled")
+        return []
     from src.services.live_strategy_service import LiveStrategyService
     last_run_key = {"value": None}
 
@@ -118,6 +121,7 @@ def build_live_strategy_background_tasks(config: Config) -> List[Dict[str, Any]]
 
     return [{"task": live_strategy_task, "interval_seconds": 30, "run_immediately": False, "name": "live_strategy_1430"}]
 
+# 可转债数据同步任务
 def build_convertible_bond_sync_background_tasks(config: Config) -> List[Dict[str, Any]]:
     """Schedule intraday and after-close CB data sync without provider fallback."""
     from src.services.strategy_lab.data_sync_service import StrategyLabDataSyncService
