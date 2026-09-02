@@ -40,6 +40,7 @@ class TradingOrderService:
         live_run_id: Optional[int] = None,
         rebalance_batch_id: Optional[int] = None,
         decision_id: Optional[int] = None,
+        client_order_key: Optional[str] = None,
     ) -> Dict[str, Any]:
         symbol = (symbol or "").strip()
         if not symbol.isdigit() or len(symbol) != 6:
@@ -53,6 +54,10 @@ class TradingOrderService:
         if order_type == "limit" and (limit_price is None or float(limit_price) <= 0):
             raise ValueError("limit order requires a positive limit_price")
 
+        if client_order_key:
+            existing = self.repository.get_by_client_key(client_order_key)
+            if existing is not None:
+                return self.repository._payload(existing)
         row = self.repository.create(
             order_uid=f"qmt_{uuid4().hex}",
             symbol=symbol,
@@ -69,6 +74,7 @@ class TradingOrderService:
             live_run_id=live_run_id,
             rebalance_batch_id=rebalance_batch_id,
             decision_id=decision_id,
+            client_order_key=client_order_key,
         )
         return self.repository._payload(row)
 

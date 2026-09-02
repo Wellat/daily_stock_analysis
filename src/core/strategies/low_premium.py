@@ -35,6 +35,8 @@ class LowPremiumStrategy(StrategyBase):
             candidates.append((f.premium_rate,i,close,f,blocked))
         out=[]
         for rank,(premium,i,close,f,_) in enumerate(sorted(candidates,key=lambda x:x[0])[:p["max_positions"]],1):
-            qty=int(p["per_position_cash"]/close/p["lot_size"])*p["lot_size"]
-            out.append(StrategyDecision("buy",i.symbol,i.name,target_amount=p["per_position_cash"],suggested_quantity=qty,reason="lowest_premium",decision_data={"premium_rate":premium,"close":close,"remaining_size":f.remaining_size,"rank":rank,"filter_results":{"premium_limit":True,"event_blocked":False}}))
+            # Quantity conversion is an execution concern.  Emit the portfolio
+            # intent (target amount) and let ExecutionPlanner apply prices,
+            # lot-size and account-risk constraints consistently in live/backtest.
+            out.append(StrategyDecision("buy",i.symbol,i.name,target_amount=p["per_position_cash"],reason="lowest_premium",decision_data={"premium_rate":premium,"close":close,"remaining_size":f.remaining_size,"rank":rank,"filter_results":{"premium_limit":True,"event_blocked":False}}))
         return out

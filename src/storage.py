@@ -986,6 +986,7 @@ class TradingOrder(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     order_uid = Column(String(64), nullable=False, unique=True, index=True)
+    client_order_key = Column(String(160), nullable=True, unique=True, index=True)
     decision_id = Column(Integer, ForeignKey('strategy_decisions.id'), nullable=True, index=True)
     symbol = Column(String(16), nullable=False, index=True)
     symbol_name = Column(String(64))
@@ -1829,6 +1830,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                 "live_run_id": "INTEGER",
                 "rebalance_batch_id": "INTEGER",
                 "decision_id": "INTEGER",
+                "client_order_key": "VARCHAR(160)",
             }.items():
                 if name not in columns:
                     conn.execute(text(f"ALTER TABLE trading_orders ADD COLUMN {name} {ddl}"))

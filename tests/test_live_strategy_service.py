@@ -11,7 +11,7 @@ def test_live_strategy_preview_uses_qmt_positions_and_is_idempotent():
     db = DatabaseManager(db_url="sqlite:///:memory:")
     try:
         service = LiveStrategyService(db)
-        service.save_config({"qmt_account": "testS", "enabled": True, "parameters": {"max_positions": 1}})
+        service.save_config({"qmt_account": "testS", "enabled": True, "data_sync_before_run": False, "parameters": {"max_positions": 1}})
         QmtPositionService(db).report_positions(account="testS", positions=[])
         preview = service.run(trade_date=date(2024, 1, 2), preview=True)
         assert "rebalance" in preview

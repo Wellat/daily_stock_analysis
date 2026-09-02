@@ -91,6 +91,9 @@ class StrategyLabService:
                 )
             )
         dataset = StrategyLabDataSet(instruments=list(instruments.values()), bars=bars)
+        if config.strategy_id == "low-premium":
+            from src.core.strategy_lab.unified_engine import UnifiedLowPremiumEngine
+            return UnifiedLowPremiumEngine(dataset)
         if config.strategy_id == "ma-crossover":
             return MovingAverageCrossoverEngine(dataset)
         return FixtureDoubleLowEngine(dataset, name="database_double_low_v1")

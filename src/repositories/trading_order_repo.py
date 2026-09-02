@@ -48,6 +48,18 @@ class TradingOrderRepository:
             session.expunge(row)
             return row
 
+    def get_by_client_key(self, client_order_key: str) -> Optional[TradingOrder]:
+        if not client_order_key:
+            return None
+        with self.db.get_session() as session:
+            row = session.execute(select(TradingOrder).where(
+                TradingOrder.client_order_key == client_order_key
+            )).scalar_one_or_none()
+            if row is None:
+                return None
+            session.expunge(row)
+            return row
+
     def list(self, *, status: Optional[str], limit: int, offset: int) -> Dict[str, Any]:
         with self.db.get_session() as session:
             count_stmt = select(TradingOrder.id)
@@ -92,6 +104,7 @@ class TradingOrderRepository:
         return {
             "id": row.id,
             "order_uid": row.order_uid,
+            "client_order_key": row.client_order_key,
             "symbol": row.symbol,
             "symbol_name": row.symbol_name,
             "live_run_id": row.live_run_id,

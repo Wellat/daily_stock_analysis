@@ -342,7 +342,7 @@ class Scheduler:
 
         def _runner() -> None:
             try:
-                logger.info("后台任务开始执行: %s", entry["name"])
+                # logger.info("后台任务开始执行: %s", entry["name"])
                 entry["task"]()
             except Exception as exc:
                 logger.exception("后台任务执行失败 [%s]: %s", entry["name"], exc)

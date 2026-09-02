@@ -15,9 +15,12 @@ from src.repositories.qmt_position_repo import QmtPositionRepository
 from src.services.trading_order_service import TradingOrderService
 from src.storage import DatabaseManager, LiveRebalanceBatch, LiveStrategyConfig, LiveStrategyRun
 from src.core.strategy_lab.engine import list_builtin_strategies
-from src.core.strategies import (MarketContext, InstrumentSnapshot, Bar,
+from src.core.strategies import (MarketContext, InstrumentSnapshot, Bar, StrategyDecision,
     FactorSnapshot, MarketEvent, PositionSnapshot, get_strategy)
 from src.repositories.strategy_decision_repo import StrategyDecisionRepository
+from src.services.strategy_context_service import StrategyContextService
+from src.core.strategies.execution_planner import ExecutionPlanner
+from src.core.strategies.executors import LiveExecutor
 
 LIVE_ACCOUNTS = {"testS", "135129739"}
 
@@ -28,9 +31,11 @@ class LiveStrategyService:
     def __init__(self, db_manager: Optional[DatabaseManager] = None):
         self.db = db_manager or DatabaseManager.get_instance()
         self.data = StrategyLabDataRepository(self.db)
+        self.contexts = StrategyContextService(self.db)
         self.positions = QmtPositionRepository(self.db)
         self.orders = TradingOrderService(self.db)
         self.decisions = StrategyDecisionRepository(self.db)
+        self.planner = ExecutionPlanner()
 
     def get_config(self) -> Dict[str, Any] | None:
         with self.db.get_session() as session:
@@ -98,37 +103,35 @@ class LiveStrategyService:
         defaults.update(params)
         params = defaults
         symbols = json.loads(config.symbols_json or "[]")
-        rows = self.data.load_cb_backtest_rows(market="cn", start_date=trade_date, end_date=trade_date, symbols=symbols)
         current_rows = self.positions.list(account=config.qmt_account)
         # QMT reports the whole account (stocks, funds, convertible bonds, ...).
         # Live CB strategies must never create orders for non-CB holdings.
         cb_symbols = set(self.data.list_cb_basic_codes(market="cn"))
         current = {r.symbol: float(r.volume) for r in current_rows if r.symbol in cb_symbols}
-        instruments=[]; bars={}; factors={}; events={}
-        for row in rows:
-            symbol = row.get("bond_code") or row.get("symbol")
-            if not symbol: continue
-            instruments.append(InstrumentSnapshot(symbol=symbol, name=row.get("bond_name"), market="cn", instrument_type="convertible_bond", tradable=True))
-            bars[symbol] = [Bar(trade_date=trade_date, close=float(row["close"]) if row.get("close") is not None else None)]
-            factors[symbol] = FactorSnapshot(premium_rate=float(row["premium_rate"]) if row.get("premium_rate") is not None else None, remaining_size=row.get("remaining_size"))
-            if row.get("event_blocked"): events[symbol] = [MarketEvent("event_blocked", trade_date)]
-        context = MarketContext(datetime.now(), "cn", "convertible_bond", instruments, bars, factors, events,
-                                {s: PositionSnapshot(quantity=v, available_quantity=v) for s,v in current.items()}, account=config.qmt_account)
+        context = self.contexts.convertible_bonds(
+            trade_date=trade_date, symbols=symbols,
+            positions={s: PositionSnapshot(quantity=v, available_quantity=v) for s, v in current.items()},
+            account=config.qmt_account,
+        )
+        bars = context.bars
         decisions = get_strategy(config.strategy_id).evaluate(context, mode=mode, parameters=params)
-        if mode == "event_check":
-            target = {}
-        target = {d.symbol: {"symbol": d.symbol, "symbol_name": d.symbol_name, "price": bars[d.symbol][-1].close, "quantity": d.suggested_quantity or 0} for d in decisions if d.action == "buy"}
-        rebalance = []
-        for symbol, item in target.items():
-            delta = item["quantity"] - current.get(symbol, 0)
-            if delta > 0: rebalance.append({"symbol": symbol, "side": "buy", "quantity": delta, "reason": "live_target_entry"})
-        for symbol, volume in current.items():
-            if mode == "rebalance" and symbol not in target and volume > 0:
-                rebalance.append({"symbol": symbol, "side": "sell", "quantity": volume, "reason": "live_target_exit"})
-        if mode == "event_check":
-            rebalance = [{"symbol": d.symbol, "side": "sell", "quantity": d.suggested_quantity, "reason": d.reason}
-                         for d in decisions if d.action == "exit" and d.suggested_quantity]
-        payload = {"trade_date": trade_date.isoformat(), "mode": mode, "target": target, "current": current, "rebalance": rebalance, "decisions": [d.__dict__ for d in decisions], "strategy_version": config.strategy_version}
+        # Target exits are portfolio reconciliation, not strategy logic.
+        if mode == "rebalance":
+            selected = {d.symbol for d in decisions if d.action == "buy" and d.symbol}
+            decisions = list(decisions) + [StrategyDecision("sell", symbol=symbol,
+                suggested_quantity=volume, reason="live_target_exit")
+                for symbol, volume in current.items() if symbol not in selected and volume > 0]
+        plan = self.planner.plan(decisions, context, lot_size=int(params.get("lot_size", 10)))
+        target = {d.symbol: {"symbol": d.symbol, "symbol_name": d.symbol_name,
+            "price": (bars.get(d.symbol) or [None])[-1].close if bars.get(d.symbol) else None,
+            "quantity": next((o.quantity for o in plan.orders if o.symbol == d.symbol and o.side == "buy"), 0)}
+            for d in decisions if d.action == "buy" and d.symbol}
+        rebalance = [{"symbol": o.symbol, "side": o.side, "quantity": o.quantity,
+                      "reason": o.decision.reason if o.decision else "planned"}
+                     for o in plan.orders]
+        diagnostics = {"skipped": [{"symbol": s.decision.symbol, "reason": s.reason} for s in plan.skipped],
+                       "risk_checks": [c.__dict__ for c in plan.risk_checks]}
+        payload = {"trade_date": trade_date.isoformat(), "mode": mode, "target": target, "current": current, "rebalance": rebalance, "decisions": [d.__dict__ for d in decisions], "strategy_version": config.strategy_version, "diagnostics": diagnostics}
         if preview:
             return payload
         with self.db.get_session() as session:
@@ -136,7 +139,7 @@ class LiveStrategyService:
             run = LiveStrategyRun(run_uid=run_uid, config_id=config.id, qmt_account=config.qmt_account, trade_date=trade_date,
                                   status="completed", mode=mode, strategy_id=config.strategy_id, strategy_version=config.strategy_version,
                                   decision_count=len(decisions), order_count=len(rebalance), risk_status="passed",
-                                  data_snapshot_at=datetime.now(), target_json=json.dumps(target), current_json=json.dumps(current), rebalance_json=json.dumps(rebalance), risk_json=json.dumps({"passed": True}), completed_at=datetime.now())
+                                  data_snapshot_at=datetime.now(), target_json=json.dumps(target), current_json=json.dumps(current), rebalance_json=json.dumps(rebalance), risk_json=json.dumps({"passed": all(c.passed for c in plan.risk_checks), **diagnostics}), completed_at=datetime.now())
             session.add(run); session.flush()
             run_id = int(run.id)
             batch_uid = uuid4().hex
@@ -146,15 +149,15 @@ class LiveStrategyService:
         names = {k: v.get("symbol_name") for k, v in target.items()}
         decision_ids = {}
         for d in decisions:
-            record = self.decisions.create(strategy_id=config.strategy_id, mode="rebalance", trade_date=trade_date,
+            record = self.decisions.create(strategy_id=config.strategy_id, mode=mode, trade_date=trade_date,
                 action=d.action, symbol=d.symbol, symbol_name=d.symbol_name,
                 strategy_version=config.strategy_version, account=config.qmt_account,
                 market="cn", instrument_type="convertible_bond", target_amount=d.target_amount,
                 suggested_quantity=d.suggested_quantity, reason=d.reason, risk_status=d.risk_status,
                 decision_data=d.decision_data, live_run_id=run_id)
             decision_ids[d.symbol] = record.id
-        for order in rebalance:
-            self.orders.create_order(symbol=order["symbol"], side=order["side"], quantity=order["quantity"], order_type="market", limit_price=None, source="live_strategy", reason=order["reason"], symbol_name=names.get(order["symbol"]), live_run_id=run_id, rebalance_batch_id=batch_id, decision_id=decision_ids.get(order["symbol"]))
+        LiveExecutor(self.orders).execute(plan, run_id=run_id, batch_id=batch_id,
+            symbol_names=names, decision_ids=decision_ids)
         return {**payload, "run_id": run_id, "run_uid": run_uid, "batch_uid": batch_uid}
 
     def _latest_config(self):

@@ -98,7 +98,7 @@ def build_agent_event_monitor_background_tasks(
 
 
 def build_live_strategy_background_tasks(config: Config) -> List[Dict[str, Any]]:
-    """Run the enabled live strategy once at 14:30 on trading days."""
+    """Run the enabled live strategy once at 14:35 on trading days."""
     if os.getenv("LIVE_STRATEGY_SCHEDULE_ENABLED", "true").strip().lower() in {"0", "false", "no", "off"}:
         logger.info("Live strategy schedule disabled")
         return []
@@ -107,7 +107,7 @@ def build_live_strategy_background_tasks(config: Config) -> List[Dict[str, Any]]
 
     def live_strategy_task() -> None:
         now = datetime.now()
-        if now.strftime("%H:%M") != "14:30":
+        if now.strftime("%H:%M") != "14:35":
             return
         key = now.date().isoformat()
         if last_run_key["value"] == key:
@@ -119,7 +119,7 @@ def build_live_strategy_background_tasks(config: Config) -> List[Dict[str, Any]]
         service.run(trade_date=now.date())
         last_run_key["value"] = key
 
-    return [{"task": live_strategy_task, "interval_seconds": 30, "run_immediately": False, "name": "live_strategy_1430"}]
+    return [{"task": live_strategy_task, "interval_seconds": 30, "run_immediately": False, "name": "live_strategy_1435"}]
 
 # 可转债数据同步任务
 def build_convertible_bond_sync_background_tasks(config: Config) -> List[Dict[str, Any]]:
@@ -138,7 +138,7 @@ def build_convertible_bond_sync_background_tasks(config: Config) -> List[Dict[st
                 logger.exception("CB %s sync failed", kind)
         return task
     return [
-        {"task": make_task("intraday", getattr(config, "cb_intraday_sync_time", "14:20")), "interval_seconds": 30, "run_immediately": False, "name": "cb_intraday_sync"},
+        {"task": make_task("intraday", getattr(config, "cb_intraday_sync_time", "14:00")), "interval_seconds": 30, "run_immediately": False, "name": "cb_intraday_sync"},
         {"task": make_task("after_close", getattr(config, "cb_after_close_sync_time", "20:00")), "interval_seconds": 30, "run_immediately": False, "name": "cb_after_close_sync"},
     ]
 

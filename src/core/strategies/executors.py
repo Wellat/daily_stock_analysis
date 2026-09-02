@@ -27,7 +27,7 @@ class BacktestExecutor:
 
 class LiveExecutor:
     def __init__(self, order_service): self.order_service = order_service
-    def execute(self, plan: ExecutionPlan, *, run_id=None, batch_id=None, symbol_names=None) -> list[dict[str, Any]]:
+    def execute(self, plan: ExecutionPlan, *, run_id=None, batch_id=None, symbol_names=None, decision_ids=None) -> list[dict[str, Any]]:
         result=[]
         for order in plan.orders:
             d=order.decision
@@ -35,5 +35,7 @@ class LiveExecutor:
                 quantity=order.quantity, order_type="market", limit_price=None,
                 source="live_strategy", reason=d.reason if d else None,
                 symbol_name=(symbol_names or {}).get(order.symbol), live_run_id=run_id,
-                rebalance_batch_id=batch_id))
+                rebalance_batch_id=batch_id,
+                decision_id=(decision_ids or {}).get(order.decision.symbol) if order.decision else None,
+                client_order_key=order.client_order_key))
         return result

@@ -27,19 +27,20 @@ class ExecutionPlanner:
     def plan(self, decisions: list[StrategyDecision], context: MarketContext, *, cash: float | None = None, lot_size: int = 10) -> ExecutionPlan:
         orders=[]; skipped=[]; checks=[RiskCheck("context", True)]
         available_cash = context.cash if cash is None else cash
-        if available_cash is not None:
-            required = 0.0
-            for d in decisions:
-                if d.action != "buy" or not d.symbol: continue
-                bars = context.bars.get(d.symbol) or []
-                if bars and bars[-1].close is not None:
-                    required += (d.suggested_quantity or 0) * bars[-1].close
-            if required > available_cash:
-                checks.append(RiskCheck("cash", False, "insufficient_cash"))
-                return ExecutionPlan([], [SkippedAction(d, "insufficient_cash") for d in decisions if d.action == "buy"], checks)
         for d in decisions:
             if d.action not in ("buy","sell","exit") or not d.symbol: continue
-            pos=context.positions.get(d.symbol); qty=d.suggested_quantity or 0
+            pos=context.positions.get(d.symbol)
+            qty=d.suggested_quantity or 0
+            if d.action == "buy" and not qty and d.target_amount is not None:
+                bars = context.bars.get(d.symbol) or []
+                price = bars[-1].close if bars else None
+                if price is not None and price > 0:
+                    qty = int(float(d.target_amount) / price / lot_size) * lot_size
+            if d.action == "buy":
+                # Strategy quantities represent target holdings; orders carry
+                # only the delta from the current position.
+                qty = max(0, qty - (pos.quantity if pos else 0))
+                qty = int(qty / lot_size) * lot_size
             if d.action in ("sell","exit"):
                 qty=min(qty, pos.available if pos else 0); qty=int(qty/lot_size)*lot_size
             if qty<=0: skipped.append(SkippedAction(d,"no_available_quantity")); continue

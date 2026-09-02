@@ -68,6 +68,14 @@ def list_strategies():
     from src.core.strategy_lab.engine import list_builtin_strategies
     return {"items": list_builtin_strategies()}
 
+@router.get("/data-sync/status")
+def data_sync_status(db_manager: DatabaseManager = Depends(get_database_manager)):
+    from src.repositories.strategy_lab.data_repo import StrategyLabDataRepository
+    today = date.today()
+    repo = StrategyLabDataRepository(db_manager)
+    return {"trade_date": today.isoformat(), "intraday": repo._sync_run_payload(repo.latest_sync_run(run_kind="intraday", trade_date=today)) if repo.latest_sync_run(run_kind="intraday", trade_date=today) else None,
+            "after_close": repo._sync_run_payload(repo.latest_sync_run(run_kind="after_close", trade_date=today)) if repo.latest_sync_run(run_kind="after_close", trade_date=today) else None}
+
 @router.get("/strategies/{strategy_id}")
 def get_strategy_metadata(strategy_id: str):
     from src.core.strategy_lab.engine import list_builtin_strategies
