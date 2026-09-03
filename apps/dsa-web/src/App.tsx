@@ -27,6 +27,7 @@ const AlertsPage = lazy(() => import('./pages/AlertsPage'));
 const TokenUsagePage = lazy(() => import('./pages/TokenUsagePage'));
 const StockScreeningPage = lazy(() => import('./pages/StockScreeningPage'));
 const TradingOrdersPage = lazy(() => import('./pages/TradingOrdersPage'));
+const SqlConsolePage = lazy(() => import('./pages/SqlConsolePage'));
 
 const AppContent: React.FC = () => {
   const location = useLocation();
@@ -96,6 +97,7 @@ const AppContent: React.FC = () => {
           <Route path="/alerts" element={<AlertsPage />} />
           <Route path="/usage" element={<TokenUsagePage />} />
           <Route path="/settings" element={<SettingsPage />} />
+          <Route path="/sql" element={<SqlConsolePage />} />
           <Route path="*" element={<NotFoundPage />} />
         </Route>
       </Routes>

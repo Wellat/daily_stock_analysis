@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [新功能] 新增受登录保护的 SQLite SQL 执行工作台，支持表浏览、复制表名及结果展示。
 
 - [修复] 为既有 SQLite 数据库补齐实盘策略新增字段，避免交易订单列表因缺少 `decision_id` 列而查询失败
 - [新功能] 新增统一策略上下文、策略基类/注册器、low-premium 决策实现及共享执行规划器，保持 Strategy Lab 既有策略列表接口兼容

@@ -29,6 +29,7 @@ from api.v1.endpoints import (
     trading,
     live_strategy,
     usage,
+    sql,
 )
 
 # 创建 v1 版本主路由。
@@ -88,6 +89,8 @@ router.include_router(
     prefix="/usage",
     tags=["Usage"]
 )
+
+router.include_router(sql.router, prefix="/sql", tags=["SQL"])
 
 router.include_router(
     portfolio.router,

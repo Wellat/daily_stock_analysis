@@ -7,6 +7,7 @@ import logging
 import json
 import threading
 from datetime import date, timedelta
+import time
 from typing import Any, Dict, List, Optional, Set
 from uuid import uuid4
 
@@ -37,6 +38,7 @@ class StrategyLabDataSyncService:
 
     def __init__(self, db_manager: Optional[DatabaseManager] = None):
         self.repository = StrategyLabDataRepository(db_manager)
+        self.task_start_time = time.time()
 
     def run_scheduled_sync(self, *, run_kind: str, market: str = "cn", source: str = "akshare", trade_date: Optional[date] = None) -> Dict[str, Any]:
         """Run the configured provider synchronously for scheduler use."""
@@ -58,6 +60,7 @@ class StrategyLabDataSyncService:
             if not getattr(config, "cb_sync_notify_email_enabled", True): return
             from src.notification_sender import EmailSender
             title = f"可转债{'盘中' if run_kind == 'intraday' else '盘后'}同步{'成功' if success else '失败'}"
+            result.update({"duration_seconds": time.time() - self.task_start_time})
             EmailSender(config).send_to_email(json.dumps(result, ensure_ascii=False, indent=2), subject=title, timeout_seconds=20)
         except Exception:
             logger.exception("CB sync notification failed")
