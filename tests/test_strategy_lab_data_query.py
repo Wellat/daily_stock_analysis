@@ -43,7 +43,100 @@ def db_manager() -> DatabaseManager:
 
 
 def _seed_fixture(db_manager: DatabaseManager) -> None:
-    StrategyLabDataSyncService(db_manager).sync_fixture_convertible_bonds()
+    repo = StrategyLabDataSyncService(db_manager).repository
+    basics = [
+        {
+            "bond_code": "113001",
+            "bond_name": "CB Alpha",
+            "stock_code": "113001",
+            "stock_name": "113001 正股",
+            "market": "cn",
+            "list_date": date(2024, 1, 1),
+            "maturity_date": date(2028, 1, 1),
+            "remaining_size": 50.0,
+            "current_premium_rate": 18.0,
+            "convert_price": 100.0,
+            "terms": {"source": "fixture", "strategy": "double-low"},
+        },
+        {
+            "bond_code": "113002",
+            "bond_name": "CB Beta",
+            "stock_code": "113002",
+            "stock_name": "113002 正股",
+            "market": "cn",
+            "list_date": date(2024, 1, 1),
+            "maturity_date": date(2028, 1, 1),
+            "remaining_size": 50.0,
+            "current_premium_rate": 18.0,
+            "convert_price": 100.0,
+            "terms": {"source": "fixture", "strategy": "double-low"},
+        },
+        {
+            "bond_code": "113003",
+            "bond_name": "CB Gamma",
+            "stock_code": "113003",
+            "stock_name": "113003 正股",
+            "market": "cn",
+            "list_date": date(2024, 1, 1),
+            "maturity_date": date(2028, 1, 1),
+            "remaining_size": 50.0,
+            "current_premium_rate": 18.0,
+            "convert_price": 100.0,
+            "terms": {"source": "fixture", "strategy": "double-low"},
+        },
+    ]
+    terms = [
+        {
+            "bond_code": "113001",
+            "redeem_clause": "fixture redeem clause",
+            "down_revise_clause": "fixture down revise clause",
+            "put_clause": "fixture put clause",
+            "redeem_trigger_price": 130.0,
+            "down_revise_trigger_price": 80.0,
+            "put_trigger_price": 70.0,
+        },
+        {
+            "bond_code": "113002",
+            "redeem_clause": "fixture redeem clause",
+            "down_revise_clause": "fixture down revise clause",
+            "put_clause": "fixture put clause",
+            "redeem_trigger_price": 130.0,
+            "down_revise_trigger_price": 80.0,
+            "put_trigger_price": 70.0,
+        },
+        {
+            "bond_code": "113003",
+            "redeem_clause": "fixture redeem clause",
+            "down_revise_clause": "fixture down revise clause",
+            "put_clause": "fixture put clause",
+            "redeem_trigger_price": 130.0,
+            "down_revise_trigger_price": 80.0,
+            "put_trigger_price": 70.0,
+        },
+    ]
+    factors = [
+        {"bond_code": "113001", "trade_date": date(2024, 1, 2), "close": 102.0, "premium_rate": 18.0, "remaining_size": 50.0, "redeem_alert": False, "down_revise_alert": False, "put_alert": False},
+        {"bond_code": "113001", "trade_date": date(2024, 1, 3), "close": 103.5, "premium_rate": 17.2, "remaining_size": 50.0, "redeem_alert": False, "down_revise_alert": False, "put_alert": False},
+        {"bond_code": "113001", "trade_date": date(2024, 1, 4), "close": 105.0, "premium_rate": 16.5, "remaining_size": 50.0, "redeem_alert": False, "down_revise_alert": False, "put_alert": False},
+        {"bond_code": "113002", "trade_date": date(2024, 1, 2), "close": 96.0, "premium_rate": 22.0, "remaining_size": 50.0, "redeem_alert": False, "down_revise_alert": False, "put_alert": False},
+        {"bond_code": "113002", "trade_date": date(2024, 1, 3), "close": 97.0, "premium_rate": 21.0, "remaining_size": 50.0, "redeem_alert": False, "down_revise_alert": False, "put_alert": False},
+        {"bond_code": "113002", "trade_date": date(2024, 1, 4), "close": 98.5, "premium_rate": 20.0, "remaining_size": 50.0, "redeem_alert": False, "down_revise_alert": False, "put_alert": False},
+        {"bond_code": "113003", "trade_date": date(2024, 1, 2), "close": 118.0, "premium_rate": 9.0, "remaining_size": 50.0, "redeem_alert": True, "down_revise_alert": False, "put_alert": False},
+        {"bond_code": "113003", "trade_date": date(2024, 1, 3), "close": 117.0, "premium_rate": 9.5, "remaining_size": 50.0, "redeem_alert": True, "down_revise_alert": False, "put_alert": False},
+        {"bond_code": "113003", "trade_date": date(2024, 1, 4), "close": 116.0, "premium_rate": 10.0, "remaining_size": 50.0, "redeem_alert": False, "down_revise_alert": False, "put_alert": False},
+    ]
+    events = [
+        {
+            "bond_code": "113001",
+            "event_date": date(2024, 1, 2),
+            "event_type": "strong_redeem",
+            "event_detail": "fixture strong redeem watch",
+        }
+    ]
+    repo.upsert_cb_basic(basics, source="fixture")
+    repo.upsert_cb_terms(terms, source="fixture")
+    repo.upsert_cb_daily_factors(factors, source="fixture")
+    repo.upsert_cb_events(events, source="fixture")
 
 
 def test_list_instruments_returns_paginated_items_with_latest_factor(db_manager: DatabaseManager) -> None:
@@ -141,17 +234,13 @@ def test_list_instrument_events_returns_fixture_event(db_manager: DatabaseManage
 
 def test_list_instruments_status_filter(db_manager: DatabaseManager) -> None:
     service = StrategyLabDataSyncService(db_manager)
-    service.sync_payload_convertible_bonds(
-        market="cn",
-        source="test",
-        cb_basic=[
+    service.repository.upsert_cb_basic(
+        [
             {"bond_code": "123001", "bond_name": "正常转债", "stock_code": "600001", "market": "cn", "status": "正常"},
             {"bond_code": "123002", "bond_name": "退市转债", "stock_code": "600002", "market": "cn", "status": "已退市"},
             {"bond_code": "123003", "bond_name": "无状态转债", "stock_code": "600003", "market": "cn"},
         ],
-        cb_terms=[],
-        cb_daily_factors=[],
-        cb_events=[],
+        source="test",
     )
 
     active = service.list_instruments(market="cn", status="active")
@@ -167,16 +256,12 @@ def test_list_instruments_status_filter(db_manager: DatabaseManager) -> None:
 
 def test_list_instruments_held_only(db_manager: DatabaseManager) -> None:
     service = StrategyLabDataSyncService(db_manager)
-    service.sync_payload_convertible_bonds(
-        market="cn",
-        source="test",
-        cb_basic=[
+    service.repository.upsert_cb_basic(
+        [
             {"bond_code": "123001", "bond_name": "持有时", "stock_code": "600001", "market": "cn", "status": "正常"},
             {"bond_code": "123002", "bond_name": "未持有", "stock_code": "600002", "market": "cn", "status": "正常"},
         ],
-        cb_terms=[],
-        cb_daily_factors=[],
-        cb_events=[],
+        source="test",
     )
     with db_manager.get_session() as session:
         account = PortfolioAccount(owner_id="u1", name="测试账户", market="cn", is_active=True)
@@ -254,10 +339,7 @@ class StrategyLabDataQueryApiTestCase(unittest.TestCase):
         Config.reset_instance()
         DatabaseManager.reset_instance()
         self.client = TestClient(create_app(static_dir=self.data_dir / "empty-static"))
-        self.client.post(
-            "/api/v1/strategy-lab/data-sync",
-            json={"market": "cn", "source": "fixture"},
-        )
+        _seed_fixture(DatabaseManager())
 
     def tearDown(self) -> None:
         DatabaseManager.reset_instance()

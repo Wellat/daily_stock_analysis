@@ -120,16 +120,12 @@ class StrategyLabTradeListResponse(BaseModel):
 
 class StrategyLabDataSyncRequest(BaseModel):
     market: StrategyLabMarket = Field("cn", description="市场")
-    source: str = Field("fixture", description="同步来源")
-    sync_type: str = Field("", description="opencli 同步类型：cb_basic / cb_ohlc / cb_premium_history / all（空则走原 source 逻辑）")
+    source: str = Field("opencli", description="同步来源")
+    sync_type: str = Field("", description="opencli 同步类型：cb_basic / cb_ohlc / cb_premium_history / all")
     include_delisted: bool = Field(False, description="是否同步已退市可转债（默认仅活跃）")
     start_date: Optional[date] = Field(None, description="行情同步起始日期（缺省时增量）")
     end_date: Optional[date] = Field(None, description="行情同步结束日期（默认今天）")
     symbols: List[str] = Field(default_factory=list, description="可选标的筛选")
-    cb_basic: List[Dict[str, Any]] = Field(default_factory=list, description="可选可转债基础数据")
-    cb_terms: List[Dict[str, Any]] = Field(default_factory=list, description="可选可转债条款数据")
-    cb_daily_factors: List[Dict[str, Any]] = Field(default_factory=list, description="可选可转债日因子")
-    cb_events: List[Dict[str, Any]] = Field(default_factory=list, description="可选可转债事件")
 
 
 class StrategyLabDataSyncResponse(BaseModel):

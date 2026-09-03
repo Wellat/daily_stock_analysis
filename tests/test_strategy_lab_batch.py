@@ -30,7 +30,29 @@ def db_manager() -> DatabaseManager:
 
 
 def test_batch_service_runs_parameter_grid(db_manager: DatabaseManager) -> None:
-    StrategyLabDataSyncService(db_manager).sync_fixture_convertible_bonds()
+    repo = StrategyLabDataSyncService(db_manager).repository
+    repo.upsert_cb_basic(
+        [
+            {"bond_code": "113001", "bond_name": "CB Alpha", "stock_code": "113001", "market": "cn", "remaining_size": 50.0, "current_premium_rate": 18.0},
+            {"bond_code": "113002", "bond_name": "CB Beta", "stock_code": "113002", "market": "cn", "remaining_size": 50.0, "current_premium_rate": 18.0},
+            {"bond_code": "113003", "bond_name": "CB Gamma", "stock_code": "113003", "market": "cn", "remaining_size": 50.0, "current_premium_rate": 18.0},
+        ],
+        source="fixture",
+    )
+    repo.upsert_cb_daily_factors(
+        [
+            {"bond_code": "113001", "trade_date": date(2024, 1, 2), "close": 102.0, "premium_rate": 18.0, "remaining_size": 50.0},
+            {"bond_code": "113001", "trade_date": date(2024, 1, 3), "close": 103.5, "premium_rate": 17.2, "remaining_size": 50.0},
+            {"bond_code": "113001", "trade_date": date(2024, 1, 4), "close": 105.0, "premium_rate": 16.5, "remaining_size": 50.0},
+            {"bond_code": "113002", "trade_date": date(2024, 1, 2), "close": 96.0, "premium_rate": 22.0, "remaining_size": 50.0},
+            {"bond_code": "113002", "trade_date": date(2024, 1, 3), "close": 97.0, "premium_rate": 21.0, "remaining_size": 50.0},
+            {"bond_code": "113002", "trade_date": date(2024, 1, 4), "close": 98.5, "premium_rate": 20.0, "remaining_size": 50.0},
+            {"bond_code": "113003", "trade_date": date(2024, 1, 2), "close": 118.0, "premium_rate": 9.0, "remaining_size": 50.0},
+            {"bond_code": "113003", "trade_date": date(2024, 1, 3), "close": 117.0, "premium_rate": 9.5, "remaining_size": 50.0},
+            {"bond_code": "113003", "trade_date": date(2024, 1, 4), "close": 116.0, "premium_rate": 10.0, "remaining_size": 50.0},
+        ],
+        source="fixture",
+    )
     service = StrategyLabBatchService(db_manager)
 
     payload = service.create_batch(

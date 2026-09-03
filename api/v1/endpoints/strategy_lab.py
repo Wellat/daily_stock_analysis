@@ -175,38 +175,16 @@ def sync_data(
 ) -> StrategyLabDataSyncResponse:
     try:
         service = StrategyLabDataSyncService(db_manager)
-        if request.source == "fixture":
-            return StrategyLabDataSyncResponse(**service.sync_fixture_convertible_bonds(market=request.market))
-        if request.source in {"akshare", "jisilu", "opencli"}:
-            if request.source == "opencli" and request.sync_type in {"cb_basic", "cb_ohlc", "cb_premium_history", "all"}:
-                # 重构后的可转债同步链路：基础数据（cb-list+cb-detail）/ OHLC 行情 / 溢价历史补数 / 两者
-                return StrategyLabDataSyncResponse(
-                    **service.start_data_sync(
-                        market=request.market,
-                        sync_type=request.sync_type,
-                        include_delisted=request.include_delisted,
-                        start_date=request.start_date,
-                        end_date=request.end_date,
-                        symbols=request.symbols,
-                    )
-                )
-            return StrategyLabDataSyncResponse(
-                **service.start_provider_sync(
-                    market=request.market,
-                    source=request.source,
-                    symbols=request.symbols,
-                )
-            )
-        if not any([request.cb_basic, request.cb_terms, request.cb_daily_factors, request.cb_events]):
-            raise ValueError("payload data is required when source is not fixture")
+        if request.sync_type not in {"cb_basic", "cb_ohlc", "cb_premium_history", "all"}:
+            raise ValueError("sync_type must be cb_basic / cb_ohlc / cb_premium_history / all")
         return StrategyLabDataSyncResponse(
-            **service.sync_payload_convertible_bonds(
+            **service.start_data_sync(
                 market=request.market,
-                source=request.source,
-                cb_basic=request.cb_basic,
-                cb_terms=request.cb_terms,
-                cb_daily_factors=request.cb_daily_factors,
-                cb_events=request.cb_events,
+                sync_type=request.sync_type,
+                include_delisted=request.include_delisted,
+                start_date=request.start_date,
+                end_date=request.end_date,
+                symbols=request.symbols,
             )
         )
     except ValueError as exc:

@@ -64,9 +64,32 @@ class StrategyLabPhase2ApiTestCase(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def test_data_sync_and_batch_contract(self) -> None:
-        sync_resp = self.client.post("/api/v1/strategy-lab/data-sync", json={"market": "cn", "source": "fixture"})
-        self.assertEqual(sync_resp.status_code, 200, sync_resp.text)
-        self.assertEqual(sync_resp.json()["cb_basic_upserted"], 3)
+        from datetime import date
+        from src.services.strategy_lab.data_sync_service import StrategyLabDataSyncService
+
+        repo = StrategyLabDataSyncService(DatabaseManager()).repository
+        repo.upsert_cb_basic(
+            [
+                {"bond_code": "113001", "bond_name": "CB Alpha", "stock_code": "113001", "market": "cn", "remaining_size": 50.0, "current_premium_rate": 18.0},
+                {"bond_code": "113002", "bond_name": "CB Beta", "stock_code": "113002", "market": "cn", "remaining_size": 50.0, "current_premium_rate": 18.0},
+                {"bond_code": "113003", "bond_name": "CB Gamma", "stock_code": "113003", "market": "cn", "remaining_size": 50.0, "current_premium_rate": 18.0},
+            ],
+            source="fixture",
+        )
+        repo.upsert_cb_daily_factors(
+            [
+                {"bond_code": "113001", "trade_date": date(2024, 1, 2), "close": 102.0, "premium_rate": 18.0, "remaining_size": 50.0},
+                {"bond_code": "113001", "trade_date": date(2024, 1, 3), "close": 103.5, "premium_rate": 17.2, "remaining_size": 50.0},
+                {"bond_code": "113001", "trade_date": date(2024, 1, 4), "close": 105.0, "premium_rate": 16.5, "remaining_size": 50.0},
+                {"bond_code": "113002", "trade_date": date(2024, 1, 2), "close": 96.0, "premium_rate": 22.0, "remaining_size": 50.0},
+                {"bond_code": "113002", "trade_date": date(2024, 1, 3), "close": 97.0, "premium_rate": 21.0, "remaining_size": 50.0},
+                {"bond_code": "113002", "trade_date": date(2024, 1, 4), "close": 98.5, "premium_rate": 20.0, "remaining_size": 50.0},
+                {"bond_code": "113003", "trade_date": date(2024, 1, 2), "close": 118.0, "premium_rate": 9.0, "remaining_size": 50.0},
+                {"bond_code": "113003", "trade_date": date(2024, 1, 3), "close": 117.0, "premium_rate": 9.5, "remaining_size": 50.0},
+                {"bond_code": "113003", "trade_date": date(2024, 1, 4), "close": 116.0, "premium_rate": 10.0, "remaining_size": 50.0},
+            ],
+            source="fixture",
+        )
 
         batch_resp = self.client.post(
             "/api/v1/strategy-lab/batches",
@@ -105,37 +128,6 @@ class StrategyLabPhase2ApiTestCase(unittest.TestCase):
         self.assertEqual(delete_resp.status_code, 200, delete_resp.text)
         self.assertEqual(delete_resp.json(), {"deleted": True})
 
-    def test_payload_data_sync_contract(self) -> None:
-        sync_resp = self.client.post(
-            "/api/v1/strategy-lab/data-sync",
-            json={
-                "market": "cn",
-                "source": "manual",
-                "cb_basic": [
-                    {
-                        "bond_code": "123001",
-                        "bond_name": "测试转债",
-                        "stock_code": "600001",
-                        "stock_name": "测试正股",
-                        "list_date": "2024-01-02",
-                        "maturity_date": "2028-01-02",
-                    }
-                ],
-                "cb_daily_factors": [
-                    {
-                        "bond_code": "123001",
-                        "trade_date": "2024-01-03",
-                        "close": 101.2,
-                        "premium_rate": 17.8,
-                    }
-                ],
-            },
-        )
-
-        self.assertEqual(sync_resp.status_code, 200, sync_resp.text)
-        self.assertEqual(sync_resp.json()["cb_basic_upserted"], 1)
-        self.assertEqual(sync_resp.json()["cb_factor_upserted"], 1)
-
     def test_opencli_premium_history_sync_contract(self) -> None:
         with patch("api.v1.endpoints.strategy_lab.StrategyLabDataSyncService.start_data_sync") as mocked_sync:
             mocked_sync.return_value = {
@@ -173,30 +165,45 @@ class StrategyLabPhase2ApiTestCase(unittest.TestCase):
         )
 
     def test_cancel_data_sync_run_contract(self) -> None:
-        sync_resp = self.client.post("/api/v1/strategy-lab/data-sync", json={"market": "cn", "source": "fixture"})
-        self.assertEqual(sync_resp.status_code, 200, sync_resp.text)
-        run_id = sync_resp.json()["sync_run_id"]
+        from uuid import uuid4
+        from src.services.strategy_lab.data_sync_service import StrategyLabDataSyncService
+
+        repo = StrategyLabDataSyncService(DatabaseManager()).repository
+        run = repo.create_sync_run(
+            run_uid=uuid4().hex,
+            sync_type="cb_basic",
+            market="cn",
+            payload={"market": "cn"},
+        )
+        run_id = run.id
 
         cancel_resp = self.client.post(f"/api/v1/strategy-lab/data-sync/runs/{run_id}/cancel")
 
         self.assertEqual(cancel_resp.status_code, 200, cancel_resp.text)
-        self.assertEqual(cancel_resp.json()["status"], "completed")
+        self.assertEqual(cancel_resp.json()["status"], "running")
 
         missing_resp = self.client.post("/api/v1/strategy-lab/data-sync/runs/999999/cancel")
         self.assertEqual(missing_resp.status_code, 404, missing_resp.text)
 
     def test_event_study_contract(self) -> None:
-        self.client.post(
-            "/api/v1/strategy-lab/data-sync",
-            json={
-                "source": "manual",
-                "cb_basic": [{"bond_code": "123001", "bond_name": "测试转债", "stock_code": "600001"}],
-                "cb_daily_factors": [
-                    {"bond_code": "123001", "trade_date": "2024-01-02", "close": 100},
-                    {"bond_code": "123001", "trade_date": "2024-01-03", "close": 105},
-                ],
-                "cb_events": [{"bond_code": "123001", "event_date": "2024-01-02", "event_type": "strong_redeem"}],
-            },
+        from datetime import date
+        from src.services.strategy_lab.data_sync_service import StrategyLabDataSyncService
+
+        repo = StrategyLabDataSyncService(DatabaseManager()).repository
+        repo.upsert_cb_basic(
+            [{"bond_code": "123001", "bond_name": "测试转债", "stock_code": "600001"}],
+            source="sample",
+        )
+        repo.upsert_cb_daily_factors(
+            [
+                {"bond_code": "123001", "trade_date": date(2024, 1, 2), "close": 100},
+                {"bond_code": "123001", "trade_date": date(2024, 1, 3), "close": 105},
+            ],
+            source="sample",
+        )
+        repo.upsert_cb_events(
+            [{"bond_code": "123001", "event_date": date(2024, 1, 2), "event_type": "strong_redeem"}],
+            source="sample",
         )
         response = self.client.post("/api/v1/strategy-lab/studies/events", json={"event_type": "strong_redeem", "offsets": [1]})
         self.assertEqual(response.status_code, 200, response.text)

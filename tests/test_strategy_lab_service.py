@@ -72,21 +72,22 @@ def test_strategy_lab_service_requires_existing_portfolio_account(db_manager: Da
 
 
 def test_strategy_lab_service_uses_synchronized_convertible_bond_data(db_manager: DatabaseManager) -> None:
-    StrategyLabDataSyncService(db_manager).sync_payload_convertible_bonds(
-        market="cn",
-        source="sample",
-        cb_basic=[
+    repo = StrategyLabDataSyncService(db_manager).repository
+    repo.upsert_cb_basic(
+        [
             {"bond_code": "123001", "bond_name": "样例一", "stock_code": "600001"},
             {"bond_code": "123002", "bond_name": "样例二", "stock_code": "600002"},
         ],
-        cb_terms=[],
-        cb_daily_factors=[
-            {"bond_code": "123001", "trade_date": "2024/01/02", "close": 100, "premium_rate": 15},
-            {"bond_code": "123001", "trade_date": "2024/01/03", "close": 105, "premium_rate": 14},
-            {"bond_code": "123002", "trade_date": "2024/01/02", "close": 80, "premium_rate": 20},
-            {"bond_code": "123002", "trade_date": "2024/01/03", "close": 81, "premium_rate": 19},
+        source="sample",
+    )
+    repo.upsert_cb_daily_factors(
+        [
+            {"bond_code": "123001", "trade_date": date(2024, 1, 2), "close": 100, "premium_rate": 15},
+            {"bond_code": "123001", "trade_date": date(2024, 1, 3), "close": 105, "premium_rate": 14},
+            {"bond_code": "123002", "trade_date": date(2024, 1, 2), "close": 80, "premium_rate": 20},
+            {"bond_code": "123002", "trade_date": date(2024, 1, 3), "close": 81, "premium_rate": 19},
         ],
-        cb_events=[],
+        source="sample",
     )
 
     payload = StrategyLabService(db_manager).create_run(
