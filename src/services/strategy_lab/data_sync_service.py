@@ -37,7 +37,7 @@ class StrategyLabDataSyncService:
         self.repository = StrategyLabDataRepository(db_manager)
         self.task_start_time = time.time()
 
-    def run_scheduled_sync_after_close(
+    def run_scheduled_sync(
         self,
         *,
         run_kind: str,
@@ -46,29 +46,58 @@ class StrategyLabDataSyncService:
         symbols: Optional[List[str]] = None,
         _run_id: Optional[int] = None,
     ) -> Dict[str, Any]:
-        """Run the configured provider synchronously for scheduler use.
+        """Run the scheduled CB sync pipeline synchronously.
 
-        ``symbols`` 缺省时全量同步；传入时仅同步指定标的（透传给
-        ``sync_cb_basic`` / ``sync_cb_ohlc`` / ``sync_cb_factors``）。
-        传入 ``_run_id`` 时复用外层 sync run（各子任务不再各自建 run，
-        取消与进度挂在外层 run 上，成功后由本方法统一 complete），
-        供 ``start_data_sync`` 后台线程复用。
+        整条链路承载在**一条** sync run 上，``run_kind`` 与 ``trade_date``
+        落列，供实盘下单前的盘中数据检查（``latest_sync_run``）与同步
+        状态查询使用；成功后统一 complete（quality_status 置 usable），
+        失败统一 fail。盘后链路含基础数据，盘中链路仅行情 + 因子。
+        ``symbols`` 缺省时全量同步；传入时仅同步指定标的。
+        ``_run_id`` 由 ``start_data_sync`` 后台线程透传以复用外层 run。
         """
         if run_kind not in {"intraday", "after_close"}:
             raise ValueError("run_kind must be intraday or after_close")
+        if trade_date is None:
+            trade_date = date.today()
+        if _run_id is None:
+            run = self.repository.create_sync_run(
+                run_uid=uuid4().hex,
+                sync_type="cb_scheduled",
+                market=market,
+                payload={
+                    "market": market,
+                    "run_kind": run_kind,
+                    "trade_date": trade_date.isoformat(),
+                    "symbols": symbols or [],
+                    "source": "scheduler",
+                },
+                run_kind=run_kind,
+                trade_date=trade_date,
+            )
+            _run_id = run.id
         try:
             result: Dict[str, Any] = {}
-            stages = (
-                ("cb_basic", self.sync_cb_basic),
-                ("cb_ohlc", self.sync_cb_ohlc),
-                ("cb_factors", self.sync_cb_factors),
+            # 三个子任务签名不同：cb_basic 无日期参数；cb_ohlc 只收窄上界
+            # （起点保持增量语义，漏跑的日子可自愈回补）；cb_factors 是单日
+            # 语义，直接用外层 trade_date。
+            stages = ()
+            if run_kind == "after_close":
+                # 仅盘后同步 cb_basic
+                stages += (
+                    ("cb_basic", self.sync_cb_basic, {}),
+                )
+
+            stages += (
+                ("cb_ohlc", self.sync_cb_ohlc, {"start_date": trade_date, "end_date": trade_date}),
+                ("cb_factors", self.sync_cb_factors, {"trade_date": trade_date}),
             )
-            for key, sync_method in stages:
+            for key, sync_method, extra_kwargs in stages:
                 stage_result = sync_method(
                     market=market,
                     symbols=symbols,
                     _run_id=_run_id,
-                    _complete_on_success=_run_id is None,
+                    _complete_on_success=False,
+                    **extra_kwargs,
                 )
                 if stage_result.get("status") == "cancelled":
                     # 子任务已把共享 run 标记为 cancelled，直接返回不再继续
@@ -76,17 +105,17 @@ class StrategyLabDataSyncService:
                     result["cancelled"] = True
                     return result
                 result[key] = stage_result
-                if _run_id is not None and self.repository.is_sync_run_cancel_requested(_run_id):
+                if self.repository.is_sync_run_cancel_requested(_run_id):
                     result["cancelled"] = True
                     self.repository.cancel_sync_run(_run_id, result=result)
                     return result
-            result.update({"run_kind": run_kind, "trade_date": (trade_date or date.today()).isoformat(), "quality_status": "usable"})
+            result.update({"run_kind": run_kind, "trade_date": trade_date.isoformat(), "quality_status": "usable"})
             self._notify_sync(run_kind, result, success=True)
-            if _run_id is not None:
-                self.repository.complete_sync_run(_run_id, result=result)
+            self.repository.complete_sync_run(_run_id, result=result)
             return result
         except Exception as exc:
             self._notify_sync(run_kind, {"run_kind": run_kind, "error": str(exc)}, success=False)
+            self.repository.fail_sync_run(_run_id, str(exc))
             raise
 
     def _notify_sync(self, run_kind: str, result: Dict[str, Any], *, success: bool) -> None:
@@ -357,7 +386,6 @@ class StrategyLabDataSyncService:
         start_date: Optional[date] = None,
         end_date: Optional[date] = None,
         symbols: Optional[List[str]] = None,
-        workers: int = 4,
         _run_id: Optional[int] = None,
         _complete_on_success: bool = True,
     ) -> Dict[str, Any]:
@@ -849,6 +877,11 @@ class StrategyLabDataSyncService:
             raise ValueError(f"Unsupported sync_type: {sync_type}")
         if not _PROVIDER_SYNC_LOCK.acquire(blocking=False):
             raise ValueError("已有数据源同步任务进行中，请等待完成后再试")
+        create_kwargs: Dict[str, Any] = {}
+        if sync_type == "cb_scheduled":
+            # 与定时调度链路的记录对齐：run_kind/trade_date 落列，
+            # 供实盘数据检查与同步状态查询命中
+            create_kwargs = {"run_kind": "after_close", "trade_date": end_date or start_date or date.today()}
         run = self.repository.create_sync_run(
             run_uid=uuid4().hex,
             sync_type=sync_type,
@@ -862,6 +895,7 @@ class StrategyLabDataSyncService:
                 "end_date": end_date.isoformat() if end_date else None,
                 "symbols": symbols or [],
             },
+            **create_kwargs,
         )
 
         def _worker() -> None:
@@ -915,8 +949,8 @@ class StrategyLabDataSyncService:
                         return
                 if sync_type == "cb_scheduled":
                     # 手动触发调度链路；run 的 complete/cancel 由
-                    # run_scheduled_sync_after_close 统一处理（共享 run.id）
-                    result["cb_scheduled"] = self.run_scheduled_sync_after_close(
+                    # run_scheduled_sync 统一处理（共享 run.id）
+                    result["cb_scheduled"] = self.run_scheduled_sync(
                         run_kind="after_close",
                         market=market,
                         trade_date=end_date or start_date,

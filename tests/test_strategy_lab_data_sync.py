@@ -1469,6 +1469,10 @@ def test_start_data_sync_dispatches_cb_scheduled_worker(
         time.sleep(0.05)
 
     assert run["status"] == "completed"
+    # 手动触发的外层 run 同样落 run_kind/trade_date 列，与定时链路记录对齐
+    assert run["run_kind"] == "after_close"
+    assert run["trade_date"] == date.today().isoformat()
+    assert run["quality_status"] == "usable"
     # 三个子任务按序执行，共享外层 run，且不各自 complete
     assert [name for name, _ in calls] == ["cb_basic", "cb_ohlc", "cb_factors"]
     assert {kwargs["_run_id"] for _, kwargs in calls} == {start["sync_run_id"]}
@@ -1480,7 +1484,7 @@ def test_start_data_sync_dispatches_cb_scheduled_worker(
     assert {"cb_basic", "cb_ohlc", "cb_factors"} <= set(result)
 
 
-def test_run_scheduled_sync_after_close_standalone_keeps_scheduler_contract(
+def test_run_scheduled_sync_standalone_keeps_scheduler_contract(
     db_manager: DatabaseManager, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     service = StrategyLabDataSyncService(db_manager)
@@ -1501,16 +1505,52 @@ def test_run_scheduled_sync_after_close_standalone_keeps_scheduler_contract(
     )
 
     with pytest.raises(ValueError):
-        service.run_scheduled_sync_after_close(run_kind="bogus")
+        service.run_scheduled_sync(run_kind="bogus")
 
-    result = service.run_scheduled_sync_after_close(run_kind="after_close", trade_date=date(2026, 9, 2))
+    result = service.run_scheduled_sync(run_kind="after_close", trade_date=date(2026, 9, 2))
 
     assert [name for name, _ in calls] == ["cb_basic", "cb_ohlc", "cb_factors"]
-    # 调度路径：子任务各自建 run 并自行 complete，独立调用不额外落总 run
-    assert all(kwargs["_run_id"] is None for _, kwargs in calls)
-    assert all(kwargs["_complete_on_success"] is True for _, kwargs in calls)
+    # 各 stage 只传自己签名支持的日期参数：cb_basic 无日期、cb_ohlc 单日窗口、
+    # cb_factors 单日语义；防止再次统一透传 start/end/trade_date 导致真实方法
+    # TypeError。子任务共享总 run 且不各自 complete。
+    runs = service.list_sync_runs(page=1, limit=10)["items"]
+    assert len(runs) == 1
+    master_run = runs[0]
+    assert master_run["sync_type"] == "cb_scheduled"
+    assert master_run["run_kind"] == "after_close"
+    assert master_run["trade_date"] == "2026-09-02"
+    assert master_run["status"] == "completed"
+    assert master_run["quality_status"] == "usable"
+    kwargs_by_stage = dict(calls)
+    assert kwargs_by_stage["cb_basic"] == {
+        "market": "cn", "symbols": None, "_run_id": master_run["id"], "_complete_on_success": False,
+    }
+    assert kwargs_by_stage["cb_ohlc"] == {
+        "market": "cn", "symbols": None, "start_date": date(2026, 9, 2), "end_date": date(2026, 9, 2),
+        "_run_id": master_run["id"], "_complete_on_success": False,
+    }
+    assert kwargs_by_stage["cb_factors"] == {
+        "market": "cn", "symbols": None, "trade_date": date(2026, 9, 2),
+        "_run_id": master_run["id"], "_complete_on_success": False,
+    }
     assert notified == [("after_close", True)]
     assert result["run_kind"] == "after_close"
     assert result["trade_date"] == "2026-09-02"
     assert result["quality_status"] == "usable"
-    assert service.list_sync_runs(page=1, limit=10)["total"] == 0
+
+    # 实盘数据检查的查询口径：run_kind + trade_date 列级匹配
+    repo = service.repository
+    found = repo.latest_sync_run(run_kind="after_close", trade_date=date(2026, 9, 2))
+    assert found is not None and found.status == "completed"
+    assert repo.latest_sync_run(run_kind="intraday", trade_date=date(2026, 9, 2)) is None
+    assert repo.latest_sync_run(run_kind="after_close", trade_date=date(2026, 9, 1)) is None
+
+    # 盘中链路只跑行情 + 因子，且落 run_kind='intraday' 的 run
+    calls.clear()
+    notified.clear()
+    service.run_scheduled_sync(run_kind="intraday", trade_date=date(2026, 9, 2))
+    assert [name for name, _ in calls] == ["cb_ohlc", "cb_factors"]
+    assert notified == [("intraday", True)]
+    intraday_run = repo.latest_sync_run(run_kind="intraday", trade_date=date(2026, 9, 2))
+    assert intraday_run is not None and intraday_run.status == "completed"
+    assert service.list_sync_runs(page=1, limit=10)["total"] == 2

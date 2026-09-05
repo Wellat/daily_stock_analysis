@@ -66,7 +66,6 @@ class LiveStrategyService:
             row.rebalance_frequency_days = int(payload.get("rebalance_frequency_days", 1))
             row.event_check_enabled = bool(payload.get("event_check_enabled", True))
             row.data_sync_before_run = bool(payload.get("data_sync_before_run", True))
-            row.data_max_age_minutes = payload.get("data_max_age_minutes")
             row.updated_at = datetime.now()
             session.commit(); session.refresh(row)
             return self._config_payload(row)
@@ -77,9 +76,10 @@ class LiveStrategyService:
         config = self._latest_config()
         if config is None:
             raise ValueError("live strategy config is not configured")
+        # 盘中数据检查：当日必须存在 run_kind='intraday' 且已完成的同步记录，
+        # 避免用旧数据/空数据下单；新鲜度由 trade_date 精确匹配当日保证。
         sync = self.data.latest_sync_run(run_kind="intraday", trade_date=trade_date)
-        stale = bool(sync and sync.completed_at and config.data_max_age_minutes and (datetime.now() - sync.completed_at).total_seconds() > config.data_max_age_minutes * 60)
-        if config.data_sync_before_run and (sync is None or sync.status != "completed" or getattr(sync, "quality_status", "usable") not in ("usable", "unknown") or stale):
+        if config.data_sync_before_run and (sync is None or sync.status != "completed" or getattr(sync, "quality_status", "usable") not in ("usable", "unknown")):
             payload = {"trade_date": trade_date.isoformat(), "mode": mode, "target": {}, "current": {}, "rebalance": [], "decisions": [], "strategy_version": config.strategy_version, "risk": {"passed": False, "reason": "intraday_sync_unavailable"}, "skip_reason": "intraday_sync_unavailable"}
             if preview: return payload
             raise ValueError("intraday data sync is not completed; order generation is blocked")
@@ -166,7 +166,7 @@ class LiveStrategyService:
 
     @staticmethod
     def _config_payload(row):
-        return {"id": row.id, "name": row.name, "strategy_id": row.strategy_id, "strategy_version": row.strategy_version, "qmt_account": row.qmt_account, "enabled": row.enabled, "symbols": json.loads(row.symbols_json or "[]"), "parameters": json.loads(row.parameters_json or "{}"), "rebalance_frequency_days": row.rebalance_frequency_days or 1, "event_check_enabled": row.event_check_enabled if row.event_check_enabled is not None else True, "data_sync_before_run": row.data_sync_before_run if row.data_sync_before_run is not None else True, "data_max_age_minutes": row.data_max_age_minutes}
+        return {"id": row.id, "name": row.name, "strategy_id": row.strategy_id, "strategy_version": row.strategy_version, "qmt_account": row.qmt_account, "enabled": row.enabled, "symbols": json.loads(row.symbols_json or "[]"), "parameters": json.loads(row.parameters_json or "{}"), "rebalance_frequency_days": row.rebalance_frequency_days or 1, "event_check_enabled": row.event_check_enabled if row.event_check_enabled is not None else True, "data_sync_before_run": row.data_sync_before_run if row.data_sync_before_run is not None else True}
 
     @staticmethod
     def _run_payload(row):

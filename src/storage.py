@@ -1081,7 +1081,6 @@ class LiveStrategyConfig(Base):
     rebalance_frequency_days = Column(Integer, nullable=False, default=1)
     event_check_enabled = Column(Boolean, nullable=False, default=True)
     data_sync_before_run = Column(Boolean, nullable=False, default=True)
-    data_max_age_minutes = Column(Integer, nullable=True)
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, index=True)
 
@@ -1841,7 +1840,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                 if name not in run_columns:
                     conn.execute(text(f"ALTER TABLE live_strategy_runs ADD COLUMN {name} {ddl}"))
             config_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(live_strategy_configs)"))}
-            for name, ddl in {"rebalance_frequency_days": "INTEGER DEFAULT 1", "event_check_enabled": "BOOLEAN DEFAULT 1", "data_sync_before_run": "BOOLEAN DEFAULT 1", "data_max_age_minutes": "INTEGER"}.items():
+            for name, ddl in {"rebalance_frequency_days": "INTEGER DEFAULT 1", "event_check_enabled": "BOOLEAN DEFAULT 1", "data_sync_before_run": "BOOLEAN DEFAULT 1"}.items():
                 if name not in config_columns:
                     conn.execute(text(f"ALTER TABLE live_strategy_configs ADD COLUMN {name} {ddl}"))
 

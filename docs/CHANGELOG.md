@@ -8,7 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
-- [改进] 数据同步 API 与 Web 数据同步页面新增 `sync_type=cb_scheduled`：后台手动触发盘后调度链路（基础数据 → 行情 → 因子计算，等价 `run_scheduled_sync_after_close(run_kind='after_close')`），整条链路共享单条同步记录并支持取消，完成后发送盘后通知邮件；调度器定时路径行为不变。
+- [修复] 实盘下单前的盘中数据检查与可转债同步记录对齐：`run_scheduled_sync` 自建总 sync run 并落 `run_kind`/`trade_date` 列（此前全部同步记录均为默认 `after_close`/NULL，`latest_sync_run(run_kind='intraday', trade_date=今天)` 恒查不到，实盘策略会被 `intraday_sync_unavailable` 永久拦截）；手动触发的 `cb_scheduled` 记录同样落列。
+- [改进] 移除实盘配置项 `data_max_age_minutes` 及对应的数据时效（stale）检查：当日数据新鲜度改由 `trade_date` 列级精确匹配保证，避免“盘中同步 14:00 完成、14:35 检查时被误判过期”的配置坑；存量库中的旧列保留不影响运行。
+- [改进] 数据同步 API 与 Web 数据同步页面新增 `sync_type=cb_scheduled`：后台手动触发盘后调度链路（基础数据 → 行情 → 因子计算，等价 `run_scheduled_sync(run_kind='after_close')`），整条链路共享单条同步记录并支持取消，完成后发送盘后通知邮件；调度器定时路径行为不变。
 - [新功能] Strategy Lab 新增可转债因子计算独立方法 `sync_cb_factors`：遍历在市转债，用正股当日日K close 与 `cb_basic` 的转股价本地计算溢价率，连同正股价、剩余规模定向写入 `strategy_lab_cb_daily_factors`（新增 `stock_close` 列，存量 SQLite 库自动补列），已接入数据同步 API 与 Web 数据同步页面来源下拉框（`sync_type=cb_factors`，因子日期取 `end_date`），暂不接入 CLI/定时调度入口。
 - [新功能] Strategy Lab 数据同步新增可转债正股 OHLC 独立同步方法 `sync_cb_stock_ohlc`：仅同步在市转债对应正股（去重）的腾讯日K，落 `stock_daily`（`instrument_type='stock'`），支持增量起始日期，暂不接入 API/CLI/定时调度入口。
 - [改进] SQL 执行工作台仅允许单条 `SELECT`/`UPDATE`，`UPDATE` 必须包含 `WHERE` 且最多影响 50 行，超限自动回滚。

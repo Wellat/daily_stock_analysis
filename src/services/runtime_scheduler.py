@@ -65,6 +65,18 @@ def _agent_event_monitor_interval_seconds(config: Config) -> int:
     return interval_minutes * 60
 
 
+def _is_cn_trading_day(check_date: Any) -> bool:
+    """Return whether ``check_date`` is an A-share (CN) trading day.
+
+    Delegates to ``src.core.trading_calendar.is_market_open`` which fail-opens
+    to True when exchange-calendars is unavailable or the date is out of range,
+    so a missing calendar never silently disables scheduled tasks.
+    """
+    from src.core.trading_calendar import is_market_open
+
+    return is_market_open("cn", check_date)
+
+
 def build_agent_event_monitor_background_tasks(
     config: Config,
     *,
@@ -112,6 +124,10 @@ def build_live_strategy_background_tasks(config: Config) -> List[Dict[str, Any]]
         key = now.date().isoformat()
         if last_run_key["value"] == key:
             return
+        # 仅 A 股交易日运行（exchange-calendars 不可用时 fail-open 视为交易日）
+        if not _is_cn_trading_day(now.date()):
+            logger.info("Skip live strategy on non-trading day %s", now.date())
+            return
         service = LiveStrategyService()
         live_config = service.get_config()
         if not live_config or not live_config.get("enabled"):
@@ -131,14 +147,18 @@ def build_convertible_bond_sync_background_tasks(config: Config) -> List[Dict[st
             now = datetime.now()
             if now.strftime("%H:%M") != hhmm or state[kind] == now.date(): return
             if not getattr(config, "cb_sync_enabled", True): return
+            # 仅 A 股交易日运行（exchange-calendars 不可用时 fail-open 视为交易日）
+            if not _is_cn_trading_day(now.date()):
+                logger.info("Skip CB %s sync on non-trading day %s", kind, now.date())
+                return
             try:
-                StrategyLabDataSyncService().run_scheduled_sync_after_close(run_kind=kind, trade_date=now.date())
+                StrategyLabDataSyncService().run_scheduled_sync(run_kind=kind, trade_date=now.date())
                 state[kind] = now.date()
             except Exception:
                 logger.exception("CB %s sync failed", kind)
         return task
     return [
-        {"task": make_task("intraday", getattr(config, "cb_intraday_sync_time", "14:00")), "interval_seconds": 30, "run_immediately": False, "name": "cb_intraday_sync"},
+        {"task": make_task("intraday", getattr(config, "cb_intraday_sync_time", "14:25")), "interval_seconds": 30, "run_immediately": False, "name": "cb_intraday_sync"},
         {"task": make_task("after_close", getattr(config, "cb_after_close_sync_time", "20:00")), "interval_seconds": 30, "run_immediately": False, "name": "cb_after_close_sync"},
     ]
 

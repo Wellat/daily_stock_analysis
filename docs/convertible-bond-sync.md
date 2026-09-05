@@ -11,7 +11,7 @@
 | 补数同步（溢价率/剩余规模） | 本机 opencli（`cb-premium-history`） | `stock_daily`（仅补 `premium_rate` / `remaining_size` 空值） | 按“可转债代码 + 日期”匹配已有日线记录，不新建行、不覆盖已有非空值 |
 | 正股行情同步（OHLC） | 腾讯日K | `stock_daily`（`instrument_type='stock'`） | 独立同步方法 `sync_cb_stock_ohlc`，仅同步**在市转债**对应正股（去重），不回填转债因子表 |
 | 因子计算（正股价/溢价率/剩余规模） | 正股当日日K + 本地表计算 | `strategy_lab_cb_daily_factors`（`stock_close` / `premium_rate` / `remaining_size`） | 独立方法 `sync_cb_factors`，仅活跃转债；字段按可得性定向更新，缺失项不覆盖；可经 API / 数据同步页面触发 |
-| 盘后调度链路（手动触发） | 组合：基础 + 行情 + 因子 + 邮件通知 | 同各子能力 | `sync_type="cb_scheduled"`，等价手动触发 `run_scheduled_sync_after_close(run_kind='after_close')`；整条链路共享单条 sync run，结束时发盘后通知邮件 |
+| 盘后调度链路（手动触发） | 组合：盘后=基础+行情+因子，盘中=行情+因子，外加邮件通知 | 同各子能力 | `sync_type="cb_scheduled"`（手动）或定时调度 `run_scheduled_sync`；整条链路共享单条 sync run，`run_kind`/`trade_date` 落列供实盘数据检查（`latest_sync_run`）查询，结束时发通知邮件 |
 
 两个能力统一支持：
 
@@ -62,7 +62,7 @@ python scripts/sync_cb_data.py --basic --bond 113709       # 单只
 `symbols` 在 `cb_basic` 场景下会直接触发单只/少量标的详情拉取，不再先执行 `cb-list`。
 `cb_premium_history` 会按可转债代码 + 日期补写已有 `strategy_lab_cb_daily_factors` 行中的 `premium_rate` / `remaining_size` 空值；已有值和不存在的行都会跳过。
 `cb_factors` 为单日因子计算：因子日期取 `end_date`（缺省 `start_date`，均缺省为今天），页面「数据同步」来源下拉框可直接选择触发。
-`cb_scheduled` 为手动触发盘后调度链路：按序执行基础数据 → 行情 → 因子计算（等价定时调度使用的 `run_scheduled_sync_after_close`，`run_kind='after_close'`），整条链路复用一条 sync run（取消/进度挂在同一条记录上），完成后按配置发送盘后通知邮件。
+`cb_scheduled` 为手动触发盘后调度链路：按序执行基础数据 → 行情 → 因子计算（等价定时调度使用的 `run_scheduled_sync`，`run_kind='after_close'`），整条链路复用一条 sync run（取消/进度挂在同一条记录上），完成后按配置发送盘后通知邮件。
 
 返回 `running` 后通过 `GET /api/v1/strategy-lab/data-sync/runs` 轮询进度。
 
