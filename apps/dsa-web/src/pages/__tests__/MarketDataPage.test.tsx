@@ -145,12 +145,13 @@ describe('MarketDataPage', () => {
     cbApi.listSyncRuns.mockResolvedValue({
       total: 1,
       items: [
-        { id: 7, run_uid: 'x', sync_type: 'opencli_cb_basic', market: 'cn', status: 'completed', result: {}, created_at: '2026-08-10T00:00:00' },
+        { id: 7, run_uid: 'x', sync_type: 'opencli_cb_basic', market: 'cn', status: 'completed', result: {}, created_at: '2026-08-10T00:00:00', completed_at: '2026-08-10T00:01:23' },
       ],
     });
     fireEvent.click(screen.getByRole('tab', { name: '数据同步' }));
     fireEvent.click(screen.getByRole('button', { name: '开始同步' }));
     await waitFor(() => expect(cbApi.syncData).toHaveBeenCalledWith({ market: 'cn', source: 'opencli', sync_type: 'cb_basic', include_delisted: false, symbols: [] }));
+    expect(await screen.findByText('2026-08-10 00:01:23')).toBeInTheDocument();
   }, 15000);
 
   it('cancels a running data-sync run from the sync table', async () => {
@@ -209,6 +210,40 @@ describe('MarketDataPage', () => {
       sync_type: 'cb_premium_history',
       include_delisted: true,
       symbols: ['110081'],
+    }));
+  }, 15000);
+
+  it('submits a factor-calc sync request with the factor date', async () => {
+    render(<MarketDataPage />);
+    await screen.findByText('123001');
+    cbApi.syncData.mockResolvedValue({ sync_run_id: 11, status: 'running' });
+    fireEvent.click(screen.getByRole('tab', { name: '数据同步' }));
+    fireEvent.change(await screen.findByLabelText('同步来源'), { target: { value: 'cb_factors' } });
+    fireEvent.change(await screen.findByLabelText('因子日期'), { target: { value: '2026-09-02' } });
+    fireEvent.click(screen.getByRole('button', { name: '开始同步' }));
+    await waitFor(() => expect(cbApi.syncData).toHaveBeenCalledWith({
+      market: 'cn',
+      source: 'opencli',
+      sync_type: 'cb_factors',
+      include_delisted: false,
+      end_date: '2026-09-02',
+      symbols: [],
+    }));
+  }, 15000);
+
+  it('submits a scheduled-sync request from the source dropdown', async () => {
+    render(<MarketDataPage />);
+    await screen.findByText('123001');
+    cbApi.syncData.mockResolvedValue({ sync_run_id: 13, status: 'running' });
+    fireEvent.click(screen.getByRole('tab', { name: '数据同步' }));
+    fireEvent.change(await screen.findByLabelText('同步来源'), { target: { value: 'cb_scheduled' } });
+    fireEvent.click(screen.getByRole('button', { name: '开始同步' }));
+    await waitFor(() => expect(cbApi.syncData).toHaveBeenCalledWith({
+      market: 'cn',
+      source: 'opencli',
+      sync_type: 'cb_scheduled',
+      include_delisted: false,
+      symbols: [],
     }));
   }, 15000);
 });

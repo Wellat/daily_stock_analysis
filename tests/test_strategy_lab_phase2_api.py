@@ -164,6 +164,36 @@ class StrategyLabPhase2ApiTestCase(unittest.TestCase):
             symbols=["110081"],
         )
 
+    def test_cb_factors_sync_contract(self) -> None:
+        from datetime import date
+
+        with patch("api.v1.endpoints.strategy_lab.StrategyLabDataSyncService.start_data_sync") as mocked_sync:
+            mocked_sync.return_value = {
+                "sync_run_id": 12,
+                "status": "running",
+                "sync_type": "cb_factors",
+            }
+            sync_resp = self.client.post(
+                "/api/v1/strategy-lab/data-sync",
+                json={
+                    "market": "cn",
+                    "source": "opencli",
+                    "sync_type": "cb_factors",
+                    "end_date": "2026-09-02",
+                },
+            )
+
+        self.assertEqual(sync_resp.status_code, 200, sync_resp.text)
+        self.assertEqual(sync_resp.json()["sync_type"], "cb_factors")
+        mocked_sync.assert_called_once_with(
+            market="cn",
+            sync_type="cb_factors",
+            include_delisted=False,
+            start_date=None,
+            end_date=date(2026, 9, 2),
+            symbols=[],
+        )
+
     def test_cancel_data_sync_run_contract(self) -> None:
         from uuid import uuid4
         from src.services.strategy_lab.data_sync_service import StrategyLabDataSyncService

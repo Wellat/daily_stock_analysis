@@ -9,16 +9,24 @@ import sys
 from datetime import date
 from types import SimpleNamespace
 from sqlalchemy import func, select
+import pandas as pd
 
 from src.services.strategy_lab.data_sync_service import StrategyLabDataSyncService
 from src.services.strategy_lab.cb_providers import (
     AkshareConvertibleBondProvider,
+    CbUnderlyingStockOhlcFetcher,
     ConvertibleBondOhlcFetcher,
     JisiluConvertibleBondProvider,
     OpencliConvertibleBondProvider,
 )
 import src.services.strategy_lab.cb_providers as cb_providers
-from src.storage import DatabaseManager, StrategyLabCbBasic, StrategyLabCbDailyFactor, StrategyLabCbEvent
+from src.storage import (
+    DatabaseManager,
+    StockDaily,
+    StrategyLabCbBasic,
+    StrategyLabCbDailyFactor,
+    StrategyLabCbEvent,
+)
 
 
 @pytest.fixture()
@@ -961,3 +969,548 @@ def test_ohlc_fetcher_returns_empty_frame_on_total_failure(monkeypatch: pytest.M
 
     assert frame.empty
     assert fetcher.last_source is None
+
+
+def test_underlying_stock_fetcher_maps_symbol_prefix(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[str] = []
+
+    def _get(url, **kwargs):
+        symbol = str(kwargs["params"]["param"]).split(",")[0]
+        seen.append(symbol)
+
+        class _Response:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self):
+                return {
+                    "data": {
+                        symbol: {
+                            "day": [["2026-01-02", "10.0", "10.5", "10.8", "9.9", "12345", "105000.0"]]
+                        }
+                    }
+                }
+
+        return _Response()
+
+    monkeypatch.setattr(cb_providers.requests, "get", _get)
+    fetcher = CbUnderlyingStockOhlcFetcher(timeout=5)
+    for code, expected_symbol in (("600519", "sh600519"), ("000725", "sz000725"), ("300750", "sz300750")):
+        frame = fetcher.fetch_daily(code, date(2026, 1, 1), date(2026, 1, 31))
+        assert len(frame) == 1
+        assert fetcher.last_source == "tencent"
+        assert seen[-1] == expected_symbol
+
+    # 北交所等非沪深 A 股前缀不发请求，直接返回空帧。
+    frame = fetcher.fetch_daily("830799", date(2026, 1, 1), date(2026, 1, 31))
+    assert frame.empty
+    assert fetcher.last_source is None
+    assert seen == ["sh600519", "sz000725", "sz300750"]
+
+
+class _FakeStockOhlcFetcher:
+    name = "cb_stock_ohlc"
+
+    def __init__(self, frames=None, failures=()):
+        self.frames = frames or {}
+        self.failures = set(failures)
+        self.requests: list[tuple[str, date, date]] = []
+        self.last_source = "tencent"
+
+    def fetch_daily(self, stock_code, start_date, end_date):
+        self.requests.append((stock_code, start_date, end_date))
+        if stock_code in self.failures:
+            raise RuntimeError(f"boom {stock_code}")
+        return self.frames.get(
+            stock_code, pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume", "amount"])
+        )
+
+
+def _stock_ohlc_frame() -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "date": [date(2026, 9, 1), date(2026, 9, 2)],
+            "open": [10.0, 10.5],
+            "high": [10.8, 10.9],
+            "low": [9.9, 10.2],
+            "close": [10.5, 10.8],
+            "volume": [12345, 23456],
+            "amount": [123456.0, 234567.0],
+        }
+    )
+
+
+def _seed_cb_basic(db_manager: DatabaseManager, rows: list[dict]) -> None:
+    with db_manager.get_session() as session:
+        for row in rows:
+            merged = {"market": "cn", "status": "正常", **row}
+            session.add(StrategyLabCbBasic(**merged))
+        session.commit()
+
+
+def test_sync_cb_stock_ohlc_persists_deduped_active_underlyings(
+    db_manager: DatabaseManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import src.services.strategy_lab.data_sync_service as dss
+
+    fetcher = _FakeStockOhlcFetcher(frames={"600745": _stock_ohlc_frame()})
+    monkeypatch.setattr(dss, "CbUnderlyingStockOhlcFetcher", lambda **kwargs: fetcher)
+    service = StrategyLabDataSyncService(db_manager)
+    _seed_cb_basic(
+        db_manager,
+        [
+            {"bond_code": "110081", "bond_name": "闻泰转债", "stock_code": "600745", "stock_name": "闻泰科技"},
+            {"bond_code": "113709", "bond_name": "另一只转债", "stock_code": "600745", "stock_name": "闻泰科技"},
+            {"bond_code": "128138", "bond_name": "已退市转债", "stock_code": "300631", "stock_name": "退市正股", "status": "已退市"},
+        ],
+    )
+
+    result = service.sync_cb_stock_ohlc(market="cn", end_date=date(2026, 9, 2))
+
+    assert result["stocks_total"] == 1
+    assert result["stock_daily_rows_new"] == 2
+    assert result["stocks_skipped"] == 0
+    assert result["stocks_failed"] == []
+    assert [req[0] for req in fetcher.requests] == ["600745"]
+    with db_manager.get_session() as session:
+        rows = session.execute(
+            select(StockDaily).where(StockDaily.code == "600745").order_by(StockDaily.date.asc())
+        ).scalars().all()
+        assert len(rows) == 2
+        assert all(row.instrument_type == "stock" for row in rows)
+        assert rows[0].data_source == "tencent"
+        delisted_rows = session.execute(
+            select(func.count()).select_from(StockDaily).where(StockDaily.code == "300631")
+        ).scalar_one()
+        assert delisted_rows == 0
+    runs = service.list_sync_runs(page=1, limit=5)["items"]
+    assert runs[0]["sync_type"] == "cb_stock_ohlc"
+    assert runs[0]["status"] == "completed"
+
+
+def test_sync_cb_stock_ohlc_incremental_start_from_local_history(
+    db_manager: DatabaseManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import src.services.strategy_lab.data_sync_service as dss
+
+    fetcher = _FakeStockOhlcFetcher(frames={"600745": _stock_ohlc_frame()})
+    monkeypatch.setattr(dss, "CbUnderlyingStockOhlcFetcher", lambda **kwargs: fetcher)
+    service = StrategyLabDataSyncService(db_manager)
+    _seed_cb_basic(
+        db_manager,
+        [{"bond_code": "110081", "bond_name": "闻泰转债", "stock_code": "600745", "stock_name": "闻泰科技"}],
+    )
+    with db_manager.get_session() as session:
+        session.add(
+            StockDaily(
+                code="600745",
+                date=date(2026, 8, 31),
+                open=10.0,
+                high=10.2,
+                low=9.8,
+                close=10.1,
+                instrument_type="stock",
+            )
+        )
+        session.commit()
+
+    service.sync_cb_stock_ohlc(market="cn", end_date=date(2026, 9, 2))
+
+    assert fetcher.requests == [("600745", date(2026, 9, 1), date(2026, 9, 2))]
+
+
+def test_sync_cb_stock_ohlc_single_failure_does_not_abort(
+    db_manager: DatabaseManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import src.services.strategy_lab.data_sync_service as dss
+
+    fetcher = _FakeStockOhlcFetcher(frames={"600745": _stock_ohlc_frame()}, failures={"000725"})
+    monkeypatch.setattr(dss, "CbUnderlyingStockOhlcFetcher", lambda **kwargs: fetcher)
+    service = StrategyLabDataSyncService(db_manager)
+    _seed_cb_basic(
+        db_manager,
+        [
+            {"bond_code": "110081", "bond_name": "闻泰转债", "stock_code": "600745", "stock_name": "闻泰科技"},
+            {"bond_code": "113050", "bond_name": "浦发转债", "stock_code": "000725", "stock_name": "京东方A"},
+        ],
+    )
+
+    result = service.sync_cb_stock_ohlc(market="cn", end_date=date(2026, 9, 2))
+
+    assert result["stocks_total"] == 2
+    assert result["stock_daily_rows_new"] == 2
+    assert result["stocks_failed"] == [{"stock_code": "000725", "error": "boom 000725"}]
+    with db_manager.get_session() as session:
+        saved = session.execute(
+            select(func.count()).select_from(StockDaily).where(StockDaily.code == "600745")
+        ).scalar_one()
+        assert saved == 2
+
+
+def _seed_cb_daily_factor(
+    db_manager: DatabaseManager, rows: list[dict]
+) -> None:
+    with db_manager.get_session() as session:
+        for row in rows:
+            merged = {"source": "tencent", **row}
+            session.add(StrategyLabCbDailyFactor(**merged))
+        session.commit()
+
+
+def test_sync_cb_factors_computes_and_persists_factors(
+    db_manager: DatabaseManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import src.services.strategy_lab.data_sync_service as dss
+
+    fetcher = _FakeStockOhlcFetcher(frames={"600745": _stock_ohlc_frame()})
+    monkeypatch.setattr(dss, "CbUnderlyingStockOhlcFetcher", lambda **kwargs: fetcher)
+    service = StrategyLabDataSyncService(db_manager)
+    _seed_cb_basic(
+        db_manager,
+        [
+            {
+                "bond_code": "110081",
+                "bond_name": "闻泰转债",
+                "stock_code": "600745",
+                "stock_name": "闻泰科技",
+                "convert_price": 5.4,
+                "remaining_size": 8.5,
+            },
+            {
+                # 同正股的第二只转债：验证正股价去重复用、剩余规模缺省不覆盖
+                "bond_code": "113709",
+                "bond_name": "另一只转债",
+                "stock_code": "600745",
+                "stock_name": "闻泰科技",
+                "convert_price": 5.4,
+            },
+            {
+                "bond_code": "128138",
+                "bond_name": "已退市转债",
+                "stock_code": "300631",
+                "stock_name": "退市正股",
+                "convert_price": 8.0,
+                "remaining_size": 3.3,
+                "status": "已退市",
+            },
+        ],
+    )
+    trade_date = date(2026, 9, 2)
+    _seed_cb_daily_factor(
+        db_manager,
+        [
+            # 已有溢价率应被重算覆盖
+            {"bond_code": "110081", "trade_date": trade_date, "close": 120.0, "premium_rate": 99.0},
+            {"bond_code": "113709", "trade_date": trade_date, "close": 100.0},
+            # 退市转债的因子行不应被更新
+            {"bond_code": "128138", "trade_date": trade_date, "close": 90.0},
+        ],
+    )
+
+    result = service.sync_cb_factors(market="cn", trade_date=trade_date)
+
+    assert result["bonds_total"] == 2
+    assert result["cb_factor_rows_updated"] == 2
+    assert result["premium_computed"] == 2
+    assert result["stock_close_filled"] == 2
+    assert result["remaining_filled"] == 1
+    assert result["bonds_skipped_no_close"] == 0
+    assert result["bonds_skipped_no_price"] == 0
+    assert result["bonds_failed"] == []
+    # 同正股只应请求一次，且区间为当天单日
+    assert fetcher.requests == [("600745", trade_date, trade_date)]
+    with db_manager.get_session() as session:
+        rows = {
+            row.bond_code: row
+            for row in session.execute(
+                select(StrategyLabCbDailyFactor).where(
+                    StrategyLabCbDailyFactor.trade_date == trade_date
+                )
+            ).scalars().all()
+        }
+        # 转股价值 = 10.8 × 100 ÷ 5.4 = 200
+        assert rows["110081"].stock_close == 10.8
+        assert rows["110081"].premium_rate == -40.0
+        assert rows["110081"].remaining_size == 8.5
+        assert rows["110081"].source == "cb_factors"
+        assert rows["113709"].stock_close == 10.8
+        assert rows["113709"].premium_rate == -50.0
+        assert rows["113709"].remaining_size is None
+        # 退市转债不入遍历范围，因子行保持原样
+        assert rows["128138"].stock_close is None
+        assert rows["128138"].premium_rate is None
+        assert rows["128138"].source == "tencent"
+    runs = service.list_sync_runs(page=1, limit=5)["items"]
+    assert runs[0]["sync_type"] == "cb_factors"
+    assert runs[0]["status"] == "completed"
+
+
+def test_sync_cb_factors_skips_bond_without_daily_close(
+    db_manager: DatabaseManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import src.services.strategy_lab.data_sync_service as dss
+
+    fetcher = _FakeStockOhlcFetcher(frames={"600745": _stock_ohlc_frame()})
+    monkeypatch.setattr(dss, "CbUnderlyingStockOhlcFetcher", lambda **kwargs: fetcher)
+    service = StrategyLabDataSyncService(db_manager)
+    _seed_cb_basic(
+        db_manager,
+        [
+            {
+                "bond_code": "110081",
+                "bond_name": "闻泰转债",
+                "stock_code": "600745",
+                "stock_name": "闻泰科技",
+                "convert_price": 5.4,
+                "remaining_size": 8.5,
+            },
+        ],
+    )
+    # 只有一天前的因子行，当日无 close
+    _seed_cb_daily_factor(
+        db_manager,
+        [{"bond_code": "110081", "trade_date": date(2026, 9, 1), "close": 119.0}],
+    )
+
+    result = service.sync_cb_factors(market="cn", trade_date=date(2026, 9, 2))
+
+    assert result["bonds_total"] == 1
+    assert result["bonds_skipped_no_close"] == 1
+    assert result["cb_factor_rows_updated"] == 0
+    assert fetcher.requests == []
+
+
+def test_sync_cb_factors_without_convert_price_keeps_existing_fields(
+    db_manager: DatabaseManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import src.services.strategy_lab.data_sync_service as dss
+
+    fetcher = _FakeStockOhlcFetcher(frames={"600745": _stock_ohlc_frame()})
+    monkeypatch.setattr(dss, "CbUnderlyingStockOhlcFetcher", lambda **kwargs: fetcher)
+    service = StrategyLabDataSyncService(db_manager)
+    trade_date = date(2026, 9, 2)
+    _seed_cb_basic(
+        db_manager,
+        [
+            {
+                "bond_code": "110081",
+                "bond_name": "闻泰转债",
+                "stock_code": "600745",
+                "stock_name": "闻泰科技",
+                # 缺转股价与剩余规模
+            },
+        ],
+    )
+    # 行上已有补数来源的溢价率，不应被清掉
+    _seed_cb_daily_factor(
+        db_manager,
+        [{"bond_code": "110081", "trade_date": trade_date, "close": 120.0, "premium_rate": 22.15}],
+    )
+
+    result = service.sync_cb_factors(market="cn", trade_date=trade_date)
+
+    assert result["premium_computed"] == 0
+    assert result["stock_close_filled"] == 1
+    assert result["remaining_filled"] == 0
+    assert result["bonds_skipped_no_price"] == 1
+    assert result["cb_factor_rows_updated"] == 1
+    with db_manager.get_session() as session:
+        row = session.execute(
+            select(StrategyLabCbDailyFactor).where(
+                StrategyLabCbDailyFactor.bond_code == "110081",
+                StrategyLabCbDailyFactor.trade_date == trade_date,
+            )
+        ).scalar_one()
+        assert row.stock_close == 10.8
+        # 未提供的字段保持原值，不被清空
+        assert row.premium_rate == 22.15
+        assert row.close == 120.0
+
+
+def test_sync_cb_factors_single_failure_does_not_abort(
+    db_manager: DatabaseManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import src.services.strategy_lab.data_sync_service as dss
+
+    fetcher = _FakeStockOhlcFetcher(frames={"600745": _stock_ohlc_frame()}, failures={"000725"})
+    monkeypatch.setattr(dss, "CbUnderlyingStockOhlcFetcher", lambda **kwargs: fetcher)
+    service = StrategyLabDataSyncService(db_manager)
+    trade_date = date(2026, 9, 2)
+    _seed_cb_basic(
+        db_manager,
+        [
+            {
+                "bond_code": "110081",
+                "bond_name": "闻泰转债",
+                "stock_code": "600745",
+                "stock_name": "闻泰科技",
+                "convert_price": 5.4,
+                "remaining_size": 8.5,
+            },
+            {
+                "bond_code": "113050",
+                "bond_name": "浦发转债",
+                "stock_code": "000725",
+                "stock_name": "京东方A",
+                "convert_price": 8.0,
+            },
+        ],
+    )
+    _seed_cb_daily_factor(
+        db_manager,
+        [
+            {"bond_code": "110081", "trade_date": trade_date, "close": 120.0},
+            {"bond_code": "113050", "trade_date": trade_date, "close": 101.0},
+        ],
+    )
+
+    result = service.sync_cb_factors(market="cn", trade_date=trade_date)
+
+    assert result["premium_computed"] == 1
+    assert result["bonds_failed"] == [{"bond_code": "113050", "error": "boom 000725"}]
+    assert result["cb_factor_rows_updated"] == 1
+    with db_manager.get_session() as session:
+        failed_row = session.execute(
+            select(StrategyLabCbDailyFactor).where(
+                StrategyLabCbDailyFactor.bond_code == "113050",
+                StrategyLabCbDailyFactor.trade_date == trade_date,
+            )
+        ).scalar_one()
+        assert failed_row.stock_close is None
+
+
+def test_start_data_sync_dispatches_cb_factors_worker(
+    db_manager: DatabaseManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import time
+
+    import src.services.strategy_lab.data_sync_service as dss
+
+    fetcher = _FakeStockOhlcFetcher(frames={"600745": _stock_ohlc_frame()})
+    monkeypatch.setattr(dss, "CbUnderlyingStockOhlcFetcher", lambda **kwargs: fetcher)
+    service = StrategyLabDataSyncService(db_manager)
+    trade_date = date(2026, 9, 2)
+    _seed_cb_basic(
+        db_manager,
+        [
+            {
+                "bond_code": "110081",
+                "bond_name": "闻泰转债",
+                "stock_code": "600745",
+                "stock_name": "闻泰科技",
+                "convert_price": 5.4,
+                "remaining_size": 8.5,
+            },
+        ],
+    )
+    _seed_cb_daily_factor(
+        db_manager,
+        [{"bond_code": "110081", "trade_date": trade_date, "close": 120.0}],
+    )
+
+    start = service.start_data_sync(market="cn", sync_type="cb_factors", end_date=trade_date)
+
+    assert start["status"] == "running"
+    assert start["sync_type"] == "cb_factors"
+    run = None
+    for _ in range(200):
+        runs = service.list_sync_runs(page=1, limit=5)["items"]
+        run = next(item for item in runs if item["id"] == start["sync_run_id"])
+        if run["status"] != "running":
+            break
+        time.sleep(0.05)
+
+    assert run["status"] == "completed"
+    # end_date 透传为因子日期，后台线程完成计算并落库
+    assert fetcher.requests == [("600745", trade_date, trade_date)]
+    with db_manager.get_session() as session:
+        row = session.execute(
+            select(StrategyLabCbDailyFactor).where(
+                StrategyLabCbDailyFactor.bond_code == "110081",
+                StrategyLabCbDailyFactor.trade_date == trade_date,
+            )
+        ).scalar_one()
+        assert row.stock_close == 10.8
+        assert row.premium_rate == -40.0
+
+
+def test_start_data_sync_dispatches_cb_scheduled_worker(
+    db_manager: DatabaseManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import time
+
+    service = StrategyLabDataSyncService(db_manager)
+    calls: list[tuple[str, dict]] = []
+    notified: list[tuple] = []
+
+    def _stage(name: str, payload: dict):
+        def _run(**kwargs):
+            calls.append((name, kwargs))
+            return dict(payload)
+        return _run
+
+    monkeypatch.setattr(service, "sync_cb_basic", _stage("cb_basic", {"bonds_total": 1}))
+    monkeypatch.setattr(service, "sync_cb_ohlc", _stage("cb_ohlc", {"bars_new": 2}))
+    monkeypatch.setattr(service, "sync_cb_factors", _stage("cb_factors", {"premium_computed": 1}))
+    monkeypatch.setattr(
+        service, "_notify_sync", lambda run_kind, result, *, success: notified.append((run_kind, success))
+    )
+
+    start = service.start_data_sync(market="cn", sync_type="cb_scheduled")
+
+    assert start["status"] == "running"
+    assert start["sync_type"] == "cb_scheduled"
+    run = None
+    for _ in range(200):
+        runs = service.list_sync_runs(page=1, limit=5)["items"]
+        run = next(item for item in runs if item["id"] == start["sync_run_id"])
+        if run["status"] != "running":
+            break
+        time.sleep(0.05)
+
+    assert run["status"] == "completed"
+    # 三个子任务按序执行，共享外层 run，且不各自 complete
+    assert [name for name, _ in calls] == ["cb_basic", "cb_ohlc", "cb_factors"]
+    assert {kwargs["_run_id"] for _, kwargs in calls} == {start["sync_run_id"]}
+    assert all(kwargs["_complete_on_success"] is False for _, kwargs in calls)
+    assert notified == [("after_close", True)]
+    result = run["result"]
+    assert result["run_kind"] == "after_close"
+    assert result["quality_status"] == "usable"
+    assert {"cb_basic", "cb_ohlc", "cb_factors"} <= set(result)
+
+
+def test_run_scheduled_sync_after_close_standalone_keeps_scheduler_contract(
+    db_manager: DatabaseManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = StrategyLabDataSyncService(db_manager)
+    calls: list[tuple[str, dict]] = []
+    notified: list[tuple] = []
+
+    def _stage(name: str):
+        def _run(**kwargs):
+            calls.append((name, kwargs))
+            return {"ok": name}
+        return _run
+
+    monkeypatch.setattr(service, "sync_cb_basic", _stage("cb_basic"))
+    monkeypatch.setattr(service, "sync_cb_ohlc", _stage("cb_ohlc"))
+    monkeypatch.setattr(service, "sync_cb_factors", _stage("cb_factors"))
+    monkeypatch.setattr(
+        service, "_notify_sync", lambda run_kind, result, *, success: notified.append((run_kind, success))
+    )
+
+    with pytest.raises(ValueError):
+        service.run_scheduled_sync_after_close(run_kind="bogus")
+
+    result = service.run_scheduled_sync_after_close(run_kind="after_close", trade_date=date(2026, 9, 2))
+
+    assert [name for name, _ in calls] == ["cb_basic", "cb_ohlc", "cb_factors"]
+    # 调度路径：子任务各自建 run 并自行 complete，独立调用不额外落总 run
+    assert all(kwargs["_run_id"] is None for _, kwargs in calls)
+    assert all(kwargs["_complete_on_success"] is True for _, kwargs in calls)
+    assert notified == [("after_close", True)]
+    assert result["run_kind"] == "after_close"
+    assert result["trade_date"] == "2026-09-02"
+    assert result["quality_status"] == "usable"
+    assert service.list_sync_runs(page=1, limit=10)["total"] == 0

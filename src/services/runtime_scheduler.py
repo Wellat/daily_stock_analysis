@@ -132,7 +132,7 @@ def build_convertible_bond_sync_background_tasks(config: Config) -> List[Dict[st
             if now.strftime("%H:%M") != hhmm or state[kind] == now.date(): return
             if not getattr(config, "cb_sync_enabled", True): return
             try:
-                StrategyLabDataSyncService().run_scheduled_sync(run_kind=kind, trade_date=now.date())
+                StrategyLabDataSyncService().run_scheduled_sync_after_close(run_kind=kind, trade_date=now.date())
                 state[kind] = now.date()
             except Exception:
                 logger.exception("CB %s sync failed", kind)

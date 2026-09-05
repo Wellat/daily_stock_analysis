@@ -437,6 +437,45 @@ class TestStorage(unittest.TestCase):
             DatabaseManager.reset_instance()
             Config.reset_instance()
 
+    def test_cb_daily_factor_stock_close_column_added_for_legacy_db(self) -> None:
+        DatabaseManager.reset_instance()
+        temp_dir = tempfile.TemporaryDirectory()
+        db_path = os.path.join(temp_dir.name, "legacy_cb_factor.db")
+
+        try:
+            with sqlite3.connect(db_path) as conn:
+                conn.execute(
+                    """CREATE TABLE strategy_lab_cb_daily_factors (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    bond_code VARCHAR(16),
+                    trade_date DATE,
+                    close FLOAT,
+                    premium_rate FLOAT,
+                    remaining_size FLOAT
+                )"""
+                )
+                conn.execute(
+                    "INSERT INTO strategy_lab_cb_daily_factors (bond_code, trade_date, close) "
+                    "VALUES ('110081', '2026-09-02', 120.0)"
+                )
+
+            DatabaseManager(db_url=f"sqlite:///{db_path}")
+
+            with sqlite3.connect(db_path) as conn:
+                columns = {
+                    row[1]
+                    for row in conn.execute("PRAGMA table_info(strategy_lab_cb_daily_factors)").fetchall()
+                }
+                self.assertIn("stock_close", columns)
+                close = conn.execute(
+                    "SELECT close FROM strategy_lab_cb_daily_factors WHERE bond_code = '110081'"
+                ).fetchone()
+                self.assertEqual(close, (120.0,))
+        finally:
+            DatabaseManager.reset_instance()
+            Config.reset_instance()
+            temp_dir.cleanup()
+
     def test_schema_migration_record_handles_concurrent_initialization(self):
         DatabaseManager.reset_instance()
         temp_dir = tempfile.TemporaryDirectory()

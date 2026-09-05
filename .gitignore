@@ -77,7 +77,8 @@ local/
 
 run.sh
 
-verify_*.py
+# verify_*.py
+.zcode/*
 
 # ignore Claude workspace artifacts, but keep shared repo skills versioned
 .claude/*

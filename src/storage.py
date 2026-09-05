@@ -850,6 +850,7 @@ class StrategyLabCbDailyFactor(Base):
     )
     trade_date = Column(Date, nullable=False, index=True)
     close = Column(Float)
+    stock_close = Column(Float)
     premium_rate = Column(Float)
     remaining_size = Column(Float)
     redeem_alert = Column(Boolean, nullable=False, default=False, index=True)
@@ -1875,6 +1876,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
 
         - ``stock_daily.instrument_type``: 品种类型（stock/hk_stock/us_stock/convertible_bond）
         - ``strategy_lab_cb_basic.status``: 退市/上市状态，供筛选使用
+        - ``strategy_lab_cb_daily_factors.stock_close``: 正股收盘价（因子计算落库）
         """
 
         if not self._is_sqlite_engine:
@@ -1883,6 +1885,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         migrations = [
             (StockDaily.__tablename__, "instrument_type", "VARCHAR(16) DEFAULT 'stock'"),
             (StrategyLabCbBasic.__tablename__, "status", "VARCHAR(32)"),
+            (StrategyLabCbDailyFactor.__tablename__, "stock_close", "FLOAT"),
             (StrategyLabSyncRun.__tablename__, "cancel_requested", "BOOLEAN NOT NULL DEFAULT 0"),
             (StrategyLabSyncRun.__tablename__, "run_kind", "VARCHAR(16) NOT NULL DEFAULT 'after_close'"),
             (StrategyLabSyncRun.__tablename__, "trade_date", "DATE"),

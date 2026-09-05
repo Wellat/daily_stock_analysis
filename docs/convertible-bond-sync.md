@@ -1,6 +1,6 @@
 # 可转债数据同步
 
-本文档说明本项目可转债数据同步的三个能力、入口用法，以及 opencli / 行情接口源字段到数据库表字段的完整映射。
+本文档说明本项目可转债数据同步的各项能力、入口用法，以及 opencli / 行情接口源字段到数据库表字段的完整映射。
 
 ## 能力总览
 
@@ -9,6 +9,9 @@
 | 基础数据同步 | 本机 opencli（`cb-list` + `cb-detail`） | `strategy_lab_cb_basic` / `strategy_lab_cb_terms` / `strategy_lab_cb_events` | 默认先拉列表，再对每只转债逐个填充详情；传入 `symbols` 时直接按目标代码拉详情，跳过列表抓取 |
 | 行情同步（OHLC） | 东财优先，腾讯兜底 | `stock_daily`（`instrument_type='convertible_bond'`）+ `strategy_lab_cb_daily_factors.close` 回填 | 支持选择起始日期，非每次全量 |
 | 补数同步（溢价率/剩余规模） | 本机 opencli（`cb-premium-history`） | `stock_daily`（仅补 `premium_rate` / `remaining_size` 空值） | 按“可转债代码 + 日期”匹配已有日线记录，不新建行、不覆盖已有非空值 |
+| 正股行情同步（OHLC） | 腾讯日K | `stock_daily`（`instrument_type='stock'`） | 独立同步方法 `sync_cb_stock_ohlc`，仅同步**在市转债**对应正股（去重），不回填转债因子表 |
+| 因子计算（正股价/溢价率/剩余规模） | 正股当日日K + 本地表计算 | `strategy_lab_cb_daily_factors`（`stock_close` / `premium_rate` / `remaining_size`） | 独立方法 `sync_cb_factors`，仅活跃转债；字段按可得性定向更新，缺失项不覆盖；可经 API / 数据同步页面触发 |
+| 盘后调度链路（手动触发） | 组合：基础 + 行情 + 因子 + 邮件通知 | 同各子能力 | `sync_type="cb_scheduled"`，等价手动触发 `run_scheduled_sync_after_close(run_kind='after_close')`；整条链路共享单条 sync run，结束时发盘后通知邮件 |
 
 两个能力统一支持：
 
@@ -48,7 +51,7 @@ python scripts/sync_cb_data.py --basic --bond 113709       # 单只
 ```json
 {
   "source": "opencli",
-  "sync_type": "cb_basic",          // cb_basic / cb_ohlc / cb_premium_history / all
+  "sync_type": "cb_basic",          // cb_basic / cb_ohlc / cb_premium_history / cb_factors / cb_scheduled / all
   "include_delisted": false,
   "start_date": "2026-01-01",       // 行情同步有效
   "end_date": "2026-12-31",
@@ -58,6 +61,8 @@ python scripts/sync_cb_data.py --basic --bond 113709       # 单只
 
 `symbols` 在 `cb_basic` 场景下会直接触发单只/少量标的详情拉取，不再先执行 `cb-list`。
 `cb_premium_history` 会按可转债代码 + 日期补写已有 `strategy_lab_cb_daily_factors` 行中的 `premium_rate` / `remaining_size` 空值；已有值和不存在的行都会跳过。
+`cb_factors` 为单日因子计算：因子日期取 `end_date`（缺省 `start_date`，均缺省为今天），页面「数据同步」来源下拉框可直接选择触发。
+`cb_scheduled` 为手动触发盘后调度链路：按序执行基础数据 → 行情 → 因子计算（等价定时调度使用的 `run_scheduled_sync_after_close`，`run_kind='after_close'`），整条链路复用一条 sync run（取消/进度挂在同一条记录上），完成后按配置发送盘后通知邮件。
 
 返回 `running` 后通过 `GET /api/v1/strategy-lab/data-sync/runs` 轮询进度。
 
@@ -118,6 +123,48 @@ python scripts/sync_cb_data.py --basic --bond 113709       # 单只
 | close | `strategy_lab_cb_daily_factors.close` | 回填一份，供回测引擎读取 |
 
 代码前缀规则：`11xxxx` → 沪（`sh{code}` / 东财 `secid=1.{code}`）；`12xxxx` → 深（`sz{code}` / 东财 `secid=0.{code}`）。
+
+### 正股行情：腾讯日K → `stock_daily`
+
+`StrategyLabDataSyncService.sync_cb_stock_ohlc`（`src/services/strategy_lab/data_sync_service.py`）是独立的后端同步方法，**没有 CLI / API / 定时调度入口**，按需通过 Python 调用：
+
+- 标的来源：`strategy_lab_cb_basic.stock_code`（去重后逐只同步），仅取 `status='正常'` 的在市转债，已退市转债的正股不同步。
+- 数据源：腾讯 `fqkline` 日线（`CbUnderlyingStockOhlcFetcher`），成交量保持腾讯原始单位（手），与 akshare A 股日线口径一致。
+- 增量语义与转债行情一致：不传 `start_date` 时，有本地历史从最后日期次日开始，无历史从 `2020-01-01` 开始；`end_date` 缺省为今天。
+- 腾讯接口按 count 拉最近 N 根（上限约 800 个交易日），首次初始化无法一次拉全 2020 年以来的历史；同代码同日期重复执行为幂等 UPSERT。
+
+| 数据源字段 | 落库字段 | 说明 |
+|---|---|---|
+| 日期 | `date` | |
+| open / high / low / close | `open` / `high` / `low` / `close` | |
+| volume / amount | `volume` / `amount` | volume 单位为手 |
+| 正股代码 | `code` | 纯 6 位数字 |
+| — | `instrument_type` | 固定 `'stock'`，与主流程 A 股日线同口径 |
+
+正股代码前缀规则：`6xxxxx` → 沪（`sh{code}`）；`0/3xxxxx` → 深（`sz{code}`）；其他前缀（如北交所）不发请求直接跳过。
+
+### 因子计算：本地计算 → `strategy_lab_cb_daily_factors`
+
+`StrategyLabDataSyncService.sync_cb_factors`（`src/services/strategy_lab/data_sync_service.py`）是独立的后端方法，**已接入数据同步 API 与 Web 数据同步页面**（`sync_type="cb_factors"`），**没有 CLI / 定时调度入口**：
+
+- 标的来源：`strategy_lab_cb_basic` 中 `status='正常'` 的转债；`symbols` 为转债代码过滤，语义与其他同步方法一致；`trade_date` 缺省为当天，经 API / 页面触发时取 `end_date`（缺省 `start_date`）。
+- 转债价：当日因子行已有的 `close`（由行情同步 `sync_cb_ohlc` 写入）；当日无 `close` 的转债计入跳过，无法计算因子。
+- 正股价：`CbUnderlyingStockOhlcFetcher` 拉正股**当日**日 K 的 `close`（盘中"当天那根" close 即实时最新价，已被 `scripts/verify_cb_realtime_snapshot.py` 验证）；同正股多债只拉一次；非交易日/停牌/拉取失败则该债跳过溢价率（正股价可用时仍落 `stock_close`）。
+- 剩余规模：取 `strategy_lab_cb_basic.remaining_size`；主数据为空时不覆盖因子行已有值。
+- 溢价率（本地计算，存百分数、保留两位小数）：
+
+```
+转股价值 = 正股 close × 100 ÷ convert_price     （convert_price 取 strategy_lab_cb_basic.convert_price）
+premium_rate = (转债 close ÷ 转股价值 − 1) × 100
+```
+
+| 输入 | 落库字段 | 说明 |
+|---|---|---|
+| 正股当日 close | `stock_close` | 新增列；存量 SQLite 库初始化时自动补列 |
+| 溢价率计算值 | `premium_rate` | 覆盖刷新（重算语义） |
+| `strategy_lab_cb_basic.remaining_size` | `remaining_size` | 仅在主数据值非空时写入 |
+
+写入语义：走 `update_cb_daily_factor_fields` 按 `(bond_code, trade_date)` 定向更新，**只更新本次实际得到的字段**，不新建行，也不清空 close / 预警位等未涉及字段；单只失败不中断整体，失败清单写入同步记录 `result`。
 
 ## 默认行为
 

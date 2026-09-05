@@ -9,6 +9,10 @@ import { SL_INPUT_CLASS, SL_PANEL_CLASS, parseSymbols } from '../strategy-lab/ut
 
 const TEXT_LIMIT = 200;
 const SYNC_RUN_POLL_INTERVAL_MS = 10_000;
+const SYNC_RUN_POLLING_STORAGE_KEY = 'dsa.data-sync-runs.polling-enabled';
+
+// 同步能力：cb_basic=基础数据 / cb_ohlc=行情 / cb_premium_history=补溢价率与剩余规模 / cb_factors=因子计算 / cb_scheduled=盘后调度链路
+type SyncKind = 'cb_basic' | 'cb_ohlc' | 'cb_premium_history' | 'cb_factors' | 'cb_scheduled';
 
 const statusTag = (status: string) => {
   const map: Record<string, string> = { completed: 'success', running: 'processing', failed: 'error', cancelled: 'default' };
@@ -42,12 +46,20 @@ export const DataSyncPanel: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [error, setError] = useState<ParsedApiError | null>(null);
-  // 同步能力：cb_basic=基础数据 / cb_ohlc=行情 / cb_premium_history=补溢价率与剩余规模
-  const [syncKind, setSyncKind] = useState<'cb_basic' | 'cb_ohlc' | 'cb_premium_history'>('cb_basic');
+  // 同步能力见 SyncKind 定义
+  const [syncKind, setSyncKind] = useState<SyncKind>('cb_basic');
   const [includeDelisted, setIncludeDelisted] = useState(false);
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [syncSymbols, setSyncSymbols] = useState('');
+  const [pollingEnabled, setPollingEnabled] = useState(() => {
+    try {
+      const stored = window.localStorage.getItem(SYNC_RUN_POLLING_STORAGE_KEY);
+      return stored == null ? true : stored === 'true';
+    } catch {
+      return true;
+    }
+  });
 
   const refresh = useCallback(async (targetPage: number, targetSize: number, showLoading = true) => {
     if (showLoading) setLoading(true);
@@ -66,11 +78,20 @@ export const DataSyncPanel: React.FC = () => {
   useEffect(() => { void refresh(page, pageSize); }, [page, pageSize, refresh]);
 
   useEffect(() => {
+    try {
+      window.localStorage.setItem(SYNC_RUN_POLLING_STORAGE_KEY, String(pollingEnabled));
+    } catch {
+      // localStorage is best-effort; the toggle still applies for this session.
+    }
+  }, [pollingEnabled]);
+
+  useEffect(() => {
+    if (!pollingEnabled) return undefined;
     const timer = window.setInterval(() => {
       void refresh(page, pageSize, false);
     }, SYNC_RUN_POLL_INTERVAL_MS);
     return () => window.clearInterval(timer);
-  }, [page, pageSize, refresh]);
+  }, [page, pageSize, pollingEnabled, refresh]);
 
   const waitSyncRun = async (runId: number): Promise<StrategyLabSyncRunItem | null> => {
     for (let attempt = 0; attempt < 120; attempt += 1) {
@@ -99,15 +120,16 @@ export const DataSyncPanel: React.FC = () => {
 
   const columns: ColumnsType<StrategyLabSyncRunItem> = [
     { title: 'ID', dataIndex: 'id', width: 70 },
-    { title: '类型', dataIndex: 'sync_type', ellipsis: true },
+    { title: '类型', dataIndex: 'sync_type', width: 180, ellipsis: true },
     { title: '状态', dataIndex: 'status', width: 110, render: statusTag },
-    { title: '结果', key: 'result', width: 260, render: (_, run) => (
+    { title: '结果', key: 'result', width: 240, render: (_, run) => (
       <WrappedCell text={summarizeResult(run)} className="text-xs text-secondary-text" />
     ) },
-    { title: '错误', dataIndex: 'error_message', width: 260, render: (value: string | null) => (
+    { title: '错误', dataIndex: 'error_message', width: 180, render: (value: string | null) => (
       value ? <WrappedCell text={value} className="text-danger" /> : '--'
     ) },
     { title: '时间', dataIndex: 'created_at', width: 160, render: (value: string | null) => value ? value.replace('T', ' ').slice(0, 19) : '--' },
+    { title: '完成时间', dataIndex: 'completed_at', width: 160, render: (value: string | null) => value ? value.replace('T', ' ').slice(0, 19) : '--' },
     { title: '操作', key: 'actions', width: 90, render: (_, run) => (
       run.status === 'running' ? (
         <Button
@@ -153,6 +175,10 @@ export const DataSyncPanel: React.FC = () => {
             if (startDate) payload.start_date = startDate;
             if (endDate) payload.end_date = endDate;
           }
+          if (syncKind === 'cb_factors' && endDate) {
+            // 因子计算为单日语义：因子日期走 end_date，缺省由后端取今天
+            payload.end_date = endDate;
+          }
           void runAction('sync', () => strategyLabApi.syncData(payload));
         }}
       >
@@ -160,10 +186,12 @@ export const DataSyncPanel: React.FC = () => {
         <div className="mt-3 grid gap-3 sm:grid-cols-2">
           <label className="text-sm">
             来源
-            <select aria-label="同步来源" className={`${SL_INPUT_CLASS} mt-1`} value={syncKind} onChange={(event) => setSyncKind(event.target.value as 'cb_basic' | 'cb_ohlc' | 'cb_premium_history')}>
-              <option value="cb_basic">可转债基础数据</option>
-              <option value="cb_ohlc">可转债行情</option>
-              <option value="cb_premium_history">可转债补溢价/规模</option>
+            <select aria-label="同步来源" className={`${SL_INPUT_CLASS} mt-1`} value={syncKind} onChange={(event) => setSyncKind(event.target.value as SyncKind)}>
+              <option value="cb_basic">可转债基础数据（cb_basic）</option>
+              <option value="cb_ohlc">可转债行情（cb_ohlc）</option>
+              <option value="cb_premium_history">可转债补溢价/规模（cb_premium_history）</option>
+              <option value="cb_factors">可转债因子计算（cb_factors）</option>
+              <option value="cb_scheduled">可转债盘后调度同步（基础+行情+因子-cb_scheduled）</option>
             </select>
           </label>
           <label className="text-sm">
@@ -182,6 +210,12 @@ export const DataSyncPanel: React.FC = () => {
               </label>
             </>
           ) : null}
+          {syncKind === 'cb_factors' ? (
+            <label className="text-sm">
+              因子日期
+              <input aria-label="因子日期" type="date" className={`${SL_INPUT_CLASS} mt-1`} value={endDate} onChange={(event) => setEndDate(event.target.value)} />
+            </label>
+          ) : null}
           <label className="text-sm flex items-center gap-2">
             <input aria-label="包含已退市" type="checkbox" className="accent-primary" checked={includeDelisted} onChange={(event) => setIncludeDelisted(event.target.checked)} />
             包含已退市可转债
@@ -192,7 +226,19 @@ export const DataSyncPanel: React.FC = () => {
       </form>
 
       <div className={SL_PANEL_CLASS}>
-        <h2 className="text-base font-semibold text-foreground">同步记录</h2>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 className="text-base font-semibold text-foreground">同步记录</h2>
+          <label className="flex items-center gap-2 text-sm text-secondary-text">
+            <input
+              aria-label="自动刷新同步记录"
+              type="checkbox"
+              className="accent-primary"
+              checked={pollingEnabled}
+              onChange={(event) => setPollingEnabled(event.target.checked)}
+            />
+            自动刷新（10 秒）
+          </label>
+        </div>
         <Table
           rowKey="id"
           size="small"

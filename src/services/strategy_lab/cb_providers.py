@@ -783,6 +783,8 @@ _DEFAULT_UA_HEADERS = {
 
 _OHLC_COLUMNS = ["date", "open", "high", "low", "close", "volume", "amount"]
 
+_TENCENT_KLINE_URL = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+
 
 class ConvertibleBondOhlcFetcher:
     """Fetch convertible-bond daily OHLC bars (Eastmoney first, Tencent fallback).
@@ -795,7 +797,7 @@ class ConvertibleBondOhlcFetcher:
 
     name = "cb_ohlc"
     _EASTMONEY_KLINE_URL = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
-    _TENCENT_KLINE_URL = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+    _TENCENT_KLINE_URL = _TENCENT_KLINE_URL
 
     def __init__(self, *, timeout: float = 15.0):
         self.timeout = timeout
@@ -813,14 +815,14 @@ class ConvertibleBondOhlcFetcher:
         self.last_source = None
         if not code.isdigit() or len(code) != 6:
             return _empty_ohlc_frame()
-        try:
-            frame = self._fetch_eastmoney(code, start_date, end_date)
-            if not frame.empty:
-                self.last_source = "eastmoney"
-                return frame
-            logger.info("Eastmoney CB daily empty for %s %s~%s", code, start_date, end_date)
-        except Exception as exc:  # noqa: BLE001 - fall through to Tencent
-            logger.warning("Eastmoney CB daily failed for %s: %s", code, exc)
+        # try:
+        #     frame = self._fetch_eastmoney(code, start_date, end_date)
+        #     if not frame.empty:
+        #         self.last_source = "eastmoney"
+        #         return frame
+        #     logger.info("Eastmoney CB daily empty for %s %s~%s", code, start_date, end_date)
+        # except Exception as exc:  # noqa: BLE001 - fall through to Tencent
+        #     logger.warning("Eastmoney CB daily failed for %s: %s", code, exc)
         try:
             frame = self._fetch_tencent(code, start_date, end_date)
             if not frame.empty:
@@ -830,6 +832,7 @@ class ConvertibleBondOhlcFetcher:
             logger.warning("Tencent CB daily failed for %s: %s", code, exc)
             return _empty_ohlc_frame()
 
+    # connection failed, use Tencent fallback instead
     def _fetch_eastmoney(self, code: str, start_date: date, end_date: date) -> pd.DataFrame:
         secid = f"{'1' if code.startswith('11') else '0'}.{code}"
         params = {
@@ -872,24 +875,51 @@ class ConvertibleBondOhlcFetcher:
 
     def _fetch_tencent(self, code: str, start_date: date, end_date: date) -> pd.DataFrame:
         symbol = f"{'sh' if code.startswith('11') else 'sz'}{code}"
-        # 腾讯对可转债不支持显式日期窗口（带 start/end 一律返回空），只能按
-        # count 拉最近 N 根再在本地按 [start, end] 过滤；count 上限约 800。
-        count = min(800, max(30, int((end_date - start_date).days * 1.8) + 40))
-        param = f"{symbol},day,,,{count},qfq"
-        response = requests.get(
-            self._TENCENT_KLINE_URL,
-            params={"param": param},
-            headers=_DEFAULT_UA_HEADERS,
-            timeout=self.timeout,
-        )
-        response.raise_for_status()
-        rows = _extract_tencent_kline_rows(response.json(), symbol=symbol)
-        if not rows:
+        return _fetch_tencent_kline(symbol, start_date=start_date, end_date=end_date, timeout=self.timeout)
+
+
+class CbUnderlyingStockOhlcFetcher:
+    """Fetch underlying-stock (可转债正股) daily OHLC bars via Tencent kline.
+
+    The returned frame uses the same standardized columns as
+    ``ConvertibleBondOhlcFetcher`` and can be persisted straight into
+    ``stock_daily`` with ``instrument_type='stock'``.
+    Code prefix mapping: ``6xxxxx -> sh``, ``0/3xxxxx -> sz``; any other
+    prefix yields an empty frame because CB underlyings are SH/SZ A-shares
+    only. Volume keeps Tencent's raw unit (手) to stay consistent with the
+    akshare A-share daily convention.
+    """
+
+    name = "cb_stock_ohlc"
+
+    def __init__(self, *, timeout: float = 15.0):
+        self.timeout = timeout
+        self.last_source: Optional[str] = None
+
+    def fetch_daily(self, stock_code: str, start_date: date, end_date: date) -> pd.DataFrame:
+        """Fetch daily OHLC within ``[start_date, end_date]``; empty frame on total failure.
+
+        ``self.last_source`` reports which upstream served the last frame
+        ("tencent" / None when empty).
+        """
+        code = _strip_code(stock_code)
+        self.last_source = None
+        if not code.isdigit() or len(code) != 6:
             return _empty_ohlc_frame()
-        frame = _normalize_ohlc_frame(pd.DataFrame(rows))
-        if frame.empty:
+        prefix = "sh" if code[0] == "6" else ("sz" if code[0] in ("0", "3") else "")
+        if not prefix:
+            logger.warning("Underlying stock %s is not an SH/SZ A-share code, skip", code)
+            return _empty_ohlc_frame()
+        try:
+            frame = _fetch_tencent_kline(
+                f"{prefix}{code}", start_date=start_date, end_date=end_date, timeout=self.timeout
+            )
+            if not frame.empty:
+                self.last_source = "tencent"
             return frame
-        return frame[(frame["date"] >= start_date) & (frame["date"] <= end_date)].reset_index(drop=True)
+        except Exception as exc:  # noqa: BLE001 - single symbol failure never aborts a batch
+            logger.warning("Tencent underlying-stock daily failed for %s: %s", code, exc)
+            return _empty_ohlc_frame()
 
 
 def _extract_tencent_kline_rows(payload: Any, *, symbol: str) -> List[Dict[str, Any]]:
@@ -920,6 +950,32 @@ def _extract_tencent_kline_rows(payload: Any, *, symbol: str) -> List[Dict[str, 
             }
         )
     return result
+
+
+def _fetch_tencent_kline(
+    symbol: str, *, start_date: date, end_date: date, timeout: float
+) -> pd.DataFrame:
+    """Fetch Tencent daily kline for ``symbol`` and filter to ``[start_date, end_date]``.
+
+    腾讯对该接口不支持显式日期窗口（带 start/end 一律返回空），只能按
+    count 拉最近 N 根再在本地按 [start, end] 过滤；count 上限约 800。
+    """
+    count = min(800, max(30, int((end_date - start_date).days * 1.8) + 40))
+    param = f"{symbol},day,,,{count},qfq"
+    response = requests.get(
+        _TENCENT_KLINE_URL,
+        params={"param": param},
+        headers=_DEFAULT_UA_HEADERS,
+        timeout=timeout,
+    )
+    response.raise_for_status()
+    rows = _extract_tencent_kline_rows(response.json(), symbol=symbol)
+    if not rows:
+        return _empty_ohlc_frame()
+    frame = _normalize_ohlc_frame(pd.DataFrame(rows))
+    if frame.empty:
+        return frame
+    return frame[(frame["date"] >= start_date) & (frame["date"] <= end_date)].reset_index(drop=True)
 
 
 def _normalize_ohlc_frame(df: pd.DataFrame) -> pd.DataFrame:

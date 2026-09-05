@@ -146,7 +146,9 @@ class StrategyLabDataRepository:
                 row.list_date = item.get("list_date")
                 row.maturity_date = item.get("maturity_date")
                 row.status = item.get("status")
-                row.remaining_size = item.get("remaining_size")
+                remaining_size = item.get("remaining_size")
+                if remaining_size is not None or row.remaining_size is None:
+                    row.remaining_size = remaining_size
                 row.current_premium_rate = item.get("current_premium_rate")
                 row.convert_price = item.get("convert_price")
                 row.terms_json = json.dumps(
@@ -383,15 +385,91 @@ class StrategyLabDataRepository:
                 session.execute(statement.order_by(StrategyLabCbBasic.bond_code.asc())).scalars().all()
             )
 
-    def get_cb_ohlc_latest_date(self, *, bond_code: str) -> Optional[date]:
-        """Return the latest persisted ``stock_daily`` date for a convertible bond, or None."""
+    def get_cb_ohlc_latest_date(
+        self, *, code: str, instrument_type: str = "convertible_bond"
+    ) -> Optional[date]:
+        """Return the latest persisted ``stock_daily`` date for a code, or None.
+
+        ``instrument_type`` selects which daily rows to look at; the OHLC sync
+        uses it to resolve the incremental start date per symbol.
+        """
         with self.db.get_session() as session:
             return session.execute(
                 select(func.max(StockDaily.date)).where(
-                    StockDaily.code == str(bond_code),
-                    StockDaily.instrument_type == "convertible_bond",
+                    StockDaily.code == str(code),
+                    StockDaily.instrument_type == instrument_type,
                 )
             ).scalar_one_or_none()
+
+    def list_cb_stock_codes(
+        self,
+        *,
+        market: str,
+        bond_codes: Optional[List[str]] = None,
+    ) -> List[str]:
+        """Return deduplicated underlying-stock codes of active convertible bonds.
+
+        Only bonds with ``status == "正常"`` are considered, so underlying
+        stocks of delisted bonds are excluded. ``bond_codes`` optionally
+        restricts the bond scope for symbol-scoped debugging.
+        """
+        with self.db.get_session() as session:
+            statement = select(StrategyLabCbBasic.stock_code).where(
+                StrategyLabCbBasic.market == market,
+                StrategyLabCbBasic.status == "正常",
+            )
+            if bond_codes:
+                statement = statement.where(StrategyLabCbBasic.bond_code.in_(bond_codes))
+            rows = session.execute(
+                statement.order_by(StrategyLabCbBasic.stock_code.asc())
+            ).scalars().all()
+            return sorted({str(row).strip() for row in rows if row and str(row).strip()})
+
+    def list_cb_factor_inputs(
+        self,
+        *,
+        market: str,
+        trade_date: date,
+    ) -> List[Dict[str, Any]]:
+        """Return active bonds' factor inputs joined with the day's bond close.
+
+        取 ``status == "正常"`` 转债的 ``stock_code`` / ``convert_price`` /
+        ``remaining_size``，并 LEFT JOIN 当日因子行带出 ``close`` 作为转债价
+        来源；供可转债因子计算遍历使用。
+        """
+        with self.db.get_session() as session:
+            rows = session.execute(
+                select(
+                    StrategyLabCbBasic.bond_code,
+                    StrategyLabCbBasic.stock_code,
+                    StrategyLabCbBasic.convert_price,
+                    StrategyLabCbBasic.remaining_size,
+                    StrategyLabCbDailyFactor.close,
+                )
+                .join(
+                    StrategyLabCbDailyFactor,
+                    and_(
+                        StrategyLabCbDailyFactor.bond_code == StrategyLabCbBasic.bond_code,
+                        StrategyLabCbDailyFactor.trade_date == trade_date,
+                    ),
+                    isouter=True,
+                )
+                .where(
+                    StrategyLabCbBasic.market == market,
+                    StrategyLabCbBasic.status == "正常",
+                )
+                .order_by(StrategyLabCbBasic.bond_code.asc())
+            ).all()
+            return [
+                {
+                    "bond_code": str(row.bond_code),
+                    "stock_code": str(row.stock_code or "").strip(),
+                    "convert_price": row.convert_price,
+                    "remaining_size": row.remaining_size,
+                    "close": row.close,
+                }
+                for row in rows
+            ]
 
     def patch_cb_daily_factor_fields(
         self,
@@ -459,6 +537,44 @@ class StrategyLabDataRepository:
                         counts["rows_updated"] += 1
                 session.commit()
         return counts
+
+    def update_cb_daily_factor_fields(self, rows: List[Dict[str, Any]], *, source: str) -> int:
+        """Overwrite provided factor fields on existing CB daily-factor rows.
+
+        与 ``upsert_cb_daily_factors`` 的整行覆盖不同：只更新每行 dict 中实际
+        出现的 ``stock_close`` / ``premium_rate`` / ``remaining_size``，不新建
+        行，也不清空未提供的字段（close / alerts 等），返回命中并更新的行数。
+        """
+        if not rows:
+            return 0
+        now = datetime.now()
+        count = 0
+        with self.db.get_session() as session:
+            for item in rows:
+                fields = {
+                    name: item.get(name)
+                    for name in ("stock_close", "premium_rate", "remaining_size")
+                    if name in item
+                }
+                if not fields:
+                    continue
+                row = session.execute(
+                    select(StrategyLabCbDailyFactor).where(
+                        and_(
+                            StrategyLabCbDailyFactor.bond_code == str(item["bond_code"]),
+                            StrategyLabCbDailyFactor.trade_date == item["trade_date"],
+                        )
+                    )
+                ).scalar_one_or_none()
+                if row is None:
+                    continue
+                for name, value in fields.items():
+                    setattr(row, name, value)
+                row.source = source
+                row.updated_at = now
+                count += 1
+            session.commit()
+        return count
 
     @staticmethod
     def _normalize_patch_float(value: Any) -> Optional[float]:

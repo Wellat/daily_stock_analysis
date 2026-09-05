@@ -16,6 +16,7 @@ from src.storage import DatabaseManager
 
 router = APIRouter()
 _MAX_ROWS = 500
+_MAX_UPDATE_ROWS = 50
 
 
 def _json_value(value: Any) -> Any:
@@ -41,6 +42,17 @@ def _validate_single_statement(sql: str) -> None:
         raise HTTPException(status_code=400, detail="一次只能执行一条 SQL 语句")
 
 
+def _validate_statement(sql: str, kind: str) -> None:
+    if kind not in {"SELECT", "UPDATE"}:
+        raise HTTPException(status_code=400, detail="SQL 控制台仅允许执行 SELECT 或 UPDATE 语句")
+    if kind == "UPDATE":
+        # Comments have already been removed for statement-boundary checks;
+        # require WHERE in the executable UPDATE text to prevent full-table writes.
+        without_comments = re.sub(r"(--[^\n]*|/\*.*?\*/)", " ", sql, flags=re.S)
+        if not re.search(r"\bWHERE\b", without_comments, flags=re.I):
+            raise HTTPException(status_code=400, detail="UPDATE 语句必须包含 WHERE 条件")
+
+
 @router.get("/tables", response_model=SqlTablesResponse)
 def list_tables(db_manager: DatabaseManager = Depends(get_database_manager)) -> SqlTablesResponse:
     try:
@@ -54,9 +66,17 @@ def list_tables(db_manager: DatabaseManager = Depends(get_database_manager)) -> 
 def execute_sql(payload: SqlExecuteRequest, db_manager: DatabaseManager = Depends(get_database_manager)) -> SqlExecuteResponse:
     _validate_single_statement(payload.sql)
     kind = _statement_type(payload.sql)
+    _validate_statement(payload.sql, kind)
     try:
         with db_manager._engine.begin() as connection:
             result = connection.execute(text(payload.sql))
+            if kind == "UPDATE":
+                # SQLite reports the exact number of rows changed through changes().
+                # Raising inside the transaction rolls back an oversized update.
+                affected_rows = connection.exec_driver_sql("SELECT changes()").scalar_one()
+                if affected_rows > _MAX_UPDATE_ROWS:
+                    raise HTTPException(status_code=400, detail=f"一次 UPDATE 最多只能影响 {_MAX_UPDATE_ROWS} 行")
+                return SqlExecuteResponse(affected_rows=affected_rows, statement_type=kind)
             if result.returns_rows:
                 columns = list(result.keys())
                 raw_rows = result.fetchmany(_MAX_ROWS + 1)

@@ -175,8 +175,8 @@ def sync_data(
 ) -> StrategyLabDataSyncResponse:
     try:
         service = StrategyLabDataSyncService(db_manager)
-        if request.sync_type not in {"cb_basic", "cb_ohlc", "cb_premium_history", "all"}:
-            raise ValueError("sync_type must be cb_basic / cb_ohlc / cb_premium_history / all")
+        # if request.sync_type not in {"cb_basic", "cb_ohlc", "cb_premium_history", "cb_factors", "all"}:
+        #     raise ValueError("sync type must be cb_basic / cb_ohlc / cb_premium_history / cb_factors / all")
         return StrategyLabDataSyncResponse(
             **service.start_data_sync(
                 market=request.market,

@@ -13,6 +13,7 @@ from uuid import uuid4
 
 from src.repositories.strategy_lab.data_repo import StrategyLabDataRepository
 from src.services.strategy_lab.cb_providers import (
+    CbUnderlyingStockOhlcFetcher,
     ConvertibleBondOhlcFetcher,
     OpencliConvertibleBondProvider,
 )
@@ -36,17 +37,53 @@ class StrategyLabDataSyncService:
         self.repository = StrategyLabDataRepository(db_manager)
         self.task_start_time = time.time()
 
-    def run_scheduled_sync(self, *, run_kind: str, market: str = "cn", trade_date: Optional[date] = None) -> Dict[str, Any]:
-        """Run the configured provider synchronously for scheduler use."""
+    def run_scheduled_sync_after_close(
+        self,
+        *,
+        run_kind: str,
+        market: str = "cn",
+        trade_date: Optional[date] = None,
+        symbols: Optional[List[str]] = None,
+        _run_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Run the configured provider synchronously for scheduler use.
+
+        ``symbols`` 缺省时全量同步；传入时仅同步指定标的（透传给
+        ``sync_cb_basic`` / ``sync_cb_ohlc`` / ``sync_cb_factors``）。
+        传入 ``_run_id`` 时复用外层 sync run（各子任务不再各自建 run，
+        取消与进度挂在外层 run 上，成功后由本方法统一 complete），
+        供 ``start_data_sync`` 后台线程复用。
+        """
         if run_kind not in {"intraday", "after_close"}:
             raise ValueError("run_kind must be intraday or after_close")
         try:
-            result = {
-                "cb_basic": self.sync_cb_basic(market=market),
-                "cb_ohlc": self.sync_cb_ohlc(market=market),
-            }
+            result: Dict[str, Any] = {}
+            stages = (
+                ("cb_basic", self.sync_cb_basic),
+                ("cb_ohlc", self.sync_cb_ohlc),
+                ("cb_factors", self.sync_cb_factors),
+            )
+            for key, sync_method in stages:
+                stage_result = sync_method(
+                    market=market,
+                    symbols=symbols,
+                    _run_id=_run_id,
+                    _complete_on_success=_run_id is None,
+                )
+                if stage_result.get("status") == "cancelled":
+                    # 子任务已把共享 run 标记为 cancelled，直接返回不再继续
+                    result[key] = stage_result
+                    result["cancelled"] = True
+                    return result
+                result[key] = stage_result
+                if _run_id is not None and self.repository.is_sync_run_cancel_requested(_run_id):
+                    result["cancelled"] = True
+                    self.repository.cancel_sync_run(_run_id, result=result)
+                    return result
             result.update({"run_kind": run_kind, "trade_date": (trade_date or date.today()).isoformat(), "quality_status": "usable"})
             self._notify_sync(run_kind, result, success=True)
+            if _run_id is not None:
+                self.repository.complete_sync_run(_run_id, result=result)
             return result
         except Exception as exc:
             self._notify_sync(run_kind, {"run_kind": run_kind, "error": str(exc)}, success=False)
@@ -536,6 +573,258 @@ class StrategyLabDataSyncService:
             self.repository.fail_sync_run(run_id, str(exc))
             raise
 
+    # ------------------------------------------------------------------
+    # 可转债正股 OHLC 行情同步（独立入口：腾讯日线，仅活跃转债的正股） ———— 未使用
+    # ------------------------------------------------------------------
+    def sync_cb_stock_ohlc(
+        self,
+        *,
+        market: str = "cn",
+        start_date: Optional[date] = None,
+        end_date: Optional[date] = None,
+        symbols: Optional[List[str]] = None,
+        _run_id: Optional[int] = None,
+        _complete_on_success: bool = True,
+    ) -> Dict[str, Any]:
+        """Sync underlying-stock daily OHLC of active convertible bonds into ``stock_daily``.
+
+        - 遍历标的自 ``strategy_lab_cb_basic.stock_code``（去重；仅 ``status='正常'``
+          的转债，已退市转债的正股不同步）。
+        - ``start_date`` 缺省时增量：有本地历史则从最后日期次日开始，否则从
+          ``2020-01-01`` 开始；``end_date`` 缺省为今天。
+        - OHLC 落 ``stock_daily``（instrument_type='stock'），不回填转债因子表。
+        - ``symbols`` 语义与其他同步方法一致，为转债代码过滤。
+        """
+        fetcher = CbUnderlyingStockOhlcFetcher()
+        symbol_filter = {str(symbol).strip().lower().split(".")[-1] for symbol in symbols or [] if str(symbol).strip()}
+        codes = self.repository.list_cb_stock_codes(
+            market=market, bond_codes=list(symbol_filter) if symbol_filter else None
+        )
+        effective_end = end_date or date.today()
+        payload = {
+            "market": market,
+            "status": "正常",
+            "start_date": start_date.isoformat() if start_date else None,
+            "end_date": effective_end.isoformat(),
+            "symbols": symbols or [],
+            "stocks_total": len(codes),
+        }
+        if _run_id is None:
+            run = self.repository.create_sync_run(
+                run_uid=uuid4().hex,
+                sync_type="cb_stock_ohlc",
+                market=market,
+                payload=payload,
+            )
+            run_id = run.id
+        else:
+            run_id = _run_id
+        try:
+            result = {
+                "stocks_total": len(codes),
+                "stock_daily_rows_new": 0,
+                "stocks_skipped": 0,
+                "stocks_failed": [],
+            }
+            if not codes:
+                self._raise_if_cancel_requested(run_id)
+                if _complete_on_success:
+                    self.repository.complete_sync_run(run_id, result=result)
+                return {"sync_run_id": run_id, **result}
+            for idx, code in enumerate(codes, 1):
+                self._raise_if_cancel_requested(run_id)
+                effective_start = self._ohlc_start_date(code, start_date, instrument_type="stock")
+                try:
+                    frame = fetcher.fetch_daily(code, effective_start, effective_end)
+                    self._raise_if_cancel_requested(run_id)
+                    if frame.empty:
+                        result["stocks_skipped"] += 1
+                        logger.info(
+                            "[跳过] 正股 %s 无行情数据（%s~%s）", code, effective_start, effective_end
+                        )
+                    else:
+                        result["stock_daily_rows_new"] += self.repository.db.save_daily_data(
+                            frame,
+                            code,
+                            data_source=fetcher.last_source or "cb_stock_ohlc",
+                            instrument_type="stock",
+                        )
+                        logger.info(
+                            "[完成] 正股 %s 行情同步：%d 条（%s~%s，source=%s）",
+                            code,
+                            len(frame),
+                            effective_start,
+                            effective_end,
+                            fetcher.last_source,
+                        )
+                except _DataSyncCancelled:
+                    raise
+                except Exception as exc:  # noqa: BLE001 - single symbol failure never aborts the batch
+                    result["stocks_failed"].append({"stock_code": code, "error": str(exc)})
+                    logger.warning("[失败] 正股 %s 行情同步失败: %s", code, exc)
+                if idx % 20 == 0 or idx == len(codes):
+                    self.repository.update_sync_run_progress(run_id, result={
+                        "stage": "fetching_stock_ohlc",
+                        "processed": idx,
+                        "total": len(codes),
+                        "stock_daily_rows_new": result["stock_daily_rows_new"],
+                        "stocks_skipped": result["stocks_skipped"],
+                    })
+            if _complete_on_success:
+                self.repository.complete_sync_run(run_id, result=result)
+            return {"sync_run_id": run_id, **result}
+        except _DataSyncCancelled:
+            result = locals().get("result", {})
+            result["cancelled"] = True
+            self.repository.cancel_sync_run(run_id, result=result)
+            return {"sync_run_id": run_id, "status": "cancelled", **result}
+        except Exception as exc:
+            self.repository.fail_sync_run(run_id, str(exc))
+            raise
+
+    # ------------------------------------------------------------------
+    # 可转债因子计算（正股价 / 溢价率 / 剩余规模 → strategy_lab_cb_daily_factors）
+    # ------------------------------------------------------------------
+
+    def sync_cb_factors(
+        self,
+        *,
+        market: str = "cn",
+        trade_date: Optional[date] = None,
+        symbols: Optional[List[str]] = None,
+        _run_id: Optional[int] = None,
+        _complete_on_success: bool = True,
+    ) -> Dict[str, Any]:
+        """Compute and persist CB daily factors for one trade date.
+
+        - 遍历 ``status='正常'`` 的转债；转债价取当日因子行的 ``close``（由
+          ``sync_cb_ohlc`` 写入），正股价用 ``CbUnderlyingStockOhlcFetcher``
+          拉当日 bar（盘中当天那根 close 即实时最新价）。
+        - ``premium_rate = (转债 close ÷ 转股价值 − 1) × 100``，其中转股价值 =
+          ``正股 close × 100 ÷ convert_price``，存百分数并保留两位小数。
+        - ``remaining_size`` 取 ``strategy_lab_cb_basic.remaining_size``；为空时
+          不覆盖因子行已有值。字段按可得性写入，缺失项不落库。
+        - ``symbols`` 语义与其他同步方法一致，为转债代码过滤。
+        """
+        fetcher = CbUnderlyingStockOhlcFetcher()
+        effective_date = trade_date or date.today()
+        symbol_filter = {str(symbol).strip().lower().split(".")[-1] for symbol in symbols or [] if str(symbol).strip()}
+        inputs = self.repository.list_cb_factor_inputs(market=market, trade_date=effective_date)
+        if symbol_filter:
+            inputs = [item for item in inputs if item["bond_code"].lower() in symbol_filter]
+        payload = {
+            "market": market,
+            "status": "正常",
+            "trade_date": effective_date.isoformat(),
+            "symbols": symbols or [],
+            "bonds_total": len(inputs),
+        }
+        if _run_id is None:
+            run = self.repository.create_sync_run(
+                run_uid=uuid4().hex,
+                sync_type="cb_factors",
+                market=market,
+                payload=payload,
+            )
+            run_id = run.id
+        else:
+            run_id = _run_id
+        try:
+            result = {
+                "bonds_total": len(inputs),
+                "cb_factor_rows_updated": 0,
+                "premium_computed": 0,
+                "stock_close_filled": 0,
+                "remaining_filled": 0,
+                "bonds_skipped_no_close": 0,
+                "bonds_skipped_no_price": 0,
+                "bonds_failed": [],
+            }
+            pending: List[Dict[str, Any]] = []
+            stock_closes: Dict[str, Optional[float]] = {}
+            for idx, item in enumerate(inputs, 1):
+                self._raise_if_cancel_requested(run_id)
+                bond_code = item["bond_code"]
+                try:
+                    bond_close = item.get("close")
+                    if bond_close is None:
+                        result["bonds_skipped_no_close"] += 1
+                        logger.info("[跳过] 可转债 %s 当日无 close，无法计算因子", bond_code)
+                        continue
+                    row: Dict[str, Any] = {"bond_code": bond_code, "trade_date": effective_date}
+                    stock_code = item.get("stock_code") or ""
+                    stock_close: Optional[float] = None
+                    if stock_code:
+                        if stock_code not in stock_closes:
+                            frame = fetcher.fetch_daily(stock_code, effective_date, effective_date)
+                            self._raise_if_cancel_requested(run_id)
+                            candidate = float(frame.iloc[-1]["close"]) if not frame.empty else None
+                            # candidate == candidate 过滤 NaN 行情
+                            stock_closes[stock_code] = candidate if candidate == candidate else None
+                        stock_close = stock_closes[stock_code]
+                    if stock_close is not None:
+                        row["stock_close"] = stock_close
+                        result["stock_close_filled"] += 1
+                    convert_price = item.get("convert_price")
+                    premium = None
+                    if stock_close is not None and convert_price:
+                        convert_value = stock_close * 100.0 / float(convert_price)
+                        premium = round((float(bond_close) / convert_value - 1.0) * 100.0, 2)
+                        row["premium_rate"] = premium
+                        result["premium_computed"] += 1
+                    if item.get("remaining_size") is not None:
+                        row["remaining_size"] = item["remaining_size"]
+                        result["remaining_filled"] += 1
+                    if premium is None:
+                        result["bonds_skipped_no_price"] += 1
+                        logger.info(
+                            "[跳过] 可转债 %s 无法计算溢价率：正股价=%s 转股价=%s",
+                            bond_code,
+                            stock_close,
+                            convert_price,
+                        )
+                    if any(key in row for key in ("stock_close", "premium_rate", "remaining_size")):
+                        pending.append(row)
+                        logger.info(
+                            "[完成] 可转债 %s 因子：债价=%.2f 正股价=%s 溢价率=%s 剩余规模=%s",
+                            bond_code,
+                            float(bond_close),
+                            stock_close,
+                            premium,
+                            item.get("remaining_size"),
+                        )
+                except _DataSyncCancelled:
+                    raise
+                except Exception as exc:  # noqa: BLE001 - single symbol failure never aborts the batch
+                    result["bonds_failed"].append({"bond_code": bond_code, "error": str(exc)})
+                    logger.warning("[失败] 可转债 %s 因子计算失败: %s", bond_code, exc)
+                if idx % 20 == 0 or idx == len(inputs):
+                    self.repository.update_sync_run_progress(run_id, result={
+                        "stage": "computing_factors",
+                        "processed": idx,
+                        "total": len(inputs),
+                        "premium_computed": result["premium_computed"],
+                        "stock_close_filled": result["stock_close_filled"],
+                        "remaining_filled": result["remaining_filled"],
+                        "bonds_skipped_no_close": result["bonds_skipped_no_close"],
+                        "bonds_skipped_no_price": result["bonds_skipped_no_price"],
+                    })
+            if pending:
+                result["cb_factor_rows_updated"] = self.repository.update_cb_daily_factor_fields(
+                    pending, source="cb_factors"
+                )
+            if _complete_on_success:
+                self.repository.complete_sync_run(run_id, result=result)
+            return {"sync_run_id": run_id, **result}
+        except _DataSyncCancelled:
+            result = locals().get("result", {})
+            result["cancelled"] = True
+            self.repository.cancel_sync_run(run_id, result=result)
+            return {"sync_run_id": run_id, "status": "cancelled", **result}
+        except Exception as exc:
+            self.repository.fail_sync_run(run_id, str(exc))
+            raise
+
     def start_data_sync(
         self,
         *,
@@ -549,11 +838,14 @@ class StrategyLabDataSyncService:
         """Start a convertible-bond data sync in a background thread.
 
         ``sync_type``: ``cb_basic``（基础数据）/ ``cb_ohlc``（行情）/
-        ``cb_premium_history``（补空字段）/ ``all``（先基础后行情）。
+        ``cb_premium_history``（补空字段）/ ``cb_factors``（因子计算，日期取
+        ``end_date or start_date``，缺省今天）/ ``cb_scheduled``（手动触发
+        调度链路：基础 + 行情 + 因子 + 盘后通知，``run_kind='after_close'``）/
+        ``all``（先基础后行情）。
         后台任务复用 ``_PROVIDER_SYNC_LOCK`` 互斥，
         进度通过 ``list_sync_runs`` 轮询。
         """
-        if sync_type not in ("cb_basic", "cb_ohlc", "cb_premium_history", "all"):
+        if sync_type not in ("cb_basic", "cb_ohlc", "cb_premium_history", "cb_factors", "cb_scheduled", "all"):
             raise ValueError(f"Unsupported sync_type: {sync_type}")
         if not _PROVIDER_SYNC_LOCK.acquire(blocking=False):
             raise ValueError("已有数据源同步任务进行中，请等待完成后再试")
@@ -611,6 +903,28 @@ class StrategyLabDataSyncService:
                     )
                     if result["cb_premium_history"].get("status") == "cancelled":
                         return
+                if sync_type == "cb_factors":
+                    result["cb_factors"] = self.sync_cb_factors(
+                        market=market,
+                        trade_date=end_date or start_date,
+                        symbols=symbols,
+                        _run_id=run.id,
+                        _complete_on_success=True,
+                    )
+                    if result["cb_factors"].get("status") == "cancelled":
+                        return
+                if sync_type == "cb_scheduled":
+                    # 手动触发调度链路；run 的 complete/cancel 由
+                    # run_scheduled_sync_after_close 统一处理（共享 run.id）
+                    result["cb_scheduled"] = self.run_scheduled_sync_after_close(
+                        run_kind="after_close",
+                        market=market,
+                        trade_date=end_date or start_date,
+                        symbols=symbols,
+                        _run_id=run.id,
+                    )
+                    if result["cb_scheduled"].get("status") == "cancelled":
+                        return
                 if sync_type == "all":
                     self.repository.complete_sync_run(run.id, result=result)
             except Exception as exc:
@@ -630,11 +944,13 @@ class StrategyLabDataSyncService:
         if self.repository.is_sync_run_cancel_requested(run_id):
             raise _DataSyncCancelled()
 
-    def _ohlc_start_date(self, bond_code: str, explicit_start: Optional[date]) -> date:
+    def _ohlc_start_date(
+        self, code: str, explicit_start: Optional[date], *, instrument_type: str = "convertible_bond"
+    ) -> date:
         """Resolve the OHLC start date: explicit, else incremental from local history."""
         if explicit_start is not None:
             return explicit_start
-        latest = self.repository.get_cb_ohlc_latest_date(bond_code=bond_code)
+        latest = self.repository.get_cb_ohlc_latest_date(code=code, instrument_type=instrument_type)
         if latest is not None:
             return latest + timedelta(days=1)
         return date(2020, 1, 1)
