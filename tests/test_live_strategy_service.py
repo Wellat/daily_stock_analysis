@@ -6,8 +6,22 @@ from sqlalchemy import desc, select
 
 from src.services.live_strategy_service import LiveStrategyService
 from src.services.qmt_position_service import QmtPositionService
-from src.storage import DatabaseManager, LiveStrategyConfig, LiveStrategyRun
-from src.storage import StrategyLabCbBasic
+from src.storage import DatabaseManager, LiveRebalanceBatch, LiveStrategyConfig, LiveStrategyRun
+from src.storage import StrategyLabCbBasic, StrategyLabCbDailyFactor, StrategyDecisionRecord, TradingOrder
+
+
+def _seed_cb_universe(db: DatabaseManager, trade_date: date, bonds: list[dict]) -> None:
+    """写入策略上下文依赖的 cb_basic + 当日因子行（含可选强赎告警）。"""
+    with db.get_session() as session:
+        for b in bonds:
+            session.add(StrategyLabCbBasic(bond_code=b["code"], bond_name=b["name"],
+                                           stock_code=f"SH{b['code']}", market="cn", status="active"))
+        session.commit()
+        for b in bonds:
+            session.add(StrategyLabCbDailyFactor(bond_code=b["code"], trade_date=trade_date,
+                                                 close=b["close"], premium_rate=b["premium"],
+                                                 remaining_size=5.0, redeem_alert=bool(b.get("alert"))))
+        session.commit()
 
 
 def _weekdays_only(monkeypatch: pytest.MonkeyPatch, holidays: set[date] | None = None) -> None:
@@ -55,7 +69,7 @@ def test_live_strategy_ignores_non_convertible_bond_positions():
         service = LiveStrategyService(db)
         service.save_config({"qmt_account": "testS", "enabled": True, "parameters": {"max_positions": 1}})
         with db.get_session() as session:
-            session.add(StrategyLabCbBasic(bond_code="113002", bond_name="测试转债", stock_code="600000", market="cn"))
+            session.add(StrategyLabCbBasic(bond_code="113002", bond_name="测试转债", stock_code="600000", market="cn", status="active"))
             session.commit()
         QmtPositionService(db).report_positions(account="testS", positions=[
             {"symbol": "600000", "volume": 100, "can_use_volume": 100},
@@ -234,5 +248,164 @@ def test_explicit_rebalance_respects_frequency(monkeypatch: pytest.MonkeyPatch):
         forced = service.run(trade_date=date(2024, 1, 5), preview=True, mode="rebalance")
         assert forced["mode"] == "rebalance"
         assert "skip_reason" not in forced
+    finally:
+        DatabaseManager.reset_instance()
+
+
+def test_run_rejects_invalid_mode_and_missing_config():
+    DatabaseManager.reset_instance()
+    db = DatabaseManager(db_url="sqlite:///:memory:")
+    try:
+        service = LiveStrategyService(db)
+        with pytest.raises(ValueError, match="mode must be"):
+            service.run(trade_date=date(2024, 1, 2), mode="bogus")
+        with pytest.raises(ValueError, match="not configured"):
+            service.run(trade_date=date(2024, 1, 2))
+    finally:
+        DatabaseManager.reset_instance()
+
+
+def test_gate_blocks_non_preview_run_with_exception():
+    """门禁未过时：preview 返回跳过载荷，非 preview 直接抛错阻断下单。"""
+    DatabaseManager.reset_instance()
+    db = DatabaseManager(db_url="sqlite:///:memory:")
+    try:
+        service = LiveStrategyService(db)
+        service.save_config({"qmt_account": "testS", "enabled": True, "parameters": {"max_positions": 1}})
+        QmtPositionService(db).report_positions(account="testS", positions=[])
+
+        blocked = service.run(trade_date=date(2024, 1, 2), preview=True)
+        assert blocked["skip_reason"] == "intraday_sync_unavailable"
+        with pytest.raises(ValueError, match="intraday data sync is not completed"):
+            service.run(trade_date=date(2024, 1, 2))
+    finally:
+        DatabaseManager.reset_instance()
+
+
+def test_rebalance_pipeline_buys_lowest_premium_and_exits_offtarget_holding():
+    """全链路：因子选债买入 + 对账补卖 + 订单/决策/run/batch 落库。"""
+    DatabaseManager.reset_instance()
+    db = DatabaseManager(db_url="sqlite:///:memory:")
+    try:
+        service = LiveStrategyService(db)
+        service.save_config({"qmt_account": "testS", "enabled": True, "data_sync_before_run": False,
+                             "parameters": {"max_positions": 1, "per_position_cash": 10000, "lot_size": 10}})
+        trade_date = date(2024, 1, 2)
+        _seed_cb_universe(db, trade_date, [
+            {"code": "113001", "name": "低溢价", "close": 100.0, "premium": 5.0},
+            {"code": "113002", "name": "高溢价", "close": 110.0, "premium": 50.0},
+        ])
+        # 持有高溢价债 100 张，不在目标内 → 应被对账补卖
+        QmtPositionService(db).report_positions(account="testS", positions=[
+            {"symbol": "113002", "volume": 100, "can_use_volume": 100},
+        ])
+
+        result = service.run(trade_date=trade_date, mode="rebalance")
+
+        # 目标组合只含低溢价债；价格/数量按目标资金和手数推导
+        assert list(result["target"]) == ["113001"]
+        assert result["target"]["113001"]["price"] == 100.0
+        assert result["target"]["113001"]["quantity"] == 100
+        assert result["current"] == {"113002": 100.0}
+        by_side = {(o["side"], o["symbol"]): o for o in result["rebalance"]}
+        assert by_side[("buy", "113001")]["quantity"] == 100
+        assert by_side[("sell", "113002")]["quantity"] == 100
+        assert by_side[("sell", "113002")]["reason"] == "live_target_exit"
+
+        with db.get_session() as session:
+            run = session.execute(select(LiveStrategyRun).order_by(desc(LiveStrategyRun.id))).scalars().first()
+            orders = session.execute(select(TradingOrder).where(TradingOrder.live_run_id == run.id)).scalars().all()
+            decisions = session.execute(select(StrategyDecisionRecord).where(
+                StrategyDecisionRecord.live_run_id == run.id)).scalars().all()
+            batches = session.execute(select(LiveRebalanceBatch).where(LiveRebalanceBatch.run_id == run.id)).scalars().all()
+        assert run.status == "completed" and run.mode == "rebalance"
+        assert run.decision_count == 2 and run.order_count == 2
+        assert {(o.side, o.symbol) for o in orders} == {("buy", "113001"), ("sell", "113002")}
+        assert all(o.live_run_id == run.id for o in orders)
+        assert {d.action for d in decisions} == {"buy", "sell"}
+        assert all(d.mode == "rebalance" and d.live_run_id == run.id for d in decisions)
+        assert len(batches) == 1 and batches[0].status == "pending"
+    finally:
+        DatabaseManager.reset_instance()
+
+
+def test_event_check_exits_blocked_holding_without_buying():
+    """event_check 只扫持仓：强赎持仓退出、无事件持仓 hold，绝不选债买入。"""
+    DatabaseManager.reset_instance()
+    db = DatabaseManager(db_url="sqlite:///:memory:")
+    try:
+        service = LiveStrategyService(db)
+        service.save_config({"qmt_account": "testS", "enabled": True, "data_sync_before_run": False,
+                             "parameters": {"max_positions": 1, "per_position_cash": 10000, "lot_size": 10}})
+        trade_date = date(2024, 1, 2)
+        _seed_cb_universe(db, trade_date, [
+            {"code": "113001", "name": "正常债", "close": 100.0, "premium": 5.0},
+            {"code": "113002", "name": "强赎债", "close": 110.0, "premium": 50.0, "alert": True},
+        ])
+        QmtPositionService(db).report_positions(account="testS", positions=[
+            {"symbol": "113001", "volume": 50, "can_use_volume": 50},
+            {"symbol": "113002", "volume": 100, "can_use_volume": 100},
+        ])
+
+        result = service.run(trade_date=trade_date, mode="event_check")
+
+        assert result["mode"] == "event_check"
+        assert result["target"] == {}  # 不选债、不建目标组合
+        assert [(o["side"], o["symbol"], o["quantity"]) for o in result["rebalance"]] == [("sell", "113002", 100)]
+        assert result["rebalance"][0]["reason"] == "event_blocked"
+        actions = {d["symbol"]: d["action"] for d in result["decisions"]}
+        assert actions == {"113001": "hold", "113002": "exit"}
+
+        run = _latest_run(db)
+        assert run.mode == "event_check" and run.status == "completed" and run.order_count == 1
+    finally:
+        DatabaseManager.reset_instance()
+
+
+def test_auto_falls_back_to_completed_event_check_same_day(monkeypatch: pytest.MonkeyPatch):
+    """未到期日 auto 解析为 event_check，当日重复触发幂等返回同一条 run。"""
+    _weekdays_only(monkeypatch)
+    DatabaseManager.reset_instance()
+    db = DatabaseManager(db_url="sqlite:///:memory:")
+    try:
+        service = LiveStrategyService(db)
+        service.save_config({"qmt_account": "testS", "enabled": True, "data_sync_before_run": False,
+                             "rebalance_frequency_days": 5, "parameters": {"max_positions": 1}})
+        QmtPositionService(db).report_positions(account="testS", positions=[])
+        _seed_completed_rebalance(db, date(2024, 1, 1))  # 周一，频率 5 → 下周一 1/8 到期
+
+        first = service.run(trade_date=date(2024, 1, 2))  # 未到期 → event_check
+        assert first["mode"] == "event_check"
+        again = service.run(trade_date=date(2024, 1, 2))
+        assert again["run_uid"] == first["run_uid"]
+
+        with db.get_session() as session:
+            rows = session.execute(select(LiveStrategyRun).where(LiveStrategyRun.trade_date == date(2024, 1, 2))).scalars().all()
+        assert len(rows) == 1 and rows[0].mode == "event_check" and rows[0].status == "completed"
+    finally:
+        DatabaseManager.reset_instance()
+
+
+def test_frequency_one_rebalances_every_trading_day(monkeypatch: pytest.MonkeyPatch):
+    """频率 1：每个交易日到期；锚点后无交易日间隔（周末）才跳过，过期则补跑。"""
+    _weekdays_only(monkeypatch)
+    DatabaseManager.reset_instance()
+    db = DatabaseManager(db_url="sqlite:///:memory:")
+    try:
+        service = LiveStrategyService(db)
+        service.save_config({"qmt_account": "testS", "enabled": True, "data_sync_before_run": False,
+                             "rebalance_frequency_days": 1, "parameters": {"max_positions": 1}})
+        QmtPositionService(db).report_positions(account="testS", positions=[])
+        _seed_completed_rebalance(db, date(2024, 1, 2))  # 周二
+
+        # 周三：隔 1 个交易日，到期
+        assert service.run(trade_date=date(2024, 1, 3), preview=True)["mode"] == "rebalance"
+
+        # 锚点前移到周五 1/5：周六 0 个交易日间隔 → 未到期跳过；
+        # 但若锚点停在周二（漏跑多日），周六按“已过期”照样补跑
+        _seed_completed_rebalance(db, date(2024, 1, 5))
+        saturday = service.run(trade_date=date(2024, 1, 6), preview=True, mode="rebalance")
+        assert saturday["skip_reason"] == "rebalance_frequency"
+        assert service.run(trade_date=date(2024, 1, 8), preview=True)["mode"] == "rebalance"
     finally:
         DatabaseManager.reset_instance()

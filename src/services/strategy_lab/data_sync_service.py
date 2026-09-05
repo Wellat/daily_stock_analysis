@@ -616,7 +616,7 @@ class StrategyLabDataSyncService:
     ) -> Dict[str, Any]:
         """Sync underlying-stock daily OHLC of active convertible bonds into ``stock_daily``.
 
-        - 遍历标的自 ``strategy_lab_cb_basic.stock_code``（去重；仅 ``status='正常'``
+        - 遍历标的自 ``strategy_lab_cb_basic.stock_code``（去重；仅 ``status='active'``
           的转债，已退市转债的正股不同步）。
         - ``start_date`` 缺省时增量：有本地历史则从最后日期次日开始，否则从
           ``2020-01-01`` 开始；``end_date`` 缺省为今天。
@@ -725,7 +725,7 @@ class StrategyLabDataSyncService:
     ) -> Dict[str, Any]:
         """Compute and persist CB daily factors for one trade date.
 
-        - 遍历 ``status='正常'`` 的转债；转债价取当日因子行的 ``close``（由
+        - 遍历 ``status='active'`` 的转债；转债价取当日因子行的 ``close``（由
           ``sync_cb_ohlc`` 写入），正股价用 ``CbUnderlyingStockOhlcFetcher``
           拉当日 bar（盘中当天那根 close 即实时最新价）。
         - ``premium_rate = (转债 close ÷ 转股价值 − 1) × 100``，其中转股价值 =

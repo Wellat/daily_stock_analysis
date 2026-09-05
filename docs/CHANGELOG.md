@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [修复] Web 实盘策略配置保存后参数回显丢失：`parameters` 键被深度驼峰化（`max_positions`→`maxPositions`），刷新后输入框恒显示策略默认值且保存的参数不生效；实盘配置读写现保留策略参数原始键名。
+- [改进] Web 实盘策略配置补齐缺失配置项：调仓频率（交易日）、自选池（逗号分隔，留空=全市场）、下单前数据同步检查开关。
 - [修复] 统一可转债基础数据 `status` 为 `active`/`delisted` 英文枚举，并自动迁移存量中文状态。
 - [改进] 实盘策略运行 `mode` 支持 `auto`（默认）：按"最近一次成功调仓 + N 个交易日"推导调仓节奏，到期自动调仓、未到期自动事件检查；调仓失败不推进锚点，下个交易日自动补跑；调仓频率改为按交易日计（此前为自然日），config 读取接口附带只读 `next_rebalance_date`。
 - [修复] 实盘策略运行状态时序修正：run 记录在下单执行前置为 `running`，执行器成功后才置 `completed`，失败落 `failed` 并记录错误信息，当日失败可重试（复用原 run/batch 行）；当日调仓成功后 auto 重复触发改为幂等返回该记录（此前执行前即标记 completed，下单失败也会前移调仓锚点）。

@@ -374,7 +374,7 @@ class StrategyLabDataRepository:
     def list_cb_basic_codes(self, *, market: str, status: Optional[str] = None) -> List[str]:
         """Return bond codes in the master table, optionally filtered by status.
 
-        ``status`` accepts "正常" (active) or "已退市" (delisted); None returns
+        ``status`` accepts "active" (listed) or "delisted"; None returns
         every code. Used by the OHLC sync to decide which symbols to walk.
         """
         with self.db.get_session() as session:
