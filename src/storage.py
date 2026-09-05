@@ -1908,6 +1908,13 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                     raise
         # 可转债筛选与行情类型查询需要索引；create_all 只对全新库生效，存量库在此补齐
         with self._engine.begin() as connection:
+            # Normalize legacy Chinese convertible-bond statuses to the API enum values.
+            connection.exec_driver_sql(
+                "UPDATE strategy_lab_cb_basic SET status = 'active' WHERE status = '正常'"
+            )
+            connection.exec_driver_sql(
+                "UPDATE strategy_lab_cb_basic SET status = 'delisted' WHERE status = '已退市'"
+            )
             connection.exec_driver_sql(
                 "CREATE INDEX IF NOT EXISTS ix_stock_daily_instrument_type "
                 "ON stock_daily (instrument_type)"

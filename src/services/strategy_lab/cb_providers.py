@@ -670,7 +670,7 @@ def _cb_list_basic_row(record: Dict[str, Any]) -> Dict[str, Any] | None:
         return None
     code = _strip_code(bond_code)
     status_raw = str(_first_value(record, "status", "状态") or "active").strip().lower()
-    status = "已退市" if status_raw in ("delisted", "已退市") else "正常"
+    status = "delisted" if status_raw in ("delisted", "已退市") else "active"
     terms: Dict[str, Any] = {"provider": "opencli"}
     last_price = _parse_float(_first_value(record, "lastPrice", "last_price", "最后价格"))
     last_trade_date = _parse_date(_first_value(record, "lastTradeDate", "last_trade_date", "最后交易日"))
@@ -704,9 +704,9 @@ def _cb_detail_normalize(record: Dict[str, Any]) -> Dict[str, Any] | None:
     delisted = record.get("delisted")
     if delisted in (True, "true", "True", "1", 1):
         meta["delisted"] = True
-        status = "已退市"
+        status = "delisted"
     elif delisted in (False, "false", "False", "0", 0):
-        status = "正常"
+        status = "active"
     else:
         status = None
     stock_code_value = _first_value(

@@ -34,4 +34,5 @@ class LiveStrategyRunListResponse(BaseModel):
 
 class LiveStrategyRunRequest(BaseModel):
     trade_date: Optional[date] = None
-    mode: str = Field("rebalance", pattern="^(rebalance|event_check)$")
+    # auto：按调仓节奏推导（到期 rebalance / 未到期 event_check）
+    mode: str = Field("auto", pattern="^(auto|rebalance|event_check)$")

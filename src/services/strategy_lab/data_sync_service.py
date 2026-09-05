@@ -257,7 +257,7 @@ class StrategyLabDataSyncService:
                         "stock_code": "",
                         "stock_name": None,
                         "market": market,
-                        "status": "正常",
+                        "status": "active",
                         "terms": {"provider": provider.name},
                     }
                     for code in codes
@@ -400,9 +400,9 @@ class StrategyLabDataSyncService:
         fetcher = ConvertibleBondOhlcFetcher()
         # include_delisted=True 时处理全部（活跃 + 已退市），否则仅活跃。
         codes = self.repository.list_cb_basic_codes(
-            market=market, status=None if include_delisted else "正常"
+            market=market, status=None if include_delisted else "active"
         )
-        status = "全部" if include_delisted else "正常"
+        status = "all" if include_delisted else "active"
         symbol_filter = {str(symbol).strip().lower().split(".")[-1] for symbol in symbols or [] if str(symbol).strip()}
         if symbol_filter:
             codes = [code for code in codes if code.lower() in symbol_filter]
@@ -511,7 +511,7 @@ class StrategyLabDataSyncService:
         """Backfill missing premium/remaining-size fields on convertible-bond daily-factor rows."""
         provider = OpencliConvertibleBondProvider()
         codes = self.repository.list_cb_basic_codes(
-            market=market, status=None if include_delisted else "正常"
+            market=market, status=None if include_delisted else "active"
         )
         symbol_filter = {str(symbol).strip().lower().split(".")[-1] for symbol in symbols or [] if str(symbol).strip()}
         if symbol_filter:
@@ -631,7 +631,7 @@ class StrategyLabDataSyncService:
         effective_end = end_date or date.today()
         payload = {
             "market": market,
-            "status": "正常",
+            "status": "active",
             "start_date": start_date.isoformat() if start_date else None,
             "end_date": effective_end.isoformat(),
             "symbols": symbols or [],
@@ -742,7 +742,7 @@ class StrategyLabDataSyncService:
             inputs = [item for item in inputs if item["bond_code"].lower() in symbol_filter]
         payload = {
             "market": market,
-            "status": "正常",
+            "status": "active",
             "trade_date": effective_date.isoformat(),
             "symbols": symbols or [],
             "bonds_total": len(inputs),
@@ -777,9 +777,22 @@ class StrategyLabDataSyncService:
                     bond_close = item.get("close")
                     if bond_close is None:
                         result["bonds_skipped_no_close"] += 1
+                        pending.append({
+                            "bond_code": bond_code,
+                            "trade_date": effective_date,
+                            "redeem_alert": bool(item.get("redeem_alert")),
+                            "down_revise_alert": bool(item.get("down_revise_alert")),
+                            "put_alert": bool(item.get("put_alert")),
+                        })
                         logger.info("[跳过] 可转债 %s 当日无 close，无法计算因子", bond_code)
                         continue
-                    row: Dict[str, Any] = {"bond_code": bond_code, "trade_date": effective_date}
+                    row: Dict[str, Any] = {
+                        "bond_code": bond_code,
+                        "trade_date": effective_date,
+                        "redeem_alert": bool(item.get("redeem_alert")),
+                        "down_revise_alert": bool(item.get("down_revise_alert")),
+                        "put_alert": bool(item.get("put_alert")),
+                    }
                     stock_code = item.get("stock_code") or ""
                     stock_close: Optional[float] = None
                     if stock_code:
@@ -811,9 +824,8 @@ class StrategyLabDataSyncService:
                             stock_close,
                             convert_price,
                         )
-                    if any(key in row for key in ("stock_close", "premium_rate", "remaining_size")):
-                        pending.append(row)
-                        logger.info(
+                    pending.append(row)
+                    logger.info(
                             "[完成] 可转债 %s 因子：债价=%.2f 正股价=%s 溢价率=%s 剩余规模=%s",
                             bond_code,
                             float(bond_close),

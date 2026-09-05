@@ -35,6 +35,8 @@ const statusFilterOptions = [
   { label: '已退市', value: 'delisted' },
 ];
 
+const statusLabel = (status?: string | null) => status === 'delisted' ? '已退市' : status === 'active' ? '未退市' : (status ?? '--');
+
 export const ConvertibleBondTab: React.FC = () => {
   const [instruments, setInstruments] = useState<StrategyLabInstrumentItem[]>([]);
   const [total, setTotal] = useState(0);
@@ -190,8 +192,8 @@ export const ConvertibleBondTab: React.FC = () => {
               </div>
               <div className="mt-0.5 flex items-center justify-between gap-2 text-xs text-secondary-text">
                 <span className="truncate">{item.bond_name}</span>
-                <span className={item.status === '已退市' ? 'text-danger' : ''}>
-                  {item.status ?? '--'} / {item.latest_close == null ? '--' : item.latest_close}
+                <span className={item.status === 'delisted' ? 'text-danger' : ''}>
+                  {statusLabel(item.status)} / {item.latest_close == null ? '--' : item.latest_close}
                 </span>
               </div>
             </button>
@@ -218,7 +220,7 @@ export const ConvertibleBondTab: React.FC = () => {
                       <span className="ml-2 text-sm font-normal text-secondary-text">
                         {stockName} · {stockCode}
                       </span>
-                      <Tag className="ml-2" color={detail.status === '已退市' ? 'error' : 'success'}>{detail.status ?? '--'}</Tag>
+                      <Tag className="ml-2" color={detail.status === 'delisted' ? 'error' : 'success'}>{statusLabel(detail.status)}</Tag>
                     </h2>
                     <span className="font-mono text-lg font-semibold text-cyan">{formatPct(currentPremiumRate)}</span>
                   </div>

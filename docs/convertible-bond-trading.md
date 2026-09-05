@@ -72,9 +72,9 @@ pending -> cancelled
 
 计划新增实盘控制面：
 
-- `GET/PUT /api/v1/live-strategy/config`：读取和保存实盘策略配置。
+- `GET/PUT /api/v1/live-strategy/config`：读取和保存实盘策略配置；读取时附带只读推导字段 `next_rebalance_date`（最近一次成功调仓 + N 个交易日，未调仓过为 null）。
 - `POST /api/v1/live-strategy/runs/preview`：只计算目标组合和差额，不写 QMT 订单。
-- `POST /api/v1/live-strategy/runs`：执行一次实盘策略运行并生成调仓批次。
+- `POST /api/v1/live-strategy/runs`：执行一次实盘策略运行并生成调仓批次。请求体 `mode` 取值 `auto`（默认）/`rebalance`/`event_check`：`auto` 按调仓节奏推导——锚点取最近一次成功调仓（`mode=rebalance` 且 `status=completed`）的交易日，按 `rebalance_frequency_days` 个交易日（`src/core/trading_calendar`，日历不可用时退化为自然日）判定到期，到期跑调仓、未到期跑事件检查；当日已有成功调仓时 auto 与显式 `rebalance` 均幂等返回该记录；显式 `rebalance` 未到期返回 `skip_reason=rebalance_frequency`。事件检查等风险退出不推进调仓锚点。运行记录状态时序为 `running → completed/failed`：run 行在下单执行前置为 `running`，执行器返回后才置 `completed`，失败落 `failed` 并记录 `error_message`，当日可重试（复用原 run/batch 行）。
 - `GET /api/v1/live-strategy/runs`、`/{run_id}`、`/{run_id}/rebalance`、`/{run_id}/orders`：查询运行、目标组合、差额和订单。
 - `POST /api/v1/live-strategy/runs/{run_id}/cancel`：取消仍处于 pending 的订单。
 

@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [修复] 统一可转债基础数据 `status` 为 `active`/`delisted` 英文枚举，并自动迁移存量中文状态。
+- [改进] 实盘策略运行 `mode` 支持 `auto`（默认）：按"最近一次成功调仓 + N 个交易日"推导调仓节奏，到期自动调仓、未到期自动事件检查；调仓失败不推进锚点，下个交易日自动补跑；调仓频率改为按交易日计（此前为自然日），config 读取接口附带只读 `next_rebalance_date`。
+- [修复] 实盘策略运行状态时序修正：run 记录在下单执行前置为 `running`，执行器成功后才置 `completed`，失败落 `failed` 并记录错误信息，当日失败可重试（复用原 run/batch 行）；当日调仓成功后 auto 重复触发改为幂等返回该记录（此前执行前即标记 completed，下单失败也会前移调仓锚点）。
+- [改进] Web 实盘工作台新增运行模式下拉（自动/调仓/事件检查），预览与生成订单按所选模式触发，并展示推导出的下次调仓日。
 - [修复] 实盘下单前的盘中数据检查与可转债同步记录对齐：`run_scheduled_sync` 自建总 sync run 并落 `run_kind`/`trade_date` 列（此前全部同步记录均为默认 `after_close`/NULL，`latest_sync_run(run_kind='intraday', trade_date=今天)` 恒查不到，实盘策略会被 `intraday_sync_unavailable` 永久拦截）；手动触发的 `cb_scheduled` 记录同样落列。
 - [改进] 移除实盘配置项 `data_max_age_minutes` 及对应的数据时效（stale）检查：当日数据新鲜度改由 `trade_date` 列级精确匹配保证，避免“盘中同步 14:00 完成、14:35 检查时被误判过期”的配置坑；存量库中的旧列保留不影响运行。
 - [改进] 数据同步 API 与 Web 数据同步页面新增 `sync_type=cb_scheduled`：后台手动触发盘后调度链路（基础数据 → 行情 → 因子计算，等价 `run_scheduled_sync(run_kind='after_close')`），整条链路共享单条同步记录并支持取消，完成后发送盘后通知邮件；调度器定时路径行为不变。

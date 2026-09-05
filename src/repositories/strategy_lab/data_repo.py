@@ -313,9 +313,9 @@ class StrategyLabDataRepository:
                     )
                 )
             if status == "active":
-                base = base.where(StrategyLabCbBasic.status == "正常")
+                base = base.where(StrategyLabCbBasic.status.in_(("active", "正常")))
             elif status == "delisted":
-                base = base.where(StrategyLabCbBasic.status == "已退市")
+                base = base.where(StrategyLabCbBasic.status.in_(("delisted", "已退市")))
             if held_only:
                 held_codes = (
                     select(PortfolioPosition.symbol)
@@ -416,7 +416,7 @@ class StrategyLabDataRepository:
         with self.db.get_session() as session:
             statement = select(StrategyLabCbBasic.stock_code).where(
                 StrategyLabCbBasic.market == market,
-                StrategyLabCbBasic.status == "正常",
+                StrategyLabCbBasic.status.in_(("active", "正常")),
             )
             if bond_codes:
                 statement = statement.where(StrategyLabCbBasic.bond_code.in_(bond_codes))
@@ -438,6 +438,14 @@ class StrategyLabDataRepository:
         来源；供可转债因子计算遍历使用。
         """
         with self.db.get_session() as session:
+            event_rows = session.execute(
+                select(StrategyLabCbEvent.bond_code, StrategyLabCbEvent.event_type).where(
+                    StrategyLabCbEvent.event_date == trade_date
+                )
+            ).all()
+            event_flags: Dict[str, set[str]] = {}
+            for bond_code, event_type in event_rows:
+                event_flags.setdefault(str(bond_code), set()).add(str(event_type))
             rows = session.execute(
                 select(
                     StrategyLabCbBasic.bond_code,
@@ -456,7 +464,7 @@ class StrategyLabDataRepository:
                 )
                 .where(
                     StrategyLabCbBasic.market == market,
-                    StrategyLabCbBasic.status == "正常",
+                    StrategyLabCbBasic.status.in_(("active", "正常")),
                 )
                 .order_by(StrategyLabCbBasic.bond_code.asc())
             ).all()
@@ -467,6 +475,9 @@ class StrategyLabDataRepository:
                     "convert_price": row.convert_price,
                     "remaining_size": row.remaining_size,
                     "close": row.close,
+                    "redeem_alert": "strong_redeem" in event_flags.get(str(row.bond_code), set()),
+                    "down_revise_alert": "down_revise" in event_flags.get(str(row.bond_code), set()),
+                    "put_alert": "put" in event_flags.get(str(row.bond_code), set()),
                 }
                 for row in rows
             ]
@@ -553,7 +564,7 @@ class StrategyLabDataRepository:
             for item in rows:
                 fields = {
                     name: item.get(name)
-                    for name in ("stock_close", "premium_rate", "remaining_size")
+                    for name in ("stock_close", "premium_rate", "remaining_size", "redeem_alert", "down_revise_alert", "put_alert")
                     if name in item
                 }
                 if not fields:

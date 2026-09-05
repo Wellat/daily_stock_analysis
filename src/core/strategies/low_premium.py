@@ -21,7 +21,9 @@ class LowPremiumStrategy(StrategyBase):
                 events=[e for e in context.events.get(symbol,[]) if e.blocking]
                 if events:
                     qty=pos.available
-                    out.append(StrategyDecision("exit" if qty>0 else "blocked", symbol=symbol, suggested_quantity=qty if qty>0 else None, reason=";".join(e.event_type for e in events), decision_data={"event_types":[e.event_type for e in events]}, risk_status="blocked" if qty<=0 else "passed"))
+                    out.append(StrategyDecision("exit" if qty>0 else "blocked", symbol=symbol, suggested_quantity=qty if qty>0 else None, 
+                    reason=";".join(e.event_type for e in events), decision_data={"event_types":[e.event_type for e in events]}, 
+                    risk_status="blocked" if qty<=0 else "passed"))
                 else: out.append(StrategyDecision("hold", symbol=symbol, reason="no_blocking_event"))
             return out
         candidates=[]
@@ -38,5 +40,7 @@ class LowPremiumStrategy(StrategyBase):
             # Quantity conversion is an execution concern.  Emit the portfolio
             # intent (target amount) and let ExecutionPlanner apply prices,
             # lot-size and account-risk constraints consistently in live/backtest.
-            out.append(StrategyDecision("buy",i.symbol,i.name,target_amount=p["per_position_cash"],reason="lowest_premium",decision_data={"premium_rate":premium,"close":close,"remaining_size":f.remaining_size,"rank":rank,"filter_results":{"premium_limit":True,"event_blocked":False}}))
+            out.append(StrategyDecision("buy",i.symbol,i.name,target_amount=p["per_position_cash"],reason="lowest_premium",
+            decision_data={"premium_rate":premium,"close":close,"remaining_size":f.remaining_size,"rank":rank,
+            "filter_results":{"premium_limit":True,"event_blocked":False}}))
         return out
