@@ -22,6 +22,15 @@ class LiveStrategyRunItem(BaseModel):
     run_uid: str
     trade_date: str
     status: str
+    mode: Optional[str] = None
+    strategy_id: Optional[str] = None
+    strategy_version: Optional[str] = None
+    qmt_account: Optional[str] = None
+    decision_count: Optional[int] = None
+    order_count: Optional[int] = None
+    skip_reason: Optional[str] = None
+    data_snapshot_at: Optional[str] = None
+    completed_at: Optional[str] = None
     target: Dict[str, Any] = Field(default_factory=dict)
     current: Dict[str, Any] = Field(default_factory=dict)
     rebalance: List[Dict[str, Any]] = Field(default_factory=list)

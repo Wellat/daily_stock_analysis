@@ -8,8 +8,9 @@ class StrategyDecisionRepository:
     def __init__(self, db): self.db = db
     def create(self, *, strategy_id, mode, trade_date: date, action, symbol=None, **kwargs):
         uid = kwargs.pop("decision_uid", None) or uuid4().hex
+        # symbol 必须显式传入模型：此前仅作为本函数参数被吞掉，落库恒为 NULL
         row = StrategyDecisionRecord(decision_uid=uid, strategy_id=strategy_id, mode=mode,
-            trade_date=trade_date, action=action, as_of=kwargs.pop("as_of", datetime.now()),
+            trade_date=trade_date, action=action, symbol=symbol, as_of=kwargs.pop("as_of", datetime.now()),
             decision_data_json=json.dumps(kwargs.pop("decision_data", {}), ensure_ascii=False), **kwargs)
         with self.db.get_session() as s:
             s.add(row); s.commit(); s.refresh(row); return row

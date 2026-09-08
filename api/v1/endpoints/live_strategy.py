@@ -61,7 +61,7 @@ def get_run_orders(run_id: int, db_manager: DatabaseManager = Depends(get_databa
     from src.storage import TradingOrder
     with db_manager.get_session() as session:
         rows = session.execute(select(TradingOrder).where(TradingOrder.live_run_id == run_id).order_by(TradingOrder.id)).scalars().all()
-        return {"total": len(rows), "items": [{"id": r.id, "order_uid": r.order_uid, "symbol": r.symbol, "symbol_name": r.symbol_name, "side": r.side, "quantity": r.quantity, "status": r.status, "decision_id": r.decision_id, "qmt_order_id": r.qmt_order_id} for r in rows]}
+        return {"total": len(rows), "items": [{"id": r.id, "order_uid": r.order_uid, "symbol": r.symbol, "symbol_name": r.symbol_name, "side": r.side, "quantity": r.quantity, "status": r.status, "decision_id": r.decision_id, "qmt_order_id": r.qmt_order_id, "filled_quantity": r.filled_quantity, "filled_price": r.filled_price, "submitted_at": r.submitted_at.isoformat(sep=" ") if r.submitted_at else None, "completed_at": r.completed_at.isoformat(sep=" ") if r.completed_at else None, "error_message": r.error_message} for r in rows]}
 
 @router.get("/strategies")
 def list_strategies():
@@ -93,6 +93,35 @@ def list_run_decisions(run_id: int, db_manager: DatabaseManager = Depends(get_da
 
 @router.get("/batches")
 def list_batches(db_manager: DatabaseManager = Depends(get_database_manager)):
+    import json
+    from sqlalchemy import func
+    from src.storage import LiveStrategyRun, TradingOrder
     with db_manager.get_session() as session:
-        rows = session.execute(select(LiveRebalanceBatch).order_by(desc(LiveRebalanceBatch.created_at)).limit(100)).scalars().all()
-        return {"total": len(rows), "items": [{"id": r.id, "batch_uid": r.batch_uid, "run_id": r.run_id, "qmt_account": r.qmt_account, "status": r.status, "summary": __import__('json').loads(r.summary_json or '{}'), "created_at": r.created_at.isoformat() if r.created_at else None} for r in rows]}
+        rows = session.execute(
+            select(LiveRebalanceBatch, LiveStrategyRun.trade_date, LiveStrategyRun.mode)
+            .join(LiveStrategyRun, LiveStrategyRun.id == LiveRebalanceBatch.run_id)
+            .order_by(desc(LiveRebalanceBatch.created_at)).limit(100)
+        ).all()
+        batch_ids = [batch.id for batch, _, _ in rows]
+        # Batch execution progress is aggregated from order statuses (batch itself has no independent state machine)
+        by_status: dict = {}
+        if batch_ids:
+            stats = session.execute(
+                select(TradingOrder.rebalance_batch_id, TradingOrder.status, func.count(TradingOrder.id))
+                .where(TradingOrder.rebalance_batch_id.in_(batch_ids))
+                .group_by(TradingOrder.rebalance_batch_id, TradingOrder.status)
+            ).all()
+            for batch_id, status, count in stats:
+                by_status.setdefault(int(batch_id), {})[status] = int(count)
+        items = []
+        for batch, trade_date, mode in rows:
+            counts = by_status.get(batch.id, {})
+            items.append({"id": batch.id, "batch_uid": batch.batch_uid, "run_id": batch.run_id,
+                "qmt_account": batch.qmt_account, "status": batch.status,
+                "summary": json.loads(batch.summary_json or '{}'),
+                "created_at": batch.created_at.isoformat(sep=" ") if batch.created_at else None,
+                "trade_date": trade_date.isoformat() if trade_date else None, "mode": mode,
+                "orders": {"total": sum(counts.values()), "pending": counts.get("pending", 0),
+                    "submitted": counts.get("submitted", 0), "filled": counts.get("filled", 0),
+                    "rejected": counts.get("rejected", 0), "cancelled": counts.get("cancelled", 0)}})
+        return {"total": len(items), "items": items}

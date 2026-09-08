@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [修复] 实盘策略决策记录 `symbol` 落库恒为空：`StrategyDecisionRepository.create` 将 symbol 声明为自身参数却未传给模型，被静默丢弃（历史运行记录决策代码列全空）；同时补齐对账卖出/事件检查决策与卖出订单的 `symbol_name`（service 统一从策略上下文填充），Web 运行详情中目标组合/策略决策/订单执行的标的列合并为“名称（代码）”展示。
+- [修复] 实盘运行记录 API 响应补齐被 `response_model` 过滤的字段（`mode`/`decision_count`/`order_count`/`strategy_id` 等），并新增账户/跳过原因/快照时间/完成时间字段：此前 Web 运行记录的“模式”“订单数”两列恒为空。
+- [改进] Web 实盘运行记录与调仓批次重构：运行详情由 JSON 原文改为结构化展示（目标组合、策略决策的动作/溢价率/排名、订单执行状态与成交回报、风控诊断、批次信息）；运行列表增加模式/策略/决策数/完成时间列；批次表增加关联运行与订单进度（按订单状态聚合），点击批次跳转对应运行详情。
+- [改进] 实盘 `/batches` 端点附带关联运行交易日/模式与订单状态聚合（`orders: {total, filled, ...}`），`/runs/{id}/orders` 补充 QMT 成交回报字段（成交价/成交量/时间/错误信息）。
 - [修复] Web 实盘策略配置保存后参数回显丢失：`parameters` 键被深度驼峰化（`max_positions`→`maxPositions`），刷新后输入框恒显示策略默认值且保存的参数不生效；实盘配置读写现保留策略参数原始键名。
 - [改进] Web 实盘策略配置补齐缺失配置项：调仓频率（交易日）、自选池（逗号分隔，留空=全市场）、下单前数据同步检查开关。
 - [修复] 统一可转债基础数据 `status` 为 `active`/`delisted` 英文枚举，并自动迁移存量中文状态。

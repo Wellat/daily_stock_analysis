@@ -75,10 +75,11 @@ pending -> cancelled
 - `GET/PUT /api/v1/live-strategy/config`：读取和保存实盘策略配置；读取时附带只读推导字段 `next_rebalance_date`（最近一次成功调仓 + N 个交易日，未调仓过为 null）。
 - `POST /api/v1/live-strategy/runs/preview`：只计算目标组合和差额，不写 QMT 订单。
 - `POST /api/v1/live-strategy/runs`：执行一次实盘策略运行并生成调仓批次。请求体 `mode` 取值 `auto`（默认）/`rebalance`/`event_check`：`auto` 按调仓节奏推导——锚点取最近一次成功调仓（`mode=rebalance` 且 `status=completed`）的交易日，按 `rebalance_frequency_days` 个交易日（`src/core/trading_calendar`，日历不可用时退化为自然日）判定到期，到期跑调仓、未到期跑事件检查；当日已有成功调仓时 auto 与显式 `rebalance` 均幂等返回该记录；显式 `rebalance` 未到期返回 `skip_reason=rebalance_frequency`。事件检查等风险退出不推进调仓锚点。运行记录状态时序为 `running → completed/failed`：run 行在下单执行前置为 `running`，执行器返回后才置 `completed`，失败落 `failed` 并记录 `error_message`，当日可重试（复用原 run/batch 行）。
-- `GET /api/v1/live-strategy/runs`、`/{run_id}`、`/{run_id}/rebalance`、`/{run_id}/orders`：查询运行、目标组合、差额和订单。
+- `GET /api/v1/live-strategy/runs`、`/{run_id}`、`/{run_id}/rebalance`、`/{run_id}/orders`：查询运行、目标组合、差额和订单。运行条目包含 `mode`/`strategy_id`/`strategy_version`/`qmt_account`/`decision_count`/`order_count`/`skip_reason`/`data_snapshot_at`/`completed_at` 及目标组合、当前持仓、差额与风控诊断快照；订单条目包含 QMT 回报字段（`qmt_order_id`/`filled_quantity`/`filled_price`/`submitted_at`/`completed_at`/`error_message`）。
+- `GET /api/v1/live-strategy/batches`：调仓批次列表，附带关联运行的 `trade_date`/`mode`，以及按订单状态聚合的执行进度 `orders: {total, pending, submitted, filled, rejected, cancelled}`（批次自身无独立状态机，进度以订单为准）。
 - `POST /api/v1/live-strategy/runs/{run_id}/cancel`：取消仍处于 pending 的订单。
 
-现有 `/trading` 页面扩展为实盘工作台，包含策略配置、最近运行、调仓预览、订单批次、QMT 执行状态、持仓快照时间和风险/异常提示；现有订单与持仓 Tab 继续复用。页面上展示策略版本、运行 UID 和批次 UID，保证可追溯。
+现有 `/trading` 页面扩展为实盘工作台，包含策略配置、最近运行、调仓预览、订单批次、QMT 执行状态、持仓快照时间和风险/异常提示；现有订单与持仓 Tab 继续复用。运行记录展示模式（调仓/事件检查）、策略、状态、决策/订单数与完成时间，点击行查看结构化详情（目标组合、策略决策的动作/溢价率/排名、订单执行状态与成交回报、风控诊断、批次信息）；调仓批次表展示关联运行与订单进度，点击批次跳转到对应运行详情。页面上展示策略版本、运行 UID 和批次 UID，保证可追溯。
 
 ### 分阶段实施与验收
 

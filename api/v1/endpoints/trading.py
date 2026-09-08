@@ -155,13 +155,15 @@ def callback_order(
     db_manager: DatabaseManager = Depends(get_database_manager),
 ) -> TradingOrderItem:
     try:
+        # FIXME 处理 filled_price 为 None 的情况，模拟模式下默认 1
+        filled_price = request.filled_price or 1
         return TradingOrderItem(
             **TradingOrderService(db_manager).apply_callback(
                 order_id=order_id,
                 status=request.status,
                 qmt_order_id=request.qmt_order_id,
                 filled_quantity=request.filled_quantity,
-                filled_price=request.filled_price,
+                filled_price=filled_price,
                 error_message=request.error_message,
             )
         )

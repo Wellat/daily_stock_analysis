@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, Optional
 from uuid import uuid4
@@ -145,6 +146,11 @@ class LiveStrategyService:
             decisions = list(decisions) + [StrategyDecision("sell", symbol=symbol,
                 suggested_quantity=volume, reason="live_target_exit")
                 for symbol, volume in current.items() if symbol not in selected and volume > 0]
+        # 对账卖出/事件检查等路径只带代码不带名称，统一从上下文补齐，
+        # 保证决策记录、订单的 symbol_name 完整（历史缺口曾导致前端名称列为空）
+        names_by_symbol = {i.symbol: i.name for i in context.instruments if i.symbol and i.name}
+        decisions = [d if d.symbol_name else replace(d, symbol_name=names_by_symbol.get(d.symbol))
+                     for d in decisions]
         # ---- 排订单：决策转执行计划（手数取整、风控检查）----
         plan = self.planner.plan(decisions, context, lot_size=int(params.get("lot_size", 10)))
         # 组装结果载荷：目标组合 / 当前持仓 / 调仓明细 / 诊断信息
@@ -202,7 +208,9 @@ class LiveStrategyService:
             batch.summary_json = json.dumps({"count": len(rebalance)})
             session.commit()
             batch_id = int(batch.id)
-        names = {k: v.get("symbol_name") for k, v in target.items()}
+        # 订单名称覆盖全部买卖标的（卖出单此前无名称）
+        names = dict(names_by_symbol)
+        names.update({k: v.get("symbol_name") for k, v in target.items() if v.get("symbol_name")})
         decision_ids = {}
         try:
             for d in decisions:
@@ -277,4 +285,6 @@ class LiveStrategyService:
 
     @staticmethod
     def _run_payload(row):
-        return {"id": row.id, "run_uid": row.run_uid, "trade_date": row.trade_date.isoformat(), "status": row.status, "mode": getattr(row, "mode", "rebalance"), "strategy_id": getattr(row, "strategy_id", None), "strategy_version": getattr(row, "strategy_version", None), "decision_count": getattr(row, "decision_count", 0), "order_count": getattr(row, "order_count", 0), "target": json.loads(row.target_json or "{}"), "current": json.loads(row.current_json or "{}"), "rebalance": json.loads(row.rebalance_json or "[]"), "risk": json.loads(row.risk_json or "{}"), "error_message": row.error_message}
+        def _ts(value):
+            return value.isoformat(sep=" ") if value else None
+        return {"id": row.id, "run_uid": row.run_uid, "trade_date": row.trade_date.isoformat(), "status": row.status, "mode": getattr(row, "mode", "rebalance"), "strategy_id": getattr(row, "strategy_id", None), "strategy_version": getattr(row, "strategy_version", None), "qmt_account": row.qmt_account, "decision_count": getattr(row, "decision_count", 0), "order_count": getattr(row, "order_count", 0), "skip_reason": getattr(row, "skip_reason", None), "data_snapshot_at": _ts(getattr(row, "data_snapshot_at", None)), "completed_at": _ts(getattr(row, "completed_at", None)), "target": json.loads(row.target_json or "{}"), "current": json.loads(row.current_json or "{}"), "rebalance": json.loads(row.rebalance_json or "[]"), "risk": json.loads(row.risk_json or "{}"), "error_message": row.error_message}

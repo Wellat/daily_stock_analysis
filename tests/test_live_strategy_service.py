@@ -322,7 +322,11 @@ def test_rebalance_pipeline_buys_lowest_premium_and_exits_offtarget_holding():
         assert run.decision_count == 2 and run.order_count == 2
         assert {(o.side, o.symbol) for o in orders} == {("buy", "113001"), ("sell", "113002")}
         assert all(o.live_run_id == run.id for o in orders)
+        # 买卖订单与决策记录的名称完整（对账卖出单此前无名称）
+        assert {o.symbol_name for o in orders} == {"低溢价", "高溢价"}
         assert {d.action for d in decisions} == {"buy", "sell"}
+        decision_names = {d.symbol: d.symbol_name for d in decisions}
+        assert decision_names == {"113001": "低溢价", "113002": "高溢价"}
         assert all(d.mode == "rebalance" and d.live_run_id == run.id for d in decisions)
         assert len(batches) == 1 and batches[0].status == "pending"
     finally:
@@ -355,6 +359,9 @@ def test_event_check_exits_blocked_holding_without_buying():
         assert result["rebalance"][0]["reason"] == "event_blocked"
         actions = {d["symbol"]: d["action"] for d in result["decisions"]}
         assert actions == {"113001": "hold", "113002": "exit"}
+        # 事件检查路径的策略决策只有代码，名称由 service 从上下文补齐
+        names = {d["symbol"]: d["symbol_name"] for d in result["decisions"]}
+        assert names == {"113001": "正常债", "113002": "强赎债"}
 
         run = _latest_run(db)
         assert run.mode == "event_check" and run.status == "completed" and run.order_count == 1
