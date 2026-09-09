@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import replace
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, Optional
@@ -22,6 +23,8 @@ from src.repositories.strategy_decision_repo import StrategyDecisionRepository
 from src.services.strategy_context_service import StrategyContextService
 from src.core.strategies.execution_planner import ExecutionPlanner
 from src.core.strategies.executors import LiveExecutor
+
+logger = logging.getLogger(__name__)
 
 LIVE_ACCOUNTS = {"testS", "135129739"}
 
@@ -91,6 +94,7 @@ class LiveStrategyService:
         # 避免用旧数据/空数据下单；新鲜度由 trade_date 精确匹配当日保证。
         sync = self.data.latest_sync_run(run_kind="intraday", trade_date=trade_date)
         if config.data_sync_before_run and (sync is None or sync.status != "completed" or getattr(sync, "quality_status", "usable") not in ("usable", "unknown")):
+            logger.warning("[LiveStrategy] %s blocked for %s: no completed intraday sync run", "preview" if preview else "run", trade_date)
             payload = {"trade_date": trade_date.isoformat(), "mode": mode, "target": {}, "current": {}, "rebalance": [], "decisions": [], "strategy_version": config.strategy_version, "risk": {"passed": False, "reason": "intraday_sync_unavailable"}, "skip_reason": "intraday_sync_unavailable"}
             if preview: return payload
             raise ValueError("intraday data sync is not completed; order generation is blocked")
@@ -106,8 +110,12 @@ class LiveStrategyService:
                     LiveStrategyRun.mode == "rebalance", LiveStrategyRun.status == "completed",
                 )).scalars().first()
                 if done is not None:
+                    logger.info("[LiveStrategy] rebalance already completed for %s, returning existing run id=%s", trade_date, done.id)
                     return self._run_payload(done)
         resolved_mode = mode if mode != "auto" else ("rebalance" if schedule["due"] else "event_check")
+        logger.info("[LiveStrategy] run start trade_date=%s mode=%s -> %s (anchor=%s next_rebalance=%s due=%s)",
+                    trade_date.isoformat(), mode, resolved_mode,
+                    schedule["anchor"], schedule["next_rebalance_date"], schedule["due"])
         with self.db.get_session() as session:
             existing = session.execute(select(LiveStrategyRun).where(
                 LiveStrategyRun.config_id == config.id, LiveStrategyRun.trade_date == trade_date, LiveStrategyRun.mode == resolved_mode,
@@ -117,6 +125,8 @@ class LiveStrategyService:
                 return self._run_payload(existing)
         # 显式 rebalance 未到期仍跳过（显式请求同样尊重频率约束）
         if mode == "rebalance" and not schedule["due"]:
+            logger.info("[LiveStrategy] explicit rebalance skipped for %s: not due (next=%s)",
+                        trade_date, schedule["next_rebalance_date"])
             return {"trade_date": trade_date.isoformat(), "mode": resolved_mode, "target": {}, "current": {}, "rebalance": [], "decisions": [], "strategy_version": config.strategy_version, "skip_reason": "rebalance_frequency"}
         # ---- 算目标组合：合并策略参数、取 CB 持仓、构建上下文、策略评估 ----
         params = json.loads(config.parameters_json or "{}")
@@ -151,8 +161,18 @@ class LiveStrategyService:
         names_by_symbol = {i.symbol: i.name for i in context.instruments if i.symbol and i.name}
         decisions = [d if d.symbol_name else replace(d, symbol_name=names_by_symbol.get(d.symbol))
                      for d in decisions]
+        # 三阶段输出逐段落日志（evaluate → plan → execute），便于事后按 run 排查
+        grouped: Dict[str, list] = {}
+        for d in decisions:
+            amount = d.suggested_quantity if d.suggested_quantity is not None else d.target_amount
+            grouped.setdefault(d.action, []).append(f"{d.symbol}({amount})" if amount is not None else str(d.symbol))
+        logger.info("[LiveStrategy] evaluate: %d decisions %s", len(decisions), grouped)
         # ---- 排订单：决策转执行计划（手数取整、风控检查）----
         plan = self.planner.plan(decisions, context, lot_size=int(params.get("lot_size", 10)))
+        logger.info("[LiveStrategy] plan: orders=[%s] skipped=[%s] risk_checks=%s",
+                    ", ".join(f"{o.symbol}:{o.side}:{o.quantity:g}" for o in plan.orders) or "-",
+                    ", ".join(f"{s.decision.symbol}({s.reason})" for s in plan.skipped) or "-",
+                    [(c.name, c.passed) for c in plan.risk_checks])
         # 组装结果载荷：目标组合 / 当前持仓 / 调仓明细 / 诊断信息
         target = {d.symbol: {"symbol": d.symbol, "symbol_name": d.symbol_name,
             "price": (bars.get(d.symbol) or [None])[-1].close if bars.get(d.symbol) else None,
@@ -222,10 +242,15 @@ class LiveStrategyService:
                     decision_data=d.decision_data, live_run_id=run_id)
                 decision_ids[d.symbol] = record.id
             # ---- 下单：执行计划物化为 QMT 订单 ----
-            LiveExecutor(self.orders).execute(plan, run_id=run_id, batch_id=batch_id,
+            executed = LiveExecutor(self.orders).execute(plan, run_id=run_id, batch_id=batch_id,
                 symbol_names=names, decision_ids=decision_ids)
+            reused = [item for item in executed if isinstance(item, dict) and item.get("reused")]
+            logger.info("[LiveStrategy] execute: %d order(s) created for run_id=%s%s",
+                        len(executed), run_id,
+                        f", reused existing order ids={[item.get('id') for item in reused]}" if reused else "")
         except Exception as exc:
             # 下单链路失败：run 落 failed 且不前移调仓锚点（status!=completed），下个交易日自动补跑
+            logger.exception("[LiveStrategy] run failed run_id=%s: %s", run_id, exc)
             with self.db.get_session() as session:
                 failed = session.get(LiveStrategyRun, run_id)
                 if failed is not None:
@@ -239,6 +264,8 @@ class LiveStrategyService:
                 finished.status = "completed"
                 finished.completed_at = datetime.now()
             session.commit()
+        logger.info("[LiveStrategy] run completed run_id=%s batch=%s mode=%s decisions=%d orders=%d",
+                    run_id, batch_uid, resolved_mode, len(decisions), len(rebalance))
         return {**payload, "run_id": run_id, "run_uid": run_uid, "batch_uid": batch_uid}
 
     def _rebalance_schedule(self, config: LiveStrategyConfig, *, trade_date: Optional[date] = None) -> Dict[str, Any]:

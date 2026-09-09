@@ -79,7 +79,7 @@ describe('LiveStrategyPanel 运行记录与调仓批次', () => {
     decision_count: 2, order_count: 2, skip_reason: null,
     data_snapshot_at: '2024-01-02 14:35:01', completed_at: '2024-01-02 14:35:02',
     target: { '113001': { symbol: '113001', symbol_name: '低溢价', price: 100.0, quantity: 100 } },
-    current: { '113002': 100 }, rebalance: [], risk: { passed: true }, error_message: null,
+    current: { '113002': 100 }, rebalance: [{ symbol: '113001', side: 'buy', quantity: 100, reason: 'lowest_premium' }], risk: { passed: true }, error_message: null,
   };
   const backendBatch = {
     id: 3, batch_uid: 'batch-uid-1234567890', run_id: 7, qmt_account: 'testS', status: 'pending',
@@ -119,20 +119,50 @@ describe('LiveStrategyPanel 运行记录与调仓批次', () => {
     expect(screen.getByText('2024-01-02 14:35:02')).toBeTruthy();
   });
 
-  it('点击运行行展示策略产出详情（决策/订单/目标组合/批次）', async () => {
+  it('点击运行行展示策略产出详情（目标组合/计划结果/订单执行）', async () => {
     render(<LiveStrategyPanel />);
     fireEvent.click(screen.getByRole('tab', { name: '运行记录' }));
     await screen.findByText('调仓');
 
     fireEvent.click(screen.getByText('2024-01-02'));
-    expect(await screen.findByText('策略决策（1）')).toBeTruthy();
-    expect(screen.getAllByText('低溢价（113001）').length).toBeGreaterThanOrEqual(2); // 目标组合+决策 标的列合并为 名称（代码）
-    expect(screen.getAllByText('买入').length).toBeGreaterThanOrEqual(2); // 决策动作 + 订单方向
+    expect(await screen.findByText('目标组合（1）')).toBeTruthy();
+    expect(await screen.findByText('计划结果（1 单）')).toBeTruthy();
+    expect(screen.getAllByText('低溢价（113001）').length).toBe(2); // 目标组合 + 计划结果 标的列合并为 名称（代码）
     expect(screen.getByText('5.00%')).toBeTruthy();
     expect(screen.getByText('#1')).toBeTruthy();
+    expect(screen.getAllByText('买入').length).toBeGreaterThanOrEqual(2); // 计划结果动作 + 订单方向
     expect(screen.getByText('已成交')).toBeTruthy();
     expect(screen.getByText('100.2')).toBeTruthy();
     expect(screen.getByText(/batch-uid/)).toBeTruthy();
+  });
+
+  it('事件检查模式：目标组合位置换为持仓事件扫描', async () => {
+    render(<LiveStrategyPanel />);
+    fireEvent.click(screen.getByRole('tab', { name: '运行记录' }));
+    await screen.findByText('调仓');
+    const rows = document.querySelectorAll('.ant-tabs-tabpane-active .ant-table-tbody tr');
+    expect(rows.length).toBeGreaterThan(0);
+
+    // 模拟切到事件检查 run：通过重新 mock 后重渲染验证条件分支
+    client.get.mockImplementation(async (url: string) => {
+      if (url.endsWith('/config')) return { data: backendConfig };
+      if (url.endsWith('/strategies')) return { data: strategiesBackend };
+      if (url.endsWith('/batches')) return { data: { items: [] } };
+      if (url.includes('/decisions')) return { data: { items: [
+        { id: 1, action: 'hold', symbol: '113001', symbol_name: '正常债', reason: 'no_blocking_event' },
+        { id: 2, action: 'exit', symbol: '113002', symbol_name: '强赎债', suggested_quantity: 100, reason: 'event_blocked' },
+      ] } };
+      if (url.includes('/orders')) return { data: { items: [] } };
+      if (url.endsWith('/runs')) return { data: { items: [{ ...backendRun, mode: 'event_check', rebalance: [] }] } };
+      return { data: { trade_date: '2024-01-02' } };
+    });
+    fireEvent.click(screen.getByRole('button', { name: /刷\s*新/ }));
+    await waitFor(() => expect(screen.getByText('事件检查')).toBeTruthy());
+    fireEvent.click(screen.getByText('2024-01-02'));
+    expect(await screen.findByText('持仓事件扫描（2）')).toBeTruthy();
+    expect(screen.getByText('持有')).toBeTruthy();
+    expect(screen.getByText('事件退出')).toBeTruthy();
+    expect(screen.queryByText('目标组合（')).toBeNull();
   });
 
   it('批次表展示关联运行与订单进度，点击跳转到运行详情', async () => {
@@ -143,6 +173,6 @@ describe('LiveStrategyPanel 运行记录与调仓批次', () => {
 
     fireEvent.click(screen.getByText('1/2 成交'));
     // 跳到运行记录 tab 并展示关联 run 的详情
-    expect(await screen.findByText('策略决策（1）')).toBeTruthy();
+    expect(await screen.findByText('计划结果（1 单）')).toBeTruthy();
   });
 });

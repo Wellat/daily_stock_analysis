@@ -282,7 +282,7 @@ def test_gate_blocks_non_preview_run_with_exception():
         DatabaseManager.reset_instance()
 
 
-def test_rebalance_pipeline_buys_lowest_premium_and_exits_offtarget_holding():
+def test_rebalance_pipeline_buys_lowest_premium_and_exits_offtarget_holding(caplog):
     """全链路：因子选债买入 + 对账补卖 + 订单/决策/run/batch 落库。"""
     DatabaseManager.reset_instance()
     db = DatabaseManager(db_url="sqlite:///:memory:")
@@ -300,7 +300,15 @@ def test_rebalance_pipeline_buys_lowest_premium_and_exits_offtarget_holding():
             {"symbol": "113002", "volume": 100, "can_use_volume": 100},
         ])
 
-        result = service.run(trade_date=trade_date, mode="rebalance")
+        import logging as _logging
+        with caplog.at_level(_logging.INFO, logger="src.services.live_strategy_service"):
+            result = service.run(trade_date=trade_date, mode="rebalance")
+
+        # 三阶段输出日志（evaluate → plan → execute）与完成日志均落盘，可按日志排查
+        assert "[LiveStrategy] evaluate:" in caplog.text
+        assert "[LiveStrategy] plan:" in caplog.text
+        assert "[LiveStrategy] execute:" in caplog.text
+        assert "[LiveStrategy] run completed" in caplog.text
 
         # 目标组合只含低溢价债；价格/数量按目标资金和手数推导
         assert list(result["target"]) == ["113001"]

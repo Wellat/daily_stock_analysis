@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from typing import Any, Dict, Optional
 from uuid import uuid4
@@ -14,6 +15,8 @@ _TERMINAL_STATUSES = frozenset({"filled", "rejected", "cancelled"})
 _CALLBACK_STATUSES = frozenset({"submitted", "filled", "rejected"})
 _SIDES = frozenset({"buy", "sell"})
 _ORDER_TYPES = frozenset({"limit", "market"})
+
+logger = logging.getLogger(__name__)
 
 
 class TradingOrderNotFoundError(ValueError):
@@ -57,7 +60,12 @@ class TradingOrderService:
         if client_order_key:
             existing = self.repository.get_by_client_key(client_order_key)
             if existing is not None:
-                return self.repository._payload(existing)
+                # 命中幂等键复用旧单：打日志并在返回值标记，避免静默丢单不可见
+                logger.info("reuse existing order id=%s status=%s for client_order_key=%s",
+                            existing.id, existing.status, client_order_key)
+                payload = self.repository._payload(existing)
+                payload["reused"] = True
+                return payload
         row = self.repository.create(
             order_uid=f"qmt_{uuid4().hex}",
             symbol=symbol,

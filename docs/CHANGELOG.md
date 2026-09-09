@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [改进] 实盘策略运行全链路日志：mode 解析（锚点/下次调仓日/是否到期）、evaluate 决策输出（按动作分组）、plan 计划输出（订单/跳过原因/风控检查）、execute 下单结果（含幂等复用旧单的订单号）、run 完成与失败（异常堆栈），均带 `[LiveStrategy]` 前缀便于检索。
+- [改进] Web 实盘运行详情按执行管线重构为三段视图：目标组合（策略选债：标的/最新价/溢价率/排名）→ 计划结果（调仓计划 + 被跳过的决策，动作含“跳过”标记，可对账“选了 N 只 → 计划 M 单”的数量差）→ 订单执行（成交回报）；事件检查模式下目标组合位置替换为持仓事件扫描（持有/事件退出/受阻），概要新增单债目标资金。
+- [修复] 实盘订单幂等键增加 run 作用域（`{run_id}:{symbol}:{action}:{qty}`）：此前键为裸 `symbol:action:qty`，跨日轮动选中同一标的同一数量会误命中前一日旧单（可能已 rejected），当日订单静默丢失且 run 仍标记 completed；同 run 当日重试仍保持去重。`create_order` 命中幂等键复用旧单时现在会记录日志并在返回值标记 `reused`，不再无感。
 - [修复] 实盘策略决策记录 `symbol` 落库恒为空：`StrategyDecisionRepository.create` 将 symbol 声明为自身参数却未传给模型，被静默丢弃（历史运行记录决策代码列全空）；同时补齐对账卖出/事件检查决策与卖出订单的 `symbol_name`（service 统一从策略上下文填充），Web 运行详情中目标组合/策略决策/订单执行的标的列合并为“名称（代码）”展示。
 - [修复] 实盘运行记录 API 响应补齐被 `response_model` 过滤的字段（`mode`/`decision_count`/`order_count`/`strategy_id` 等），并新增账户/跳过原因/快照时间/完成时间字段：此前 Web 运行记录的“模式”“订单数”两列恒为空。
 - [改进] Web 实盘运行记录与调仓批次重构：运行详情由 JSON 原文改为结构化展示（目标组合、策略决策的动作/溢价率/排名、订单执行状态与成交回报、风控诊断、批次信息）；运行列表增加模式/策略/决策数/完成时间列；批次表增加关联运行与订单进度（按订单状态聚合），点击批次跳转对应运行详情。

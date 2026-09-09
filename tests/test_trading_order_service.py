@@ -128,3 +128,40 @@ def test_callback_missing_order(db_manager: DatabaseManager) -> None:
     service = TradingOrderService(db_manager)
     with pytest.raises(TradingOrderNotFoundError):
         service.apply_callback(order_id=9999, status="filled")
+
+
+def test_create_order_reuse_marks_reused(db_manager: DatabaseManager) -> None:
+    """命中幂等键复用旧单时返回同单并标记 reused，不再静默。"""
+    service = TradingOrderService(db_manager)
+    first = _create(service, client_order_key="113002:buy:10")
+    assert "reused" not in first
+
+    reused = _create(service, client_order_key="113002:buy:10")
+    assert reused["id"] == first["id"]
+    assert reused["reused"] is True
+
+    other = _create(service, symbol="113001", limit_price=100.0, client_order_key="113001:buy:10")
+    assert other["id"] != first["id"]
+    assert "reused" not in other
+
+
+def test_live_executor_scopes_client_order_key_per_run(db_manager: DatabaseManager) -> None:
+    """实盘执行器幂等键带 run 作用域：跨 run 同 symbol:action:qty 各自建单，同 run 重试去重。
+
+    回归背景：键曾是裸的 symbol:action:qty，跨日轮动选中同一标的同一数量时
+    会误命中前一日（可能已 rejected）的旧单，当日订单静默丢失。
+    """
+    from src.core.strategies.execution_planner import ExecutionPlan, PlannedOrder
+    from src.core.strategies.executors import LiveExecutor
+
+    service = TradingOrderService(db_manager)
+    executor = LiveExecutor(service)
+    plan = ExecutionPlan(orders=[PlannedOrder("113002", "buy", 10, client_order_key="113002:buy:10")])
+
+    run1 = executor.execute(plan, run_id=1, batch_id=11)
+    run2 = executor.execute(plan, run_id=2, batch_id=22)
+    run1_retry = executor.execute(plan, run_id=1, batch_id=11)
+
+    assert len({run1[0]["id"], run2[0]["id"]}) == 2  # 跨 run 各自建单
+    assert run1_retry[0]["id"] == run1[0]["id"]  # 同 run 重试复用
+    assert run1_retry[0].get("reused") is True
