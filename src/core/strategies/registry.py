@@ -4,6 +4,7 @@ _STRATEGIES = {"low-premium": LowPremiumStrategy}
 
 class DoubleLowStrategy(LowPremiumStrategy):
     strategy_id = "double-low"
+    name = "Double Low Rotation"
     version = "legacy-v1"
 
 _STRATEGIES["double-low"] = DoubleLowStrategy

@@ -15,6 +15,13 @@ import time
 from typing import Any, Dict, List, Optional, Protocol
 
 import pandas as pd
+from tenacity import (
+    retry,
+    stop_after_attempt,
+    wait_exponential,
+    retry_if_exception_type,
+    before_sleep_log,
+)
 
 from data_provider.akshare_fetcher import _akshare_call_with_timeout
 from src.config import get_config
@@ -952,6 +959,25 @@ def _extract_tencent_kline_rows(payload: Any, *, symbol: str) -> List[Dict[str, 
     return result
 
 
+# 腾讯行情接口瞬时网络错误：连接/超时/SSL 等可重试；HTTP 4xx/5xx 由
+# raise_for_status 抛出，属业务性失败，不在此重试（避免对无效请求反复打接口）。
+_TENCENT_TRANSIENT_EXCEPTIONS = (
+    requests.exceptions.ConnectionError,
+    requests.exceptions.Timeout,
+    requests.exceptions.SSLError,
+    requests.exceptions.ChunkedEncodingError,
+)
+_TENCENT_RETRY_ATTEMPTS = 3  # 首次 + 2 次重试
+_TENCENT_RETRY_WAIT_CAP = 5  # wait_exponential(..., max=5)
+
+
+@retry(
+    stop=stop_after_attempt(_TENCENT_RETRY_ATTEMPTS),
+    wait=wait_exponential(multiplier=1, min=1, max=_TENCENT_RETRY_WAIT_CAP),
+    retry=retry_if_exception_type(_TENCENT_TRANSIENT_EXCEPTIONS),
+    before_sleep=before_sleep_log(logger, logging.WARNING),
+    reraise=True,
+)
 def _fetch_tencent_kline(
     symbol: str, *, start_date: date, end_date: date, timeout: float
 ) -> pd.DataFrame:

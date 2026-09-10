@@ -48,6 +48,7 @@ export type StrategyLabTradeItem = {
   run_id: number;
   trade_date: string;
   symbol: string;
+  symbol_name?: string | null;
   side: 'buy' | 'sell';
   quantity: number;
   price: number;

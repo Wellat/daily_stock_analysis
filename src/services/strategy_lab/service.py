@@ -117,7 +117,16 @@ class StrategyLabService:
     def list_trades(self, run_id: int) -> List[Dict[str, Any]]:
         if self.repository.get_run_with_metric(run_id) is None:
             raise KeyError(f"Strategy Lab run not found: {run_id}")
-        return [self._trade_payload(row) for row in self.repository.list_trades(run_id)]
+        rows = self.repository.list_trades(run_id)
+        # Trades persist codes only; enrich display names from the CB master table.
+        names: Dict[str, str] = {}
+        for market in {row.market for row in rows}:
+            names.update(
+                self.data_repository.get_cb_names(
+                    market=market, codes=[row.symbol for row in rows]
+                )
+            )
+        return [self._trade_payload(row, names) for row in rows]
 
     def _get_strategy(self, strategy_id: str) -> Dict[str, Any]:
         for strategy in list_builtin_strategies():
@@ -175,13 +184,14 @@ class StrategyLabService:
         }
 
     @staticmethod
-    def _trade_payload(trade: StrategyLabTrade) -> Dict[str, Any]:
+    def _trade_payload(trade: StrategyLabTrade, names: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
         return {
             "id": trade.id,
             "run_id": trade.run_id,
             "trade_date": trade.trade_date.isoformat() if trade.trade_date else None,
             "canonical_id": trade.canonical_id,
             "symbol": trade.symbol,
+            "symbol_name": (names or {}).get(str(trade.symbol or "").lower()),
             "market": trade.market,
             "instrument_type": trade.instrument_type,
             "side": trade.side,

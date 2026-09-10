@@ -15,7 +15,8 @@ from sqlalchemy import desc, select
 from src.repositories.strategy_lab.data_repo import StrategyLabDataRepository
 from src.repositories.qmt_position_repo import QmtPositionRepository
 from src.services.trading_order_service import TradingOrderService
-from src.storage import DatabaseManager, LiveRebalanceBatch, LiveStrategyConfig, LiveStrategyRun
+from src.storage import (DatabaseManager, LiveRebalanceBatch, LiveStrategyConfig, LiveStrategyRun,
+    StrategyLabCbBasic, StrategyLabCbDailyFactor)
 from src.core.strategy_lab.engine import list_builtin_strategies
 from src.core.strategies import (MarketContext, InstrumentSnapshot, Bar, StrategyDecision,
     FactorSnapshot, MarketEvent, PositionSnapshot, get_strategy)
@@ -98,6 +99,8 @@ class LiveStrategyService:
             payload = {"trade_date": trade_date.isoformat(), "mode": mode, "target": {}, "current": {}, "rebalance": [], "decisions": [], "strategy_version": config.strategy_version, "risk": {"passed": False, "reason": "intraday_sync_unavailable"}, "skip_reason": "intraday_sync_unavailable"}
             if preview: return payload
             raise ValueError("intraday data sync is not completed; order generation is blocked")
+        # 数据完整性校验：统计当日 active 转债中溢价率缺失的标的，仅打印日志，不阻塞下单。
+        self._log_data_completeness(trade_date)
         # mode=auto 按调仓节奏推导：到期调仓、未到期事件检查。锚点只在调仓
         # 真正成功后前移，失败/漏跑自然表现为“已过期”，下个交易日自动补跑。
         schedule = self._rebalance_schedule(config, trade_date=trade_date)
@@ -301,6 +304,54 @@ class LiveStrategyService:
                 found += 1
             cursor += timedelta(days=1)
         return cursor - timedelta(days=1)
+
+    def _log_data_completeness(self, trade_date: date) -> None:
+        """统计当日 active 转债的溢价率数据完整性，仅打印日志，不阻塞下单。
+
+        盘中同步可能因正股行情拉取失败导致部分标的 premium_rate 缺失，
+        策略会把这些标的当作“无溢价率”过滤，从而从残缺候选里选标的。
+        这里只做观测性告警，帮助定位此类数据缺口。
+        """
+        try:
+            with self.db.get_session() as session:
+                total = session.execute(
+                    select(StrategyLabCbDailyFactor.bond_code)
+                    .join(StrategyLabCbBasic, StrategyLabCbBasic.bond_code == StrategyLabCbDailyFactor.bond_code)
+                    .where(
+                        StrategyLabCbBasic.market == "cn",
+                        StrategyLabCbBasic.status == "active",
+                        StrategyLabCbDailyFactor.trade_date == trade_date,
+                        StrategyLabCbDailyFactor.close.is_not(None),
+                    )
+                ).scalars().all()
+                missing = session.execute(
+                    select(StrategyLabCbDailyFactor.bond_code)
+                    .join(StrategyLabCbBasic, StrategyLabCbBasic.bond_code == StrategyLabCbDailyFactor.bond_code)
+                    .where(
+                        StrategyLabCbBasic.market == "cn",
+                        StrategyLabCbBasic.status == "active",
+                        StrategyLabCbDailyFactor.trade_date == trade_date,
+                        StrategyLabCbDailyFactor.close.is_not(None),
+                        StrategyLabCbDailyFactor.premium_rate.is_(None),
+                    )
+                ).scalars().all()
+            total_count = len(total)
+            missing_count = len(missing)
+            if total_count == 0:
+                logger.warning("[LiveStrategy] %s 无当日 active 转债因子数据，策略可能选不出标的", trade_date)
+                return
+            ratio = missing_count / total_count * 100.0
+            logger.info(
+                "[LiveStrategy] %s 数据完整性：active 转债 %d 只，溢价率缺失 %d 只（%.1f%%）",
+                trade_date, total_count, missing_count, ratio,
+            )
+            if missing_count:
+                logger.warning(
+                    "[LiveStrategy] %s 溢价率缺失标的（前 20 只）：%s",
+                    trade_date, ", ".join(sorted(missing)[:20]),
+                )
+        except Exception as exc:  # noqa: BLE001 - 观测性校验失败不影响主流程
+            logger.warning("[LiveStrategy] 数据完整性校验失败: %s", exc)
 
     def _latest_config(self):
         with self.db.get_session() as session:

@@ -385,6 +385,24 @@ class StrategyLabDataRepository:
                 session.execute(statement.order_by(StrategyLabCbBasic.bond_code.asc())).scalars().all()
             )
 
+    def get_cb_names(self, *, market: str, codes: List[str]) -> Dict[str, str]:
+        """Map bond codes (lowercased) to bond names for display enrichment.
+
+        Codes absent from the master table are simply missing from the result;
+        callers fall back to showing the raw symbol.
+        """
+        normalized = {str(code).strip().lower() for code in codes if str(code).strip()}
+        if not normalized:
+            return {}
+        with self.db.get_session() as session:
+            rows = session.execute(
+                select(StrategyLabCbBasic.bond_code, StrategyLabCbBasic.bond_name).where(
+                    StrategyLabCbBasic.market == market,
+                    func.lower(StrategyLabCbBasic.bond_code).in_(sorted(normalized)),
+                )
+            ).all()
+            return {str(code).lower(): str(name) for code, name in rows if name}
+
     def get_cb_ohlc_latest_date(
         self, *, code: str, instrument_type: str = "convertible_bond"
     ) -> Optional[date]:

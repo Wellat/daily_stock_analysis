@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [改进] 策略实验室回测成交明细的标的列展示“名称（代码）”：成交记录仅落代码，`/runs/{id}/trades` 现按转债主表补齐 `symbol_name`（缺失时回退仅代码），Web 成交明细与当日买入汇总同步展示。
+- [新功能] 策略实验室-策略研究支持“导入实盘配置”与单日运行：一键复用实盘策略/自选池/参数跑回测（初始资金按 单债目标资金 × 最大持仓 映射，与实盘每仓资金语义一致）；新增“单日运行”模式（开始=结束）基于该日已同步行情复算策略当日目标组合；运行详情展示运行区间与当日买入汇总，并在请求区间无已同步行情（退化为内置样本数据）时给出醒目警示，避免把样本数据当真实回测结论。
 - [改进] 实盘策略运行全链路日志：mode 解析（锚点/下次调仓日/是否到期）、evaluate 决策输出（按动作分组）、plan 计划输出（订单/跳过原因/风控检查）、execute 下单结果（含幂等复用旧单的订单号）、run 完成与失败（异常堆栈），均带 `[LiveStrategy]` 前缀便于检索。
 - [改进] Web 实盘运行详情按执行管线重构为三段视图：目标组合（策略选债：标的/最新价/溢价率/排名）→ 计划结果（调仓计划 + 被跳过的决策，动作含“跳过”标记，可对账“选了 N 只 → 计划 M 单”的数量差）→ 订单执行（成交回报）；事件检查模式下目标组合位置替换为持仓事件扫描（持有/事件退出/受阻），概要新增单债目标资金。
 - [修复] 实盘订单幂等键增加 run 作用域（`{run_id}:{symbol}:{action}:{qty}`）：此前键为裸 `symbol:action:qty`，跨日轮动选中同一标的同一数量会误命中前一日旧单（可能已 rejected），当日订单静默丢失且 run 仍标记 completed；同 run 当日重试仍保持去重。`create_order` 命中幂等键复用旧单时现在会记录日志并在返回值标记 `reused`，不再无感。

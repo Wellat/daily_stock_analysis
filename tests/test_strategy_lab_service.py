@@ -104,4 +104,7 @@ def test_strategy_lab_service_uses_synchronized_convertible_bond_data(db_manager
 
     assert payload["engine_name"] == "database_double_low_v1"
     assert payload["metrics"]["diagnostics"]["selected_symbols"] == ["123002"]
-    assert StrategyLabService(db_manager).list_trades(payload["id"])[0]["symbol"] == "123002"
+    trades = StrategyLabService(db_manager).list_trades(payload["id"])
+    assert trades[0]["symbol"] == "123002"
+    # 成交记录按主表补齐展示名称
+    assert trades[0]["symbol_name"] == "样例二"

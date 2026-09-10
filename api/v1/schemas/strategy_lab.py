@@ -102,6 +102,7 @@ class StrategyLabTradeItem(BaseModel):
     trade_date: str
     canonical_id: str
     symbol: str
+    symbol_name: Optional[str] = None
     market: str
     instrument_type: str
     side: StrategyLabTradeSide

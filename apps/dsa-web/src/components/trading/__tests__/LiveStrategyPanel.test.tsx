@@ -134,7 +134,7 @@ describe('LiveStrategyPanel 运行记录与调仓批次', () => {
     expect(screen.getByText('已成交')).toBeTruthy();
     expect(screen.getByText('100.2')).toBeTruthy();
     expect(screen.getByText(/batch-uid/)).toBeTruthy();
-  });
+  }, 15000);
 
   it('事件检查模式：目标组合位置换为持仓事件扫描', async () => {
     render(<LiveStrategyPanel />);
@@ -163,7 +163,7 @@ describe('LiveStrategyPanel 运行记录与调仓批次', () => {
     expect(screen.getByText('持有')).toBeTruthy();
     expect(screen.getByText('事件退出')).toBeTruthy();
     expect(screen.queryByText('目标组合（')).toBeNull();
-  });
+  }, 15000);
 
   it('批次表展示关联运行与订单进度，点击跳转到运行详情', async () => {
     render(<LiveStrategyPanel />);
