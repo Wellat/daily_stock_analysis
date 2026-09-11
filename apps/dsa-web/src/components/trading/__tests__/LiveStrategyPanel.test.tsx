@@ -60,16 +60,42 @@ describe('LiveStrategyPanel 策略配置', () => {
     await waitFor(() => expect(screen.getByDisplayValue('7')).toBeTruthy());
 
     fireEvent.change(screen.getByDisplayValue('7'), { target: { value: '5' } });
+    fireEvent.click(screen.getByRole('switch', { name: '非调仓日事件检查' })); // 关闭事件检查总闸
     fireEvent.click(screen.getByRole('button', { name: '保存配置' }));
 
     await waitFor(() => expect(client.put).toHaveBeenCalled());
     const body = client.put.mock.calls[0][1] as Record<string, unknown>;
     expect(body).toEqual(expect.objectContaining({
       rebalance_frequency_days: 5,
+      event_check_enabled: false,
       parameters: { max_positions: 3, per_position_cash: 25000 },
       symbols: ['113001'],
     }));
   });
+
+  it('调仓预览展示 名称（代码）、方向 Tag 与溢价率', async () => {
+    client.post.mockImplementation(async (url: string) => {
+      if (url.endsWith('/runs/preview')) {
+        return { data: { trade_date: '2024-01-02', mode: 'rebalance', target: {}, current: {},
+          rebalance: [
+            { symbol: '113001', symbol_name: '低溢价', premium_rate: 5, side: 'buy', quantity: 100, reason: 'lowest_premium' },
+            { symbol: '113002', symbol_name: '高溢价', premium_rate: 50, side: 'sell', quantity: 100, reason: 'live_target_exit' },
+          ], strategy_version: 'v1' } };
+      }
+      return { data: {} };
+    });
+    render(<LiveStrategyPanel />);
+
+    fireEvent.click(screen.getByRole('button', { name: /预\s*览/ }));
+    fireEvent.click(screen.getByRole('tab', { name: '调仓预览' }));
+
+    expect(await screen.findByText('低溢价（113001）')).toBeTruthy();
+    expect(screen.getByText('高溢价（113002）')).toBeTruthy();
+    expect(screen.getByText('买入')).toBeTruthy();
+    expect(screen.getByText('卖出')).toBeTruthy();
+    expect(screen.getByText('5.00%')).toBeTruthy();
+    expect(screen.getByText('50.00%')).toBeTruthy();
+  }, 15000);
 });
 
 describe('LiveStrategyPanel 运行记录与调仓批次', () => {

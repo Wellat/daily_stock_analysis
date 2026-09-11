@@ -162,6 +162,40 @@ def test_auto_mode_resolves_by_trading_day_frequency(monkeypatch: pytest.MonkeyP
         DatabaseManager.reset_instance()
 
 
+def test_auto_skips_event_check_when_disabled(monkeypatch: pytest.MonkeyPatch):
+    """事件检查总闸关闭：非调仓日 auto 直接返回跳过载荷且不落 run；显式 event_check、调仓日不受影响。"""
+    _weekdays_only(monkeypatch)
+    DatabaseManager.reset_instance()
+    db = DatabaseManager(db_url="sqlite:///:memory:")
+    try:
+        service = LiveStrategyService(db)
+        service.save_config({"qmt_account": "testS", "enabled": True, "data_sync_before_run": False,
+                             "rebalance_frequency_days": 3, "event_check_enabled": False,
+                             "parameters": {"max_positions": 1}})
+        QmtPositionService(db).report_positions(account="testS", positions=[])
+        _seed_completed_rebalance(db, date(2024, 1, 2))  # 周二，频率 3 → 周五到期
+        _seed_cb_universe(db, date(2024, 1, 4), [
+            {"code": "113001", "name": "低溢价", "close": 100.0, "premium": 5.0},
+        ])
+
+        # 非调仓日 + 总闸关闭：跳过且不产生新 run 记录
+        skipped = service.run(trade_date=date(2024, 1, 4))  # 周四，preview=False 验证真实执行路径
+        assert skipped["skip_reason"] == "event_check_disabled"
+        assert skipped["rebalance"] == []
+        with db.get_session() as session:
+            runs = session.execute(select(LiveStrategyRun)).scalars().all()
+        assert len(runs) == 1 and runs[0].trade_date == date(2024, 1, 2)  # 仅剩锚点种子
+
+        # 显式 event_check 不受总闸限制；调仓日照常调仓
+        explicit = service.run(trade_date=date(2024, 1, 4), mode="event_check", preview=True)
+        assert explicit["mode"] == "event_check"
+        assert "skip_reason" not in explicit
+        due = service.run(trade_date=date(2024, 1, 5), preview=True)  # 周五到期
+        assert due["mode"] == "rebalance"
+    finally:
+        DatabaseManager.reset_instance()
+
+
 def test_auto_mode_skips_holidays_in_frequency_counting(monkeypatch: pytest.MonkeyPatch):
     """频率按交易日计：周四节假日休市时，第 3 个交易日顺延到下周一。"""
     _weekdays_only(monkeypatch, holidays={date(2024, 1, 4)})
@@ -319,6 +353,11 @@ def test_rebalance_pipeline_buys_lowest_premium_and_exits_offtarget_holding(capl
         assert by_side[("buy", "113001")]["quantity"] == 100
         assert by_side[("sell", "113002")]["quantity"] == 100
         assert by_side[("sell", "113002")]["reason"] == "live_target_exit"
+        # 调仓明细附带展示字段：名称与当日溢价率（策略买入与对账卖出同样补齐）
+        assert by_side[("buy", "113001")]["symbol_name"] == "低溢价"
+        assert by_side[("buy", "113001")]["premium_rate"] == 5.0
+        assert by_side[("sell", "113002")]["symbol_name"] == "高溢价"
+        assert by_side[("sell", "113002")]["premium_rate"] == 50.0
 
         with db.get_session() as session:
             run = session.execute(select(LiveStrategyRun).order_by(desc(LiveStrategyRun.id))).scalars().first()

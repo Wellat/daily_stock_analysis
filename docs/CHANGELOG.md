@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [修复] 接通实盘配置项 `event_check_enabled`（非调仓日事件检查总闸）：此前该配置只有读写链路、无任何运行时消费，设置与否行为不变。现在 `event_check_enabled=false` 时 auto 模式在非调仓日直接返回 `skip_reason=event_check_disabled`（不落运行记录），显式指定 `mode=event_check` 与调仓日不受影响；Web 策略配置页补上开关。
+- [改进] 实盘【调仓预览】明细增强：标的展示“名称（代码）”、方向以 Tag 呈现（买入/卖出）、新增溢价率列；`rebalance` 载荷补 `symbol_name`/`premium_rate` 展示字段（预览与运行结果共用，来源为策略上下文与当日因子快照，缺失回退空）。
 - [改进] 策略实验室回测成交明细的标的列展示“名称（代码）”：成交记录仅落代码，`/runs/{id}/trades` 现按转债主表补齐 `symbol_name`（缺失时回退仅代码），Web 成交明细与当日买入汇总同步展示。
 - [新功能] 策略实验室-策略研究支持“导入实盘配置”与单日运行：一键复用实盘策略/自选池/参数跑回测（初始资金按 单债目标资金 × 最大持仓 映射，与实盘每仓资金语义一致）；新增“单日运行”模式（开始=结束）基于该日已同步行情复算策略当日目标组合；运行详情展示运行区间与当日买入汇总，并在请求区间无已同步行情（退化为内置样本数据）时给出醒目警示，避免把样本数据当真实回测结论。
 - [改进] 实盘策略运行全链路日志：mode 解析（锚点/下次调仓日/是否到期）、evaluate 决策输出（按动作分组）、plan 计划输出（订单/跳过原因/风控检查）、execute 下单结果（含幂等复用旧单的订单号）、run 完成与失败（异常堆栈），均带 `[LiveStrategy]` 前缀便于检索。

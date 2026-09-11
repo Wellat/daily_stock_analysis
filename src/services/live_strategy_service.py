@@ -116,6 +116,15 @@ class LiveStrategyService:
                     logger.info("[LiveStrategy] rebalance already completed for %s, returning existing run id=%s", trade_date, done.id)
                     return self._run_payload(done)
         resolved_mode = mode if mode != "auto" else ("rebalance" if schedule["due"] else "event_check")
+        # 非调仓日的事件检查受总闸控制：event_check_enabled=False 时 auto 直接跳过
+        # （不落 run 记录）；显式 mode="event_check" 不受总闸限制，仍可强制执行。
+        event_check_enabled = config.event_check_enabled if config.event_check_enabled is not None else True
+        if mode == "auto" and not schedule["due"] and not event_check_enabled:
+            logger.info("[LiveStrategy] event check disabled for %s, auto run skipped (anchor=%s next_rebalance=%s)",
+                        trade_date.isoformat(), schedule["anchor"], schedule["next_rebalance_date"])
+            return {"trade_date": trade_date.isoformat(), "mode": "event_check", "target": {}, "current": {},
+                    "rebalance": [], "decisions": [], "strategy_version": config.strategy_version,
+                    "skip_reason": "event_check_disabled"}
         logger.info("[LiveStrategy] run start trade_date=%s mode=%s -> %s (anchor=%s next_rebalance=%s due=%s)",
                     trade_date.isoformat(), mode, resolved_mode,
                     schedule["anchor"], schedule["next_rebalance_date"], schedule["due"])
@@ -181,7 +190,11 @@ class LiveStrategyService:
             "price": (bars.get(d.symbol) or [None])[-1].close if bars.get(d.symbol) else None,
             "quantity": next((o.quantity for o in plan.orders if o.symbol == d.symbol and o.side == "buy"), 0)}
             for d in decisions if d.action == "buy" and d.symbol}
-        rebalance = [{"symbol": o.symbol, "side": o.side, "quantity": o.quantity,
+        # 调仓明细补展示字段：名称取策略上下文、溢价率取当日因子快照（缺失回退空）
+        premium_by_symbol = {s: f.premium_rate for s, f in context.factors.items()}
+        rebalance = [{"symbol": o.symbol, "symbol_name": names_by_symbol.get(o.symbol),
+                      "premium_rate": premium_by_symbol.get(o.symbol),
+                      "side": o.side, "quantity": o.quantity,
                       "reason": o.decision.reason if o.decision else "planned"}
                      for o in plan.orders]
         diagnostics = {"skipped": [{"symbol": s.decision.symbol, "reason": s.reason} for s in plan.skipped],
