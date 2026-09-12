@@ -44,6 +44,7 @@ import type {
   PortfolioImportCommitResponse,
   PortfolioImportParseResponse,
   PortfolioPositionItem,
+  PortfolioQmtSyncResponse,
   PortfolioRiskResponse,
   PortfolioSide,
   PortfolioSnapshotResponse,
@@ -227,6 +228,9 @@ const PortfolioPage: React.FC = () => {
   const [csvParseResult, setCsvParseResult] = useState<PortfolioImportParseResponse | null>(null);
   const [csvCommitResult, setCsvCommitResult] = useState<PortfolioImportCommitResponse | null>(null);
   const [brokerLoadWarning, setBrokerLoadWarning] = useState<string | null>(null);
+  const [qmtSyncTarget, setQmtSyncTarget] = useState<'auto' | number>('auto');
+  const [qmtSyncLoading, setQmtSyncLoading] = useState<'dry' | 'run' | null>(null);
+  const [qmtSyncResult, setQmtSyncResult] = useState<PortfolioQmtSyncResponse | null>(null);
 
   const [eventType, setEventType] = useState<EventType>('trade');
   const [eventDateFrom, setEventDateFrom] = useState('');
@@ -244,6 +248,7 @@ const PortfolioPage: React.FC = () => {
   const [pendingDelete, setPendingDelete] = useState<PendingDelete | null>(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [pendingAccountDelete, setPendingAccountDelete] = useState<PendingAccountDelete | null>(null);
+  const [accountDeleteArmed, setAccountDeleteArmed] = useState(false);
   const [accountDeleteLoading, setAccountDeleteLoading] = useState(false);
 
   const [tradeForm, setTradeForm] = useState({
@@ -727,6 +732,26 @@ const PortfolioPage: React.FC = () => {
     }
   };
 
+  // QMT 持仓同步：快照差额生成交易事件，dry_run 预演不落库；手动触发不影响 QMT 上报链路
+  const handleQmtSync = async (dryRun: boolean) => {
+    try {
+      setQmtSyncLoading(dryRun ? 'dry' : 'run');
+      setError(null);
+      const result = await portfolioApi.syncQmtPositions({
+        accountId: qmtSyncTarget === 'auto' ? undefined : qmtSyncTarget,
+        dryRun,
+      });
+      setQmtSyncResult(result);
+      if (!dryRun) {
+        await refreshPortfolioData();
+      }
+    } catch (err) {
+      setError(getParsedApiError(err));
+    } finally {
+      setQmtSyncLoading(null);
+    }
+  };
+
   const openDeleteDialog = (item: PendingDelete) => {
     if (!writableAccountId) {
       setWriteWarning('请先在右上角选择具体账户，再进行删除修正。');
@@ -756,6 +781,7 @@ const PortfolioPage: React.FC = () => {
       const nextAccount = accounts.find((item) => item.id !== pendingAccountDelete.accountId);
       setSelectedAccount(nextAccount?.id ?? 'all');
       setPendingAccountDelete(null);
+      setAccountDeleteArmed(false);
       setShowCreateAccount(!nextAccount);
       await loadAccounts();
       setEventPage(1);
@@ -1222,7 +1248,9 @@ const PortfolioPage: React.FC = () => {
                     return (
                     <tr key={rowKey} className="border-b border-white/5">
                       <td className="py-2 pr-2 text-secondary">{row.accountName}</td>
-                      <td className="py-2 pr-2 font-mono text-foreground">{row.symbol}</td>
+                      <td className="py-2 pr-2 font-mono text-foreground">
+                        {row.symbolName ? `${row.symbolName}（${row.symbol}）` : row.symbol}
+                      </td>
                       <td className="py-2 pr-2 text-right">{row.quantity.toFixed(2)}</td>
                       <td className="py-2 pr-2 text-right">{row.avgCost.toFixed(4)}</td>
                       <td className="py-2 pr-2 text-right">
@@ -1508,6 +1536,53 @@ const PortfolioPage: React.FC = () => {
         </Card>
 
         <Card padding="md">
+          <h3 className="text-sm font-semibold text-foreground mb-3">QMT 持仓同步</h3>
+          <div className="space-y-2">
+            <p className="text-[11px] leading-relaxed text-secondary">
+              数据来自 QMT 每日收盘上报的持仓快照（实盘-持仓页），按快照差额生成交易事件；仅手动点击时同步，不影响 QMT 上报链路。
+            </p>
+            <select
+              aria-label="QMT 同步目标账户"
+              className={PORTFOLIO_SELECT_CLASS}
+              value={qmtSyncTarget === 'auto' ? 'auto' : String(qmtSyncTarget)}
+              onChange={(e) => setQmtSyncTarget(e.target.value === 'auto' ? 'auto' : Number(e.target.value))}
+            >
+              <option value="auto">自动（按 QMT 资金账号匹配/新建账户）</option>
+              {accounts.map((item) => (
+                <option key={item.id} value={String(item.id)}>{item.name}</option>
+              ))}
+            </select>
+            <div className="flex gap-2">
+              <button type="button" className="btn-secondary flex-1" disabled={qmtSyncLoading !== null} onClick={() => void handleQmtSync(true)}>
+                {qmtSyncLoading === 'dry' ? '预演中...' : '预演同步'}
+              </button>
+              <button type="button" className="btn-secondary flex-1" disabled={qmtSyncLoading !== null} onClick={() => void handleQmtSync(false)}>
+                {qmtSyncLoading === 'run' ? '同步中...' : '执行同步'}
+              </button>
+            </div>
+            {qmtSyncResult ? (
+              <InlineAlert
+                variant={qmtSyncResult.accounts.some((item) => item.failedCount > 0 || item.error) ? 'warning' : 'success'}
+                title={qmtSyncResult.dryRun ? 'QMT 同步预演结果' : 'QMT 同步结果'}
+                message={
+                  qmtSyncResult.accounts.length === 0
+                    ? '没有可同步的 QMT 持仓（QMT 尚未上报数据，或已清仓且无同步基线）。'
+                    : qmtSyncResult.accounts.map((item) => {
+                        const target = item.accountName
+                          ? `${item.qmtAccount} → ${item.accountName}${item.accountCreated ? '（新建）' : ''}`
+                          : item.qmtAccount;
+                        const counts = `${qmtSyncResult.dryRun ? '将写入' : '写入'} ${item.insertedCount} 条，重复 ${item.duplicateCount} 条，失败 ${item.failedCount} 条`;
+                        const cash = item.cashEntries > 0 ? `，现金配平 ${item.cashEntries} 笔` : '';
+                        return `${target}：${item.error ?? counts + cash}`;
+                      }).join('；')
+                }
+                className="rounded-lg px-3 py-2 text-xs shadow-none"
+              />
+            ) : null}
+          </div>
+        </Card>
+
+        <Card padding="md">
           <h3 className="text-sm font-semibold text-foreground mb-3">事件记录</h3>
           <div className="space-y-2">
             <div className="grid grid-cols-2 gap-2">
@@ -1657,22 +1732,43 @@ const PortfolioPage: React.FC = () => {
         }}
       />
       <ConfirmDialog
-        isOpen={Boolean(pendingAccountDelete)}
+        isOpen={Boolean(pendingAccountDelete) && !accountDeleteArmed}
         title={text.deleteAccountTitle}
         message={
           pendingAccountDelete
             ? formatUiText(text.deleteAccountMessage, {
-              name: pendingAccountDelete.accountName,
-              id: pendingAccountDelete.accountId,
-            })
+                name: pendingAccountDelete.accountName,
+                id: pendingAccountDelete.accountId,
+              })
             : ''
         }
-        confirmText={accountDeleteLoading ? text.deletingAccount : text.deleteAccountConfirm}
+        confirmText={text.deleteAccountConfirm}
+        isDanger
+        onConfirm={() => setAccountDeleteArmed(true)}
+        onCancel={() => {
+          if (!accountDeleteLoading) {
+            setPendingAccountDelete(null);
+          }
+        }}
+      />
+      <ConfirmDialog
+        isOpen={Boolean(pendingAccountDelete) && accountDeleteArmed}
+        title={text.deleteAccountFinalTitle}
+        message={
+          pendingAccountDelete
+            ? formatUiText(text.deleteAccountFinalMessage, {
+                name: pendingAccountDelete.accountName,
+                id: pendingAccountDelete.accountId,
+              })
+            : ''
+        }
+        confirmText={accountDeleteLoading ? text.deletingAccount : text.deleteAccountFinalConfirm}
         isDanger
         onConfirm={() => void handleConfirmAccountDelete()}
         onCancel={() => {
           if (!accountDeleteLoading) {
             setPendingAccountDelete(null);
+            setAccountDeleteArmed(false);
           }
         }}
       />

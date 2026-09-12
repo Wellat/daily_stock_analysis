@@ -160,6 +160,93 @@ QMT 在每日收盘后，将账户全部持仓同步给本项目。dsa 服务端
 - **symbol 约定**：与 3.1 拉取指令中的 `symbol` 保持一致，均为 6 位数字代码，**不带市场后缀**（`.SH`/`.SZ`）。QMT 侧采集时已去掉后缀。
 - **幂等**：同一交易日的重复上报，服务端建议按 `account + symbol` 去重或覆盖，以最后一次为准。
 
+### 3.4 上报当日成交记录
+
+`POST /api/v1/trading/qmt/deals`
+
+QMT 在每日收盘后，将账户当日全部成交记录同步给本项目。dsa 服务端据此接口实现成交数据的接收，并自动逐笔入账到 Portfolio 持仓账本（持仓数量、成本、盈亏随下一次持仓快照查询自动更新）。
+
+请求体示例：
+
+```json
+{
+  "account": "testS",
+  "deals": [
+    {
+      "account": "testS",
+      "symbol": "113002",
+      "name": "工行转债",
+      "side": "buy",
+      "price": 120.4,
+      "volume": 10,
+      "amount": 1204.0,
+      "fee": 0.0,
+      "trade_id": "1000123",
+      "order_sys_id": "202609120001",
+      "trade_time": "2026-09-12 14:45:03",
+      "xt_trade": "1"
+    }
+  ]
+}
+```
+
+字段含义：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `account` | string | 资金账号 |
+| `deals` | array | 当日成交列表 |
+| `deals[].account` | string | 资金账号（QMT `m_strAccountID` 透传） |
+| `deals[].symbol` | string | 证券代码（6 位数字，不带市场后缀，如 `113002`） |
+| `deals[].name` | string | 证券名称，获取失败时为空字符串 |
+| `deals[].side` | string | 买卖方向：`buy` / `sell`（依据 QMT `m_nOffsetFlag`：48 买入、49 卖出），无法识别时为 `unknown` |
+| `deals[].price` | number | 成交均价 |
+| `deals[].volume` | number | 成交数量（张） |
+| `deals[].amount` | number | 成交金额（元） |
+| `deals[].fee` | number | 手续费（元） |
+| `deals[].trade_id` | string | 成交编号 |
+| `deals[].order_sys_id` | string | 委托合同编号（QMT 字段缺失时为空字符串） |
+| `deals[].trade_time` | string | 成交时间（QMT `m_strTradeDate` + `m_strTradeTime` 拼接，格式因券商而异） |
+| `deals[].xt_trade` | string | 是否迅投交易（QMT `m_strXTTrade` 原始字符串透传） |
+
+响应示例：
+
+```json
+{
+  "account": "testS",
+  "account_id": 12,
+  "account_name": "testS",
+  "account_created": true,
+  "received": 1,
+  "inserted_count": 1,
+  "duplicate_count": 0,
+  "skipped_count": 0,
+  "failed_count": 0,
+  "cash_entries": 1,
+  "items": [
+    {
+      "trade_id": "1000123",
+      "symbol": "113002",
+      "side": "buy",
+      "status": "inserted",
+      "trade_date": "2026-09-12",
+      "trade_time_parsed": true,
+      "error": null
+    }
+  ]
+}
+```
+
+设计说明：
+
+- **触发时机**：与 3.3 上报持仓一致，每日收盘后触发一次；也可在盘中多次上报增量成交，服务端按成交编号幂等去重。
+- **幂等**：服务端按 `account + trade_id` 幂等（入账键 `qmt_deal:{account}:{trade_id}`），重发同一批成交安全，已入账的返回 `duplicate`，不会重复计入持仓。
+- **入账联动**：成交入账到与资金账号同名的 Portfolio 账户（不存在则自动创建），持仓、成本、已实现/浮动盈亏由账本重放自动更新；每笔入账自动配平等额现金流水，账户现金余额恒为 0、总权益=持仓市值。
+- **逐笔结果**：`side=unknown` 的成交返回 `skipped`（仅记日志不入账）；超出持仓数量的卖出等失败笔返回 `failed` 并附原因，不阻断批内其余成交；参数不合法（如 symbol 非 6 位数字）整批返回 400。
+- **trade_time 解析**：支持 `2026-09-12 14:45:03`、`20260912 14:45:03`、`20260912144503` 等常见拼接格式；无法解析时回退上报当日入账，响应中 `trade_time_parsed=false` 可见。
+- **与持仓快照同步互斥**：同一资金账号只能在「持仓快照差额同步」（见 dsa 持仓页「QMT 持仓同步」）与「本成交上报自动入账」两种来源中选其一，混用会双计持仓。成交上报只覆盖接入后的交易，接入前的存量持仓需先由快照同步或手工录入建底仓（此后不再对同一账号使用快照同步）。
+- **原始数据**：服务端不落原始成交表，上报内容以日志留档（`[QmtDeal]` 前缀），入账记录可通过账本交易的 `trade_uid` / `note`（`qmt_deal:{account}`）反查。
+
 ## 4. 状态约定
 
 指令状态流转：

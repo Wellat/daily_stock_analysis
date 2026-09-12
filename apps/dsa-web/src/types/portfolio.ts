@@ -31,6 +31,7 @@ export interface PortfolioAccountCreateRequest {
 
 export interface PortfolioPositionItem {
   symbol: string;
+  symbolName?: string | null;
   market: string;
   currency: string;
   quantity: number;
@@ -336,4 +337,40 @@ export interface PortfolioFxRefreshResponse {
   updatedCount: number;
   staleCount: number;
   errorCount: number;
+}
+
+export interface PortfolioQmtSyncRequest {
+  qmtAccount?: string;
+  accountId?: number;
+  dryRun?: boolean;
+}
+
+export interface PortfolioQmtSyncEventItem {
+  side: 'buy' | 'sell';
+  symbol: string;
+  symbolName?: string | null;
+  quantity: number;
+  price?: number | null;
+  tradeUid: string;
+  status: 'inserted' | 'dry_run' | 'duplicate' | 'failed';
+  error?: string | null;
+}
+
+export interface PortfolioQmtSyncAccountResult {
+  qmtAccount: string;
+  accountId?: number | null;
+  accountName?: string | null;
+  accountCreated: boolean;
+  positionCount: number;
+  events: PortfolioQmtSyncEventItem[];
+  insertedCount: number;
+  duplicateCount: number;
+  failedCount: number;
+  cashEntries: number;
+  error?: string | null;
+}
+
+export interface PortfolioQmtSyncResponse {
+  dryRun: boolean;
+  accounts: PortfolioQmtSyncAccountResult[];
 }

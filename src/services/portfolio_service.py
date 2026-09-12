@@ -19,6 +19,8 @@ from src.repositories.portfolio_repo import (
     PortfolioBusyError as RepoPortfolioBusyError,
     PortfolioRepository,
 )
+from src.repositories.qmt_position_repo import QmtPositionRepository
+from src.repositories.strategy_lab.data_repo import StrategyLabDataRepository
 
 logger = logging.getLogger(__name__)
 
@@ -1004,6 +1006,32 @@ class PortfolioService:
             "fx_stale": fx_stale,
         }
 
+    def _position_symbol_names(self, keys: Iterable[Tuple[str, str, str]]) -> Dict[str, str]:
+        """解析持仓展示名称：转债主表 → QMT 上报持仓名，均为本地离线数据。
+
+        返回以小写代码为键的名称映射；查不到的代码不产生条目，前端回退为仅展示代码。
+        """
+        cn_symbols = sorted({symbol for symbol, market, _ in keys if market == "cn" and symbol})
+        names: Dict[str, str] = {}
+        if cn_symbols:
+            try:
+                names.update(
+                    StrategyLabDataRepository(self.repo.db).get_cb_names(
+                        market="cn", codes=cn_symbols
+                    )
+                )
+            except Exception as exc:
+                logger.warning("Failed to resolve CB master names for positions: %s", exc)
+        try:
+            for row in QmtPositionRepository(self.repo.db).list():
+                name = (row.name or "").strip()
+                symbol = (row.symbol or "").strip().lower()
+                if name and symbol and symbol not in names:
+                    names[symbol] = name
+        except Exception as exc:
+            logger.warning("Failed to resolve QMT position names: %s", exc)
+        return names
+
     def _build_positions(
         self,
         *,
@@ -1045,6 +1073,7 @@ class PortfolioService:
             if active_symbols
             else None
         )
+        symbol_names = self._position_symbol_names(keys)
 
         for key in sorted(keys):
             symbol, market, currency = key
@@ -1113,6 +1142,7 @@ class PortfolioService:
             position_rows.append(
                 {
                     "symbol": symbol,
+                    "symbol_name": symbol_names.get(str(symbol).lower()),
                     "market": market,
                     "currency": currency,
                     "quantity": round(qty, 8),

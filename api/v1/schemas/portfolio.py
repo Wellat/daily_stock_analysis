@@ -151,6 +151,7 @@ class PortfolioCorporateActionListResponse(BaseModel):
 
 class PortfolioPositionItem(BaseModel):
     symbol: str
+    symbol_name: Optional[str] = None
     market: str
     currency: str
     quantity: float
@@ -256,6 +257,42 @@ class PortfolioImportBrokerItem(BaseModel):
 
 class PortfolioImportBrokerListResponse(BaseModel):
     brokers: List[PortfolioImportBrokerItem] = Field(default_factory=list)
+
+
+class PortfolioQmtSyncRequest(BaseModel):
+    qmt_account: Optional[str] = Field(None, description="只同步该 QMT 资金账号，默认全部")
+    account_id: Optional[int] = Field(None, description="写入指定 Portfolio 账户，默认按资金账号同名自动匹配/创建")
+    dry_run: bool = Field(False, description="只返回将生成的事件，不落库")
+
+
+class PortfolioQmtSyncEventItem(BaseModel):
+    side: str
+    symbol: str
+    symbol_name: Optional[str] = None
+    quantity: float
+    price: Optional[float] = None
+    trade_uid: str
+    status: str = Field(..., description="inserted / dry_run / duplicate / failed")
+    error: Optional[str] = None
+
+
+class PortfolioQmtSyncAccountResult(BaseModel):
+    qmt_account: str
+    account_id: Optional[int] = None
+    account_name: Optional[str] = None
+    account_created: bool = False
+    position_count: int = 0
+    events: List[PortfolioQmtSyncEventItem] = Field(default_factory=list)
+    inserted_count: int = 0
+    duplicate_count: int = 0
+    failed_count: int = 0
+    cash_entries: int = 0
+    error: Optional[str] = None
+
+
+class PortfolioQmtSyncResponse(BaseModel):
+    dry_run: bool
+    accounts: List[PortfolioQmtSyncAccountResult] = Field(default_factory=list)
 
 
 class PortfolioFxRefreshResponse(BaseModel):

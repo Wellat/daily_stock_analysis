@@ -11,6 +11,8 @@ from pydantic import BaseModel, Field
 TradingOrderSide = Literal["buy", "sell"]
 TradingOrderType = Literal["limit", "market"]
 TradingOrderCallbackStatus = Literal["submitted", "filled", "rejected"]
+QmtDealSide = Literal["buy", "sell", "unknown"]
+QmtDealResultStatus = Literal["inserted", "duplicate", "skipped", "failed"]
 
 
 class TradingOrderCreateRequest(BaseModel):
@@ -154,3 +156,47 @@ class QmtPositionListItem(BaseModel):
 
 class QmtPositionListResponse(BaseModel):
     items: List[QmtPositionListItem] = Field(default_factory=list)
+
+
+class QmtDealReportItem(BaseModel):
+    account: str = Field("", description="资金账号（QMT m_strAccountID 透传，入账以请求体 account 为准）")
+    symbol: str = Field(..., description="证券代码（6 位数字，不带市场后缀，如 113002）")
+    name: str = Field("", description="证券名称，获取失败时为空字符串")
+    side: QmtDealSide = Field(..., description="买卖方向：buy / sell，无法识别时为 unknown")
+    price: float = Field(..., gt=0, description="成交均价")
+    volume: float = Field(..., gt=0, description="成交数量（张）")
+    amount: float = Field(0.0, ge=0, description="成交金额（元）")
+    fee: float = Field(0.0, ge=0, description="手续费（元）")
+    trade_id: str = Field(..., min_length=1, description="成交编号（幂等键）")
+    order_sys_id: str = Field("", description="委托合同编号（QMT 字段缺失时为空字符串）")
+    trade_time: str = Field(..., min_length=1, description="成交时间（格式因券商而异）")
+    xt_trade: str = Field("", description="是否迅投交易（QMT m_strXTTrade 原始字符串透传）")
+
+
+class QmtDealReportRequest(BaseModel):
+    account: str = Field(..., description="资金账号")
+    deals: List[QmtDealReportItem] = Field(default_factory=list, description="当日成交列表")
+
+
+class QmtDealReportResultItem(BaseModel):
+    trade_id: str = Field(..., description="成交编号")
+    symbol: str = Field(..., description="证券代码")
+    side: str = Field(..., description="买卖方向")
+    status: QmtDealResultStatus = Field(..., description="入账结果")
+    trade_date: Optional[str] = Field(None, description="入账日期（trade_time 解析所得，失败回退上报当日）")
+    trade_time_parsed: bool = Field(True, description="trade_time 是否解析成功")
+    error: Optional[str] = Field(None, description="失败/跳过原因")
+
+
+class QmtDealReportResponse(BaseModel):
+    account: str = Field(..., description="资金账号")
+    account_id: Optional[int] = Field(None, description="入账的 Portfolio 账户 ID")
+    account_name: Optional[str] = Field(None, description="Portfolio 账户名（与资金账号同名）")
+    account_created: bool = Field(False, description="本次上报是否新建了 Portfolio 账户")
+    received: int = Field(..., description="接收成交笔数")
+    inserted_count: int = Field(0, description="新入账笔数")
+    duplicate_count: int = Field(0, description="重复（已入账）笔数")
+    skipped_count: int = Field(0, description="跳过笔数（如 side=unknown）")
+    failed_count: int = Field(0, description="失败笔数（如超卖校验不过）")
+    cash_entries: int = Field(0, description="本次配平的现金流水笔数")
+    items: List[QmtDealReportResultItem] = Field(default_factory=list, description="逐笔入账结果")

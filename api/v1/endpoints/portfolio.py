@@ -29,6 +29,8 @@ from api.v1.schemas.portfolio import (
     PortfolioImportCommitResponse,
     PortfolioImportParseResponse,
     PortfolioImportTradeItem,
+    PortfolioQmtSyncRequest,
+    PortfolioQmtSyncResponse,
     PortfolioPositionAnalysisRequest,
     PortfolioRiskResponse,
     PortfolioSnapshotResponse,
@@ -37,6 +39,7 @@ from api.v1.schemas.portfolio import (
 )
 from src.services.task_queue import get_task_queue
 from src.services.portfolio_import_service import PortfolioImportService
+from src.services.portfolio_qmt_sync import PortfolioQmtSyncService
 from src.services.portfolio_risk_service import PortfolioRiskService
 from src.services.portfolio_service import (
     PortfolioBusyError,
@@ -624,6 +627,26 @@ def commit_csv_import(
         raise _bad_request(exc)
     except Exception as exc:
         raise _internal_error("Commit CSV import failed", exc)
+
+
+@router.post(
+    "/imports/qmt/sync",
+    response_model=PortfolioQmtSyncResponse,
+    responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
+    summary="Sync QMT position snapshots into portfolio ledger (manual trigger)",
+)
+def sync_qmt_positions(request: PortfolioQmtSyncRequest) -> PortfolioQmtSyncResponse:
+    try:
+        result = PortfolioQmtSyncService().sync(
+            qmt_account=(request.qmt_account or None),
+            account_id=request.account_id,
+            dry_run=request.dry_run,
+        )
+        return PortfolioQmtSyncResponse(**result)
+    except ValueError as exc:
+        raise _bad_request(exc)
+    except Exception as exc:
+        raise _internal_error("Sync QMT positions failed", exc)
 
 
 @router.post(

@@ -14,6 +14,8 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from api.deps import get_database_manager
 from api.v1.schemas.common import ErrorResponse
 from api.v1.schemas.trading import (
+    QmtDealReportRequest,
+    QmtDealReportResponse,
     QmtPositionListResponse,
     QmtPositionReportRequest,
     QmtPositionReportResponse,
@@ -24,6 +26,7 @@ from api.v1.schemas.trading import (
     TradingOrderListResponse,
     TradingOrderPendingListResponse,
 )
+from src.services.qmt_deal_service import QmtDealService
 from src.services.qmt_position_service import QmtPositionService
 from src.services.trading_order_service import (
     TradingOrderNotFoundError,
@@ -221,6 +224,31 @@ def report_positions(
     except Exception as exc:
         logger.error("Report QMT positions failed: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail={"error": "internal_error", "message": "Report positions failed"})
+
+
+@router.post(
+    "/qmt/deals",
+    response_model=QmtDealReportResponse,
+    dependencies=[Depends(require_qmt_token)],
+    responses={400: {"model": ErrorResponse}, 401: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
+    summary="QMT 上报当日成交记录（自动入账持仓）",
+)
+def report_deals(
+    request: QmtDealReportRequest,
+    db_manager: DatabaseManager = Depends(get_database_manager),
+) -> QmtDealReportResponse:
+    try:
+        return QmtDealReportResponse(
+            **QmtDealService(db_manager).report_deals(
+                account=request.account,
+                deals=[d.model_dump() for d in request.deals],
+            )
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail={"error": "invalid_params", "message": str(exc)})
+    except Exception as exc:
+        logger.error("Report QMT deals failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail={"error": "internal_error", "message": "Report deals failed"})
 
 
 @router.get(

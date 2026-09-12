@@ -17,6 +17,8 @@ import type {
   PortfolioImportCommitResponse,
   PortfolioImportParseResponse,
   PortfolioPositionAnalysisRequest,
+  PortfolioQmtSyncRequest,
+  PortfolioQmtSyncResponse,
   PortfolioRiskResponse,
   PortfolioSnapshotResponse,
   PortfolioTradeCreateRequest,
@@ -285,5 +287,10 @@ export const portfolioApi = {
       headers: { 'Content-Type': 'multipart/form-data' },
     });
     return toCamelCase<PortfolioImportCommitResponse>(response.data);
+  },
+
+  async syncQmtPositions(request: PortfolioQmtSyncRequest = {}): Promise<PortfolioQmtSyncResponse> {
+    const response = await apiClient.post<Record<string, unknown>>('/api/v1/portfolio/imports/qmt/sync', request);
+    return toCamelCase<PortfolioQmtSyncResponse>(response.data);
   },
 };

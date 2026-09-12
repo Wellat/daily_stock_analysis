@@ -259,6 +259,47 @@ class PortfolioServiceTestCase(unittest.TestCase):
         self.assertTrue(pos["price_stale"])
         self.assertTrue(pos["price_available"])
 
+    def test_snapshot_positions_resolve_symbol_name_from_local_sources(self) -> None:
+        from src.repositories.qmt_position_repo import QmtPositionRepository
+        from src.storage import StrategyLabCbBasic
+
+        today = date.today()
+        account = self.service.create_account(name="Main", broker="Demo", market="cn", base_currency="CNY")
+        aid = account["id"]
+        for symbol in ["113001", "113002", "600519"]:
+            self.service.record_trade(
+                account_id=aid,
+                symbol=symbol,
+                trade_date=today,
+                side="buy",
+                quantity=10,
+                price=100,
+                market="cn",
+                currency="CNY",
+            )
+
+        # 转债主表优先
+        with self.db.get_session() as session:
+            session.add(StrategyLabCbBasic(
+                bond_code="113001", bond_name="主表转债", stock_code="600519",
+                market="cn", source="unit-test",
+            ))
+            session.commit()
+        # QMT 上报持仓名兜底（转债主表没有的标的 + 股票）
+        QmtPositionRepository(self.db).replace(account="135129739", positions=[
+            {"symbol": "113001", "name": "QMT转债", "volume": 10, "can_use_volume": 10},
+            {"symbol": "113002", "name": "洪城转债", "volume": 10, "can_use_volume": 10},
+            {"symbol": "600519", "name": "贵州茅台", "volume": 10, "can_use_volume": 10},
+        ])
+
+        snapshot = self.service.get_portfolio_snapshot(
+            account_id=aid, as_of=today, cost_method="fifo", include_realtime=False
+        )
+        names = {p["symbol"]: p.get("symbol_name") for p in snapshot["accounts"][0]["positions"]}
+        self.assertEqual(names["113001"], "主表转债")  # 转债主表优先于 QMT 上报名
+        self.assertEqual(names["113002"], "洪城转债")  # QMT 上报名
+        self.assertEqual(names["600519"], "贵州茅台")  # 股票走 QMT 上报名
+
     def test_current_snapshot_does_not_serialize_non_bulk_realtime_prefetch(self) -> None:
         today = date.today()
         account = self.service.create_account(name="Main", broker="Demo", market="cn", base_currency="CNY")

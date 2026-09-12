@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [改进] 持仓明细标的列展示「中文名称（代码）」：`/portfolio/snapshot` 持仓行新增 `symbol_name` 字段，名称取本地离线数据（转债主表 `strategy_lab_cb_basic` 优先，QMT 上报持仓名兜底），查不到回退仅展示代码；Web 端同步渲染。
+- [改进] 持仓页删除账户增加二次确认：第一层确认后弹出最终确认弹窗（明确提示页面无恢复入口），两次确认后才执行删除，降低误删风险。
+- [新功能] 持仓管理接入 QMT 当日成交上报：新增 `POST /api/v1/trading/qmt/deals`（`X-QMT-Token` 鉴权），QMT 收盘后上报当日成交，服务端校验、日志留档并逐笔自动入账 Portfolio 账本（按资金账号同名自动匹配/新建账户），持仓、成本、已实现/浮动盈亏随快照查询自动更新；按 `account + trade_id` 幂等，重发安全；`unknown` 方向跳过、失败笔逐笔回报不阻断整批；每笔入账配平现金使总权益=市值。与「QMT 持仓同步」互斥使用（文档已注明）。
+- [新功能] 持仓页新增「QMT 持仓同步」：把实盘页 QMT 每日收盘上报的持仓快照按差额同步进 Portfolio 账本（新增/加仓 → 买入，减仓/清仓 → 卖出），新增 `POST /portfolio/imports/qmt/sync`（支持 `dry_run` 预演）；目标账户默认按资金账号同名自动匹配/新建；diff 基线只统计同步自身写入的交易，手工录入永不被覆盖；每笔事件自动配平现金使总权益=市值。仅手动触发，QMT 上报链路零改动。
 - [新功能] Web 实盘新增【策略看板】Tab：基于交易记录中的已成交订单统计选定时间范围内的策略收益——成交笔数/买入卖出金额、FIFO 已实现盈亏、盈利亏损笔数与胜率、累计收益曲线（叠加每日盈亏柱）与分标的盈亏明细；新增 `GET /api/v1/trading/dashboard?start=&end=` 聚合端点，无买入记录的卖出单独统计不计盈亏。
 - [修复] 接通实盘配置项 `event_check_enabled`（非调仓日事件检查总闸）：此前该配置只有读写链路、无任何运行时消费，设置与否行为不变。现在 `event_check_enabled=false` 时 auto 模式在非调仓日直接返回 `skip_reason=event_check_disabled`（不落运行记录），显式指定 `mode=event_check` 与调仓日不受影响；Web 策略配置页补上开关。
 - [改进] 实盘【调仓预览】明细增强：标的展示“名称（代码）”、方向以 Tag 呈现（买入/卖出）、新增溢价率列；`rebalance` 载荷补 `symbol_name`/`premium_rate` 展示字段（预览与运行结果共用，来源为策略上下文与当日因子快照，缺失回退空）。

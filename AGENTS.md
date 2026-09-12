@@ -156,12 +156,23 @@ gh run view <run_id> --log-failed
 
 若 PR 上已有对应 CI 结果，可直接引用 CI 结论；若 CI 未覆盖改动面，或本地与 CI 环境差异较大，需要补充说明本地验证与缺口。
 
+### 验证强度原则
+
+验证强度与改动风险成正比，**不要求每个任务都跑全量测试**（全量离线套件耗时长，且结果易受环境与测试顺序影响）：
+
+- 最低要求（总是执行）：`python -m py_compile <changed_python_files>`，并对改动文件执行 flake8 关键错误检查（`--select=E9,F63,F7,F82`，与 `ci_gate.sh` 一致）。
+- 默认要求：运行与改动面直接相关的测试子集（按模块 / 关键字挑选对应 `tests/test_*.py`，加 `-m "not network"`），并在交付说明中写明所选范围与理由。
+- 全量验证（`./scripts/ci_gate.sh`）仅在以下情况需要本地执行：
+  - 改动命中高风险区：配置语义、API / Schema 契约、数据库 schema、数据源 fallback、认证、调度、报告结构，或修改了共享基础设施与 `tests/conftest.py` 等全局测试夹具；
+  - 改动面无法用局部测试覆盖（如跨模块行为变化）；
+  - 无法引用 PR CI 结论，且需要提前暴露本地与 CI 环境差异时。
+- 其余情况以改动面测试子集为准，PR 合入以 CI 门禁结论为准；交付说明需写明本地验证范围与未覆盖项。
+
 ### 按改动面执行
 
 - Python 后端改动：
   - 适用范围：`main.py`、`src/`、`data_provider/`、`api/`、`bot/`、`tests/`
-  - 优先执行：`./scripts/ci_gate.sh`
-  - 最低要求：`python -m py_compile <changed_python_files>`
+  - 默认执行：改动面相关的测试子集 + `python -m py_compile <changed_python_files>`（全量 `./scripts/ci_gate.sh` 的适用条件见「验证强度原则」）
   - 若影响 API、任务编排、报告生成、通知发送、数据源 fallback、认证、调度，交付说明中要写明是否覆盖了对应路径。
 
 - Web 前端改动：

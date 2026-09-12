@@ -1819,11 +1819,29 @@ worker 会把 `triggered`、`skipped`、`degraded`、`failed` 写入 `alert_trig
 
 ### `/portfolio` 页面可做什么
 
-- 查看全量持仓或切换到单个账户视角。
+- 查看全量持仓或切换到单个账户视角；持仓明细标的列展示「中文名称（代码）」，名称来自转债主表与 QMT 上报持仓名（本地离线数据），查不到时仅展示代码。
 - 在 `fifo` / `avg` 两种成本法之间切换，查看快照 KPI、风险摘要和 Top Positions 集中度图表。
-- 直接在 Web 页面新增账户、删除误建账户，或录入交易、现金流水、公司行动等事件。
+- 直接在 Web 页面新增账户、删除误建账户（删除需两次确认），或录入交易、现金流水、公司行动等事件。
 - 通过 CSV 导入持仓记录，支持先 `dry_run` 预览，再决定是否正式写入。
+- 通过「QMT 持仓同步」卡片把实盘页 QMT 每日收盘上报的持仓快照同步进账本：按快照差额生成交易事件（新增/加仓 → 买入，减仓/清仓 → 卖出），支持先预演再执行；目标账户默认按资金账号同名自动匹配/新建（如已有同名手工账户则直接复用，broker 标记为 qmt 的仅用于兜底识别），也可指定已有账户。该同步只由手动点击触发，不影响 QMT 上报链路。
 - 在事件列表中按账户、日期、方向、代码等条件筛选，并对单账户事件做删除修正。
+
+### QMT 持仓同步口径
+
+- 盈亏/成本由账本事件流回放推导：QMT 快照的 `open_price` 是摊薄成本，与逐笔成交口径存在固有偏差；卖出价按 `open_price + float_profit/volume` 近似现价。
+- diff 基线只统计本同步写入的交易（note 前缀 `qmt_sync:`），手工录入/CSV 导入的交易永不被同步覆盖或清仓。
+- 每笔同步事件自动配平等额现金流水（note 前缀 `qmt_sync_cash:`），账户现金余额恒为 0，总权益=持仓市值；删除同步生成的交易会导致基线漂移，后续同步会以失败项提示（不会静默错账）。
+- 可转债现价暂无行情来源，同步后转债持仓的市值/盈亏列可能显示缺价，数量与成本正常入账。
+
+### QMT 成交上报自动入账
+
+除快照同步外，QMT 侧也可改为每日收盘后上报当日成交记录（`POST /api/v1/trading/qmt/deals`，接口契约见 [可转债实盘交易对接文档](convertible-bond-qmt-api.md) 3.4）：服务端校验后逐笔入账为账本交易事件（note 前缀 `qmt_deal:`），持仓、成本、已实现/浮动盈亏随下一次快照查询自动更新，无需手动触发。
+
+- 幂等按 `account + trade_id`（入账键 `qmt_deal:{资金账号}:{成交编号}`），重发同一批成交安全；`side=unknown` 跳过、超卖等失败笔逐笔回报，不阻断整批。
+- 现金口径与快照同步一致：每笔入账配平等额现金流水（note 前缀 `qmt_deal_cash:`），现金余额恒 0、总权益=持仓市值。
+- 入账账户与快照同步共用同一约定：按资金账号同名自动匹配/新建 Portfolio 账户（如已有同名手工账户则直接复用）。
+- **与「QMT 持仓同步」互斥**：同一资金账号只能选一种入账来源，混用会双计持仓（快照同步的 diff 基线只认 `qmt_sync:` 前缀交易，看不到成交入账）。存量持仓可先用快照同步或手工录入建底仓，之后对该账号只走成交上报。
+- 服务端不落原始成交表，上报内容以 `[QmtDeal]` 前缀日志留档；排查可通过账本交易的 `trade_uid` / `note` 反查。
 
 ### 相关接口
 
@@ -1835,6 +1853,8 @@ worker 会把 `triggered`、`skipped`、`degraded`、`failed` 写入 `alert_trig
 | `/api/v1/portfolio/cash-ledger` | GET | 分页查询现金流水 |
 | `/api/v1/portfolio/corporate-actions` | GET | 分页查询公司行动 |
 | `/api/v1/portfolio/imports/csv/brokers` | GET | 查询内建 CSV 券商解析器 |
+| `/api/v1/portfolio/imports/qmt/sync` | POST | 手动同步 QMT 持仓快照为账本交易事件（支持 `dry_run`） |
+| `/api/v1/trading/qmt/deals` | POST | QMT 上报当日成交记录并自动入账持仓（与快照同步互斥，见上文） |
 | `/api/v1/portfolio/fx/refresh` | POST | 手动刷新汇率缓存 |
 | `/api/v1/portfolio/accounts/{account_id}` | DELETE | 删除/归档持仓账户 |
 | `/api/v1/portfolio/trades/{trade_id}` | DELETE | 删除交易记录 |

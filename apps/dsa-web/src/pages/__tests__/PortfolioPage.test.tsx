@@ -25,6 +25,7 @@ const {
   deleteCorporateAction,
   parseCsvImport,
   commitCsvImport,
+  syncQmtPositions,
   createAccount,
   deleteAccount,
   analyzePosition,
@@ -47,6 +48,7 @@ const {
   deleteCorporateAction: vi.fn(),
   parseCsvImport: vi.fn(),
   commitCsvImport: vi.fn(),
+  syncQmtPositions: vi.fn(),
   createAccount: vi.fn(),
   deleteAccount: vi.fn(),
   analyzePosition: vi.fn(),
@@ -79,6 +81,7 @@ vi.mock('../../api/portfolio', () => ({
     deleteCorporateAction,
     parseCsvImport,
     commitCsvImport,
+    syncQmtPositions,
     createAccount,
     deleteAccount,
     analyzePosition,
@@ -324,6 +327,10 @@ describe('PortfolioPage FX refresh', () => {
       dryRun: true,
       errors: [],
     });
+    syncQmtPositions.mockResolvedValue({
+      dryRun: true,
+      accounts: [],
+    });
     createAccount.mockResolvedValue({ id: 1 });
     deleteAccount.mockResolvedValue({ deleted: 1 });
     analyzePosition.mockResolvedValue({
@@ -551,7 +558,7 @@ describe('PortfolioPage FX refresh', () => {
 
   it('renders backend-provided position valuation fields and stale missing-price hint', async () => {
     getSnapshot.mockResolvedValueOnce(makeSnapshot({ fxStale: true, positions: [
-      { symbol: 'HK00700', market: 'hk', currency: 'HKD', quantity: 10, avgCost: 400, totalCost: 4000, lastPrice: 420, marketValueBase: 4200, unrealizedPnlBase: 200, unrealizedPnlPct: 5, valuationCurrency: 'HKD', priceSource: 'history_close', priceDate: '2026-03-18', priceStale: true, priceAvailable: true },
+      { symbol: 'HK00700', symbolName: '腾讯控股', market: 'hk', currency: 'HKD', quantity: 10, avgCost: 400, totalCost: 4000, lastPrice: 420, marketValueBase: 4200, unrealizedPnlBase: 200, unrealizedPnlPct: 5, valuationCurrency: 'HKD', priceSource: 'history_close', priceDate: '2026-03-18', priceStale: true, priceAvailable: true },
       { symbol: 'AAPL', market: 'us', currency: 'USD', quantity: 5, avgCost: 100, totalCost: 500, lastPrice: 0, marketValueBase: 0, unrealizedPnlBase: 0, unrealizedPnlPct: null, valuationCurrency: 'USD', priceSource: 'missing', priceDate: null, priceStale: true, priceAvailable: false },
     ] }));
 
@@ -559,7 +566,9 @@ describe('PortfolioPage FX refresh', () => {
 
     await waitForInitialLoad();
 
-    expect(await screen.findByText('HK00700')).toBeInTheDocument();
+    // 有中文名称时展示「名称（代码）」，缺失时回退仅代码
+    expect(await screen.findByText('腾讯控股（HK00700）')).toBeInTheDocument();
+    expect(screen.getByText('AAPL')).toBeInTheDocument();
     expect(screen.getByText('420.0000')).toBeInTheDocument();
     expect(screen.getByText('HKD 4,200.00')).toBeInTheDocument();
     expect(screen.getByText('+5.00%')).toBeInTheDocument();
@@ -567,7 +576,7 @@ describe('PortfolioPage FX refresh', () => {
     expect(screen.getByText('缺价')).toBeInTheDocument();
     expect(screen.getAllByText('--').length).toBeGreaterThanOrEqual(2);
 
-    const hkRow = screen.getByText('HK00700').closest('tr');
+    const hkRow = screen.getByText('腾讯控股（HK00700）').closest('tr');
     const aaplRow = screen.getByText('AAPL').closest('tr');
     expect(hkRow).not.toBeNull();
     expect(aaplRow).not.toBeNull();
@@ -1104,9 +1113,68 @@ describe('PortfolioPage FX refresh', () => {
     );
     fireEvent.click(screen.getByRole('button', { name: '确认删除' }));
 
+    // 二次确认：第一次确认只进入最终确认弹窗，不触发删除
+    await waitFor(() => expect(screen.getByText('再次确认：删除持仓账户')).toBeInTheDocument());
+    expect(deleteAccount).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: '仍要删除' }));
+
     await waitFor(() => expect(deleteAccount).toHaveBeenCalledWith(1));
     await waitFor(() => expect(getAccounts).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(screen.queryByText('Main (#1)')).not.toBeInTheDocument());
     expect(screen.getByRole('option', { name: 'Alt (#2)' })).toBeInTheDocument();
   });
+
+  it('QMT 持仓同步：预演/执行调用契约、目标账户透传与结果反馈', async () => {
+    render(<PortfolioPage />);
+
+    await waitForInitialLoad();
+
+    syncQmtPositions.mockResolvedValueOnce({
+      dryRun: true,
+      accounts: [{
+        qmtAccount: '135129739',
+        accountId: null,
+        accountName: '135129739',
+        accountCreated: true,
+        positionCount: 2,
+        events: [],
+        insertedCount: 2,
+        duplicateCount: 0,
+        failedCount: 0,
+        cashEntries: 0,
+        error: null,
+      }],
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: '预演同步' }));
+
+    await waitFor(() => expect(syncQmtPositions).toHaveBeenCalledWith({ accountId: undefined, dryRun: true }));
+    expect(await screen.findByText(/135129739 → 135129739（新建）：将写入 2 条，重复 0 条，失败 0 条/)).toBeInTheDocument();
+
+    const snapshotCallsBeforeSync = getSnapshot.mock.calls.length;
+    syncQmtPositions.mockResolvedValueOnce({
+      dryRun: false,
+      accounts: [{
+        qmtAccount: '135129739',
+        accountId: 1,
+        accountName: 'Main',
+        accountCreated: false,
+        positionCount: 2,
+        events: [],
+        insertedCount: 1,
+        duplicateCount: 1,
+        failedCount: 0,
+        cashEntries: 1,
+        error: null,
+      }],
+    });
+
+    fireEvent.change(screen.getByLabelText('QMT 同步目标账户'), { target: { value: '1' } });
+    fireEvent.click(screen.getByRole('button', { name: '执行同步' }));
+
+    await waitFor(() => expect(syncQmtPositions).toHaveBeenCalledWith({ accountId: 1, dryRun: false }));
+    expect(await screen.findByText(/135129739 → Main：写入 1 条，重复 1 条，失败 0 条，现金配平 1 笔/)).toBeInTheDocument();
+    // 执行同步（非预演）后刷新组合快照
+    await waitFor(() => expect(getSnapshot.mock.calls.length).toBeGreaterThan(snapshotCallsBeforeSync));
+  }, 15000);
 });
