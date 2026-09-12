@@ -3,6 +3,7 @@ import { AppPage, PageHeader } from '../components/common';
 import { PositionsTab } from '../components/trading/PositionsTab';
 import { TradingOrdersTab } from '../components/trading/TradingOrdersTab';
 import { LiveStrategyPanel } from '../components/trading/LiveStrategyPanel';
+import { StrategyDashboardTab } from '../components/trading/StrategyDashboardTab';
 
 const TradingOrdersPage: React.FC = () => (
   <AppPage>
@@ -17,6 +18,7 @@ const TradingOrdersPage: React.FC = () => (
       items={[
         { key: 'strategy', label: '策略运行', children: <LiveStrategyPanel /> },
         { key: 'orders', label: '交易记录', children: <TradingOrdersTab /> },
+        { key: 'dashboard', label: '策略看板', children: <StrategyDashboardTab /> },
         { key: 'positions', label: '持仓', children: <PositionsTab /> },
       ]}
     />

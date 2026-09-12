@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [新功能] Web 实盘新增【策略看板】Tab：基于交易记录中的已成交订单统计选定时间范围内的策略收益——成交笔数/买入卖出金额、FIFO 已实现盈亏、盈利亏损笔数与胜率、累计收益曲线（叠加每日盈亏柱）与分标的盈亏明细；新增 `GET /api/v1/trading/dashboard?start=&end=` 聚合端点，无买入记录的卖出单独统计不计盈亏。
 - [修复] 接通实盘配置项 `event_check_enabled`（非调仓日事件检查总闸）：此前该配置只有读写链路、无任何运行时消费，设置与否行为不变。现在 `event_check_enabled=false` 时 auto 模式在非调仓日直接返回 `skip_reason=event_check_disabled`（不落运行记录），显式指定 `mode=event_check` 与调仓日不受影响；Web 策略配置页补上开关。
 - [改进] 实盘【调仓预览】明细增强：标的展示“名称（代码）”、方向以 Tag 呈现（买入/卖出）、新增溢价率列；`rebalance` 载荷补 `symbol_name`/`premium_rate` 展示字段（预览与运行结果共用，来源为策略上下文与当日因子快照，缺失回退空）。
 - [改进] 策略实验室回测成交明细的标的列展示“名称（代码）”：成交记录仅落代码，`/runs/{id}/trades` 现按转债主表补齐 `symbol_name`（缺失时回退仅代码），Web 成交明细与当日买入汇总同步展示。

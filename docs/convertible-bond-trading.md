@@ -172,6 +172,11 @@ pending ──> submitted ──> filled
 
 - `GET /api/v1/trading/orders?status=pending&page=1&limit=20` 分页查询
 - `POST /api/v1/trading/orders/{id}/cancel` 取消 `pending` 指令
+- `GET /api/v1/trading/dashboard?start=2026-01-01&end=2026-01-31` 策略看板聚合（日期参数可选，默认全部）：
+  - `summary`：成交笔数、买入/卖出笔数与金额、已实现盈亏、盈利/亏损笔数、胜率、无配对卖出总量
+  - `curve`：按成交日聚合的每日/累计已实现盈亏序列（收益曲线数据点）
+  - `symbols`：分标的买卖笔数/数量/金额、未平仓数量与成本、已实现盈亏、无配对卖出
+  - 盈亏口径：已实现（卖出按 FIFO 与买入配对，`filled_price` 计价），未平仓部分不计浮盈；无买入记录的卖出（如初始持仓直接卖出）单独统计不计盈亏。注意 QMT 模拟回写未传成交价时 `filled_price` 落库为默认值 1，看板数值以真实成交回报为准。
 
 ### QMT 端（HTTP 头 `X-QMT-Token` 鉴权）
 

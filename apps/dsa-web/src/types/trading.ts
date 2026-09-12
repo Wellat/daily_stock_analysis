@@ -55,3 +55,50 @@ export interface QmtPositionItem {
 export interface QmtPositionListResponse {
   items: QmtPositionItem[];
 }
+
+export interface TradingDashboardSummary {
+  totalCount: number;
+  buyCount: number;
+  sellCount: number;
+  buyAmount: number;
+  sellAmount: number;
+  realizedPnl: number;
+  winCount: number;
+  lossCount: number;
+  winRate?: number | null;
+  unmatchedSellQuantity: number;
+}
+
+export interface TradingDashboardCurvePoint {
+  date: string;
+  dailyPnl: number;
+  cumulativePnl: number;
+}
+
+export interface TradingDashboardSymbolItem {
+  symbol: string;
+  symbolName?: string | null;
+  buyCount: number;
+  buyQuantity: number;
+  buyAmount: number;
+  sellCount: number;
+  sellQuantity: number;
+  sellAmount: number;
+  realizedPnl: number;
+  openQuantity: number;
+  openCost: number;
+  unmatchedSellQuantity: number;
+}
+
+export interface TradingDashboardResponse {
+  start?: string | null;
+  end?: string | null;
+  summary: TradingDashboardSummary;
+  curve: TradingDashboardCurvePoint[];
+  symbols: TradingDashboardSymbolItem[];
+}
+
+export interface TradingDashboardQuery {
+  start?: string;
+  end?: string;
+}

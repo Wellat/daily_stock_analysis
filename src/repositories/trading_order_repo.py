@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime, time, timedelta
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import asc, desc, select
@@ -74,6 +74,31 @@ class TradingOrderRepository:
                 .limit(limit)
             ).scalars().all()
             return {"total": total, "items": [self._payload(row) for row in rows]}
+
+    def list_filled(
+        self,
+        *,
+        start_date: Optional[date] = None,
+        end_date: Optional[date] = None,
+    ) -> List[TradingOrder]:
+        """已成交订单按成交时间升序返回，供策略看板做 FIFO 配对统计。"""
+        with self.db.get_session() as session:
+            stmt = select(TradingOrder).where(TradingOrder.status == "filled")
+            if start_date is not None:
+                stmt = stmt.where(
+                    TradingOrder.completed_at >= datetime.combine(start_date, time.min)
+                )
+            if end_date is not None:
+                stmt = stmt.where(
+                    TradingOrder.completed_at
+                    < datetime.combine(end_date + timedelta(days=1), time.min)
+                )
+            rows = session.execute(
+                stmt.order_by(asc(TradingOrder.completed_at), asc(TradingOrder.id))
+            ).scalars().all()
+            for row in rows:
+                session.expunge(row)
+            return rows
 
     def list_pending(self) -> List[TradingOrder]:
         with self.db.get_session() as session:

@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 import os
 import secrets
+from datetime import date
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
@@ -16,6 +17,7 @@ from api.v1.schemas.trading import (
     QmtPositionListResponse,
     QmtPositionReportRequest,
     QmtPositionReportResponse,
+    TradingDashboardResponse,
     TradingOrderCallbackRequest,
     TradingOrderCreateRequest,
     TradingOrderItem,
@@ -102,6 +104,26 @@ def list_orders(
     except Exception as exc:
         logger.error("List trading orders failed: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail={"error": "internal_error", "message": "List orders failed"})
+
+
+@router.get(
+    "/dashboard",
+    response_model=TradingDashboardResponse,
+    responses={500: {"model": ErrorResponse}},
+    summary="策略看板：时间范围内成交统计与已实现盈亏",
+)
+def get_trading_dashboard(
+    start: Optional[date] = Query(None, description="开始日期（含），YYYY-MM-DD"),
+    end: Optional[date] = Query(None, description="结束日期（含），YYYY-MM-DD"),
+    db_manager: DatabaseManager = Depends(get_database_manager),
+) -> TradingDashboardResponse:
+    try:
+        return TradingDashboardResponse(
+            **TradingOrderService(db_manager).get_dashboard(start=start, end=end)
+        )
+    except Exception as exc:
+        logger.error("Trading dashboard failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail={"error": "internal_error", "message": "Trading dashboard failed"})
 
 
 @router.post(

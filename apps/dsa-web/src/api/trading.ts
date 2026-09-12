@@ -2,6 +2,8 @@ import apiClient from './index';
 import { toCamelCase } from './utils';
 import type {
   QmtPositionListResponse,
+  TradingDashboardQuery,
+  TradingDashboardResponse,
   TradingOrderItem,
   TradingOrderListQuery,
   TradingOrderListResponse,
@@ -33,5 +35,13 @@ export const tradingApi = {
     if (account) params.account = account;
     const response = await apiClient.get<Record<string, unknown>>('/api/v1/trading/positions', { params });
     return toCamelCase<QmtPositionListResponse>(response.data);
+  },
+
+  async getDashboard(query: TradingDashboardQuery = {}): Promise<TradingDashboardResponse> {
+    const params: Record<string, string> = {};
+    if (query.start) params.start = query.start;
+    if (query.end) params.end = query.end;
+    const response = await apiClient.get<Record<string, unknown>>('/api/v1/trading/dashboard', { params });
+    return toCamelCase<TradingDashboardResponse>(response.data);
   },
 };

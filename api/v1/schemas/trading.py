@@ -78,6 +78,48 @@ class TradingOrderCallbackRequest(BaseModel):
     error_message: Optional[str] = Field(None, description="失败原因")
 
 
+class TradingDashboardSummary(BaseModel):
+    total_count: int = Field(..., description="已成交订单总数")
+    buy_count: int = Field(..., description="买入笔数")
+    sell_count: int = Field(..., description="卖出笔数")
+    buy_amount: float = Field(..., description="买入总金额")
+    sell_amount: float = Field(..., description="卖出总金额")
+    realized_pnl: float = Field(..., description="已实现盈亏（FIFO 配对）")
+    win_count: int = Field(..., description="盈利卖出笔数")
+    loss_count: int = Field(..., description="亏损卖出笔数")
+    win_rate: Optional[float] = Field(None, description="胜率（盈利/（盈利+亏损），无平仓时为空）")
+    unmatched_sell_quantity: float = Field(..., description="无买入配对的卖出总量")
+
+
+class TradingDashboardCurvePoint(BaseModel):
+    date: str = Field(..., description="交易日 YYYY-MM-DD")
+    daily_pnl: float = Field(..., description="当日已实现盈亏")
+    cumulative_pnl: float = Field(..., description="累计已实现盈亏")
+
+
+class TradingDashboardSymbolItem(BaseModel):
+    symbol: str = Field(..., description="证券代码")
+    symbol_name: Optional[str] = Field(None, description="标的中文名称")
+    buy_count: int = Field(..., description="买入笔数")
+    buy_quantity: float = Field(..., description="买入总量")
+    buy_amount: float = Field(..., description="买入总金额")
+    sell_count: int = Field(..., description="卖出笔数")
+    sell_quantity: float = Field(..., description="卖出总量")
+    sell_amount: float = Field(..., description="卖出总金额")
+    realized_pnl: float = Field(..., description="已实现盈亏")
+    open_quantity: float = Field(..., description="未平仓数量")
+    open_cost: float = Field(..., description="未平仓成本")
+    unmatched_sell_quantity: float = Field(..., description="无买入配对的卖出量")
+
+
+class TradingDashboardResponse(BaseModel):
+    start: Optional[str] = Field(None, description="查询开始日期（含）")
+    end: Optional[str] = Field(None, description="查询结束日期（含）")
+    summary: TradingDashboardSummary
+    curve: List[TradingDashboardCurvePoint] = Field(default_factory=list, description="累计收益曲线数据点")
+    symbols: List[TradingDashboardSymbolItem] = Field(default_factory=list, description="分标的盈亏明细")
+
+
 class QmtPositionItem(BaseModel):
     symbol: str = Field(..., description="证券代码（6 位数字）")
     name: Optional[str] = Field(None, description="标的中文名称")

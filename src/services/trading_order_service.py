@@ -4,8 +4,8 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
-from typing import Any, Dict, Optional
+from datetime import date, datetime
+from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 from src.repositories.trading_order_repo import TradingOrderRepository
@@ -92,6 +92,127 @@ class TradingOrderService:
         offset = (page - 1) * limit
         payload = self.repository.list(status=status, limit=limit, offset=offset)
         return {"page": page, "limit": limit, **payload}
+
+    def get_dashboard(
+        self, *, start: Optional[date] = None, end: Optional[date] = None
+    ) -> Dict[str, Any]:
+        """策略看板：时间范围内已成交订单的 FIFO 配对盈亏汇总。
+
+        只计算已实现盈亏（卖出按 FIFO 与买入配对）；未平仓部分无现价来源，
+        仅展示数量与成本。卖出超出已有买入 lot 的部分计为无配对卖出，不计盈亏。
+        """
+        rows = self.repository.list_filled(start_date=start, end_date=end)
+
+        lots: Dict[str, List[Dict[str, float]]] = {}
+        symbol_stats: Dict[str, Dict[str, Any]] = {}
+        daily_pnl: Dict[str, float] = {}
+        total = {
+            "total_count": 0,
+            "buy_count": 0,
+            "sell_count": 0,
+            "buy_amount": 0.0,
+            "sell_amount": 0.0,
+            "realized_pnl": 0.0,
+            "win_count": 0,
+            "loss_count": 0,
+            "unmatched_sell_quantity": 0.0,
+        }
+
+        for row in rows:
+            qty = float(row.filled_quantity or row.quantity or 0.0)
+            price = float(row.filled_price or 0.0)
+            stat = symbol_stats.setdefault(
+                row.symbol,
+                {
+                    "symbol": row.symbol,
+                    "symbol_name": row.symbol_name,
+                    "buy_count": 0,
+                    "buy_quantity": 0.0,
+                    "buy_amount": 0.0,
+                    "sell_count": 0,
+                    "sell_quantity": 0.0,
+                    "sell_amount": 0.0,
+                    "realized_pnl": 0.0,
+                    "open_quantity": 0.0,
+                    "open_cost": 0.0,
+                    "unmatched_sell_quantity": 0.0,
+                },
+            )
+            if row.symbol_name and not stat["symbol_name"]:
+                stat["symbol_name"] = row.symbol_name
+            total["total_count"] += 1
+
+            if row.side == "buy":
+                total["buy_count"] += 1
+                total["buy_amount"] += qty * price
+                stat["buy_count"] += 1
+                stat["buy_quantity"] += qty
+                stat["buy_amount"] += qty * price
+                lots.setdefault(row.symbol, []).append({"quantity": qty, "price": price})
+                continue
+
+            total["sell_count"] += 1
+            total["sell_amount"] += qty * price
+            stat["sell_count"] += 1
+            stat["sell_quantity"] += qty
+            stat["sell_amount"] += qty * price
+            queue = lots.setdefault(row.symbol, [])
+            remaining = qty
+            order_pnl = 0.0
+            matched_qty = 0.0
+            while remaining > 1e-9 and queue:
+                lot = queue[0]
+                matched = min(remaining, lot["quantity"])
+                order_pnl += (price - lot["price"]) * matched
+                matched_qty += matched
+                lot["quantity"] -= matched
+                remaining -= matched
+                if lot["quantity"] <= 1e-9:
+                    queue.pop(0)
+            if remaining > 1e-9:
+                stat["unmatched_sell_quantity"] += remaining
+                total["unmatched_sell_quantity"] += remaining
+            total["realized_pnl"] += order_pnl
+            stat["realized_pnl"] += order_pnl
+            if order_pnl > 1e-9:
+                total["win_count"] += 1
+            elif order_pnl < -1e-9:
+                total["loss_count"] += 1
+            event_time = row.completed_at or row.created_at
+            # 完全无配对的卖出不计盈亏，也不产生曲线数据点
+            if event_time is not None and matched_qty > 1e-9:
+                day = event_time.date().isoformat()
+                daily_pnl[day] = daily_pnl.get(day, 0.0) + order_pnl
+
+        for stat in symbol_stats.values():
+            queue = lots.get(stat["symbol"], [])
+            stat["open_quantity"] = round(sum(lot["quantity"] for lot in queue), 6)
+            stat["open_cost"] = round(sum(lot["quantity"] * lot["price"] for lot in queue), 6)
+
+        curve: List[Dict[str, Any]] = []
+        cumulative = 0.0
+        for day in sorted(daily_pnl):
+            cumulative += daily_pnl[day]
+            curve.append(
+                {
+                    "date": day,
+                    "daily_pnl": round(daily_pnl[day], 6),
+                    "cumulative_pnl": round(cumulative, 6),
+                }
+            )
+
+        decided = total["win_count"] + total["loss_count"]
+        summary = dict(total)
+        summary["win_rate"] = round(total["win_count"] / decided, 6) if decided else None
+        return {
+            "start": start.isoformat() if start else None,
+            "end": end.isoformat() if end else None,
+            "summary": summary,
+            "curve": curve,
+            "symbols": sorted(
+                symbol_stats.values(), key=lambda item: item["realized_pnl"], reverse=True
+            ),
+        }
 
     def list_pending(self) -> Dict[str, Any]:
         rows = self.repository.list_pending()
