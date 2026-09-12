@@ -122,7 +122,7 @@ class StrategyLabTradeListResponse(BaseModel):
 class StrategyLabDataSyncRequest(BaseModel):
     market: StrategyLabMarket = Field("cn", description="市场")
     source: str = Field("opencli", description="同步来源")
-    sync_type: str = Field("", description="opencli 同步类型：cb_basic / cb_ohlc / cb_premium_history / cb_factors / cb_scheduled / all；cb_factors 的因子日期取 end_date，缺省 start_date，均缺省为今天；cb_scheduled 手动触发调度链路（基础+行情+因子+盘后通知，run_kind=after_close）")
+    sync_type: str = Field("", description="opencli 同步类型：cb_basic / cb_ohlc / cb_premium_history / cb_factors / cb_scheduled / portfolio_holdings / all；cb_factors 的因子日期取 end_date，缺省 start_date，均缺省为今天；cb_scheduled 手动触发盘后调度链路（基础+行情+因子+持仓股票/ETF行情+盘后通知，run_kind=after_close，与每日 20:00 定时任务同链路）；portfolio_holdings 同步 Portfolio 持仓中股票/ETF 的日线（转债持仓跳过，由 cb_ohlc 覆盖）")
     include_delisted: bool = Field(False, description="是否同步已退市可转债（默认仅活跃）")
     start_date: Optional[date] = Field(None, description="行情同步起始日期（缺省时增量）")
     end_date: Optional[date] = Field(None, description="行情同步结束日期（默认今天）")

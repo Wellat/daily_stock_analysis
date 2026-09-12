@@ -1453,6 +1453,9 @@ def test_start_data_sync_dispatches_cb_scheduled_worker(
     monkeypatch.setattr(service, "sync_cb_ohlc", _stage("cb_ohlc", {"bars_new": 2}))
     monkeypatch.setattr(service, "sync_cb_factors", _stage("cb_factors", {"premium_computed": 1}))
     monkeypatch.setattr(
+        service, "sync_portfolio_holdings_ohlc", _stage("portfolio_holdings", {"holdings_total": 0})
+    )
+    monkeypatch.setattr(
         service, "_notify_sync", lambda run_kind, result, *, success: notified.append((run_kind, success))
     )
 
@@ -1473,15 +1476,15 @@ def test_start_data_sync_dispatches_cb_scheduled_worker(
     assert run["run_kind"] == "after_close"
     assert run["trade_date"] == date.today().isoformat()
     assert run["quality_status"] == "usable"
-    # 三个子任务按序执行，共享外层 run，且不各自 complete
-    assert [name for name, _ in calls] == ["cb_basic", "cb_ohlc", "cb_factors"]
+    # 子任务按序执行（盘后链路含持仓行情），共享外层 run，且不各自 complete
+    assert [name for name, _ in calls] == ["cb_basic", "cb_ohlc", "cb_factors", "portfolio_holdings"]
     assert {kwargs["_run_id"] for _, kwargs in calls} == {start["sync_run_id"]}
     assert all(kwargs["_complete_on_success"] is False for _, kwargs in calls)
     assert notified == [("after_close", True)]
     result = run["result"]
     assert result["run_kind"] == "after_close"
     assert result["quality_status"] == "usable"
-    assert {"cb_basic", "cb_ohlc", "cb_factors"} <= set(result)
+    assert {"cb_basic", "cb_ohlc", "cb_factors", "portfolio_holdings"} <= set(result)
 
 
 def test_run_scheduled_sync_standalone_keeps_scheduler_contract(
@@ -1500,6 +1503,7 @@ def test_run_scheduled_sync_standalone_keeps_scheduler_contract(
     monkeypatch.setattr(service, "sync_cb_basic", _stage("cb_basic"))
     monkeypatch.setattr(service, "sync_cb_ohlc", _stage("cb_ohlc"))
     monkeypatch.setattr(service, "sync_cb_factors", _stage("cb_factors"))
+    monkeypatch.setattr(service, "sync_portfolio_holdings_ohlc", _stage("portfolio_holdings"))
     monkeypatch.setattr(
         service, "_notify_sync", lambda run_kind, result, *, success: notified.append((run_kind, success))
     )
@@ -1509,9 +1513,10 @@ def test_run_scheduled_sync_standalone_keeps_scheduler_contract(
 
     result = service.run_scheduled_sync(run_kind="after_close", trade_date=date(2026, 9, 2))
 
-    assert [name for name, _ in calls] == ["cb_basic", "cb_ohlc", "cb_factors"]
+    assert [name for name, _ in calls] == ["cb_basic", "cb_ohlc", "cb_factors", "portfolio_holdings"]
     # 各 stage 只传自己签名支持的日期参数：cb_basic 无日期、cb_ohlc 单日窗口、
-    # cb_factors 单日语义；防止再次统一透传 start/end/trade_date 导致真实方法
+    # cb_factors 单日语义、portfolio_holdings 只收窄上界（起点增量自愈）；
+    # 防止再次统一透传 start/end/trade_date 导致真实方法
     # TypeError。子任务共享总 run 且不各自 complete。
     runs = service.list_sync_runs(page=1, limit=10)["items"]
     assert len(runs) == 1
@@ -1531,6 +1536,10 @@ def test_run_scheduled_sync_standalone_keeps_scheduler_contract(
     }
     assert kwargs_by_stage["cb_factors"] == {
         "market": "cn", "symbols": None, "trade_date": date(2026, 9, 2),
+        "_run_id": master_run["id"], "_complete_on_success": False,
+    }
+    assert kwargs_by_stage["portfolio_holdings"] == {
+        "market": "cn", "symbols": None, "end_date": date(2026, 9, 2),
         "_run_id": master_run["id"], "_complete_on_success": False,
     }
     assert notified == [("after_close", True)]
@@ -1554,3 +1563,170 @@ def test_run_scheduled_sync_standalone_keeps_scheduler_contract(
     intraday_run = repo.latest_sync_run(run_kind="intraday", trade_date=date(2026, 9, 2))
     assert intraday_run is not None and intraday_run.status == "completed"
     assert service.list_sync_runs(page=1, limit=10)["total"] == 2
+
+
+def test_a_share_etf_market_prefix_covers_stocks_etfs_and_rejects_bonds() -> None:
+    from src.services.strategy_lab.cb_providers import _a_share_etf_market_prefix
+
+    assert _a_share_etf_market_prefix("600519") == "sh"  # 沪市股票
+    assert _a_share_etf_market_prefix("000876") == "sz"  # 深市股票
+    assert _a_share_etf_market_prefix("300750") == "sz"  # 创业板
+    assert _a_share_etf_market_prefix("159399") == "sz"  # 深市 ETF
+    assert _a_share_etf_market_prefix("513010") == "sh"  # 沪市 ETF
+    assert _a_share_etf_market_prefix("589130") == "sh"  # 科创板 ETF
+    assert _a_share_etf_market_prefix("110077") == ""    # 沪市转债，不在范围
+    assert _a_share_etf_market_prefix("127061") == ""    # 深市转债，不在范围
+    assert _a_share_etf_market_prefix("899050") == ""    # 北交所
+    assert _a_share_etf_market_prefix("") == ""
+
+
+def test_portfolio_holdings_sync_routes_stocks_etfs_and_skips_bonds(
+    db_manager: DatabaseManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from src.repositories.portfolio_repo import PortfolioRepository
+    from src.services.portfolio_service import PortfolioService
+
+    portfolio = PortfolioService(repo=PortfolioRepository(db_manager))
+    account = portfolio.create_account(name="Main", broker="Demo", market="cn", base_currency="CNY")
+    for symbol in ("600519", "513010", "110077"):
+        portfolio.record_trade(
+            account_id=int(account["id"]),
+            symbol=symbol,
+            trade_date=date(2026, 9, 12),
+            side="buy",
+            quantity=10,
+            price=100,
+            market="cn",
+            currency="CNY",
+        )
+    with db_manager.get_session() as session:
+        session.add(StrategyLabCbBasic(
+            bond_code="110077", bond_name="洪城转债", stock_code="600519",
+            market="cn", source="unit-test",
+        ))
+        session.commit()
+
+    fetched: list[str] = []
+
+    def fake_fetch(self, stock_code, start_date, end_date):
+        fetched.append(stock_code)
+        return pd.DataFrame([{
+            "date": date(2026, 9, 12), "open": 100.0, "high": 101.0, "low": 99.0,
+            "close": 100.5, "volume": 1000.0, "amount": 100500.0, "pct_chg": 0.5,
+        }])
+
+    monkeypatch.setattr(CbUnderlyingStockOhlcFetcher, "fetch_daily", fake_fetch)
+
+    result = StrategyLabDataSyncService(db_manager).sync_portfolio_holdings_ohlc(
+        start_date=date(2026, 9, 12), end_date=date(2026, 9, 12)
+    )
+
+    # 转债持仓跳过（由 cb_ohlc 覆盖），股票与 ETF 均同步
+    assert result["holdings_total"] == 2
+    assert result["bonds_skipped"] == 1
+    assert sorted(fetched) == ["513010", "600519"]
+    assert result["holdings_failed"] == []
+
+    with db_manager.get_session() as session:
+        rows = session.execute(
+            select(StockDaily).where(StockDaily.code.in_(["600519", "513010", "110077"]))
+        ).scalars().all()
+    by_code = {row.code: row for row in rows}
+    assert by_code["600519"].instrument_type == "stock"
+    assert by_code["513010"].instrument_type == "etf"
+    assert by_code["513010"].close == pytest.approx(100.5)
+    assert "110077" not in by_code  # 转债不经本链路落库
+
+
+def test_portfolio_holdings_sync_symbol_filter(
+    db_manager: DatabaseManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from src.repositories.portfolio_repo import PortfolioRepository
+    from src.services.portfolio_service import PortfolioService
+
+    portfolio = PortfolioService(repo=PortfolioRepository(db_manager))
+    account = portfolio.create_account(name="Main", broker="Demo", market="cn", base_currency="CNY")
+    for symbol in ("600519", "513010"):
+        portfolio.record_trade(
+            account_id=int(account["id"]),
+            symbol=symbol,
+            trade_date=date(2026, 9, 12),
+            side="buy",
+            quantity=10,
+            price=100,
+            market="cn",
+            currency="CNY",
+        )
+
+    fetched: list[str] = []
+    monkeypatch.setattr(
+        CbUnderlyingStockOhlcFetcher,
+        "fetch_daily",
+        lambda self, code, start, end: (fetched.append(code) or pd.DataFrame()),
+    )
+
+    result = StrategyLabDataSyncService(db_manager).sync_portfolio_holdings_ohlc(
+        symbols=["513010"],
+        start_date=date(2026, 9, 12),
+        end_date=date(2026, 9, 12),
+    )
+
+    assert fetched == ["513010"]
+    assert result["holdings_total"] == 1
+    assert result["holdings_skipped"] == 1  # 空 frame 记为跳过
+
+
+def test_portfolio_holdings_incremental_start_defaults_to_2025(
+    db_manager: DatabaseManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from src.repositories.portfolio_repo import PortfolioRepository
+    from src.services.portfolio_service import PortfolioService
+
+    portfolio = PortfolioService(repo=PortfolioRepository(db_manager))
+    account = portfolio.create_account(name="Main", broker="Demo", market="cn", base_currency="CNY")
+    portfolio.record_trade(
+        account_id=int(account["id"]),
+        symbol="600519",
+        trade_date=date(2026, 9, 12),
+        side="buy",
+        quantity=10,
+        price=100,
+        market="cn",
+        currency="CNY",
+    )
+    # 本地已有 2026-09-10 收盘：增量起点应为次日
+    db_manager.save_daily_data(
+        pd.DataFrame([{
+            "date": date(2026, 9, 10), "open": 100.0, "high": 101.0, "low": 99.0,
+            "close": 100.0, "volume": 1.0, "amount": 100.0, "pct_chg": 0.0,
+        }]),
+        code="600519",
+        data_source="unit-test",
+        instrument_type="stock",
+    )
+
+    starts: list[date] = []
+    monkeypatch.setattr(
+        CbUnderlyingStockOhlcFetcher,
+        "fetch_daily",
+        lambda self, code, start, end: (starts.append(start) or pd.DataFrame()),
+    )
+
+    service = StrategyLabDataSyncService(db_manager)
+    service.sync_portfolio_holdings_ohlc(end_date=date(2026, 9, 12))
+    assert starts == [date(2026, 9, 11)]  # 有历史 → 最后日期次日
+
+    # 新标的（513010）无本地历史 → 回溯起点 2025-01-01
+    portfolio.record_trade(
+        account_id=int(account["id"]),
+        symbol="513010",
+        trade_date=date(2026, 9, 12),
+        side="buy",
+        quantity=100,
+        price=1.0,
+        market="cn",
+        currency="CNY",
+    )
+    starts.clear()
+    service.sync_portfolio_holdings_ohlc(end_date=date(2026, 9, 12))
+    assert starts == [date(2025, 1, 1), date(2026, 9, 11)]

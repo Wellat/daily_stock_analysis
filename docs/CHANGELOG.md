@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [新功能] 行情数据-数据同步新增「持仓行情·股票/ETF」（`sync_type=portfolio_holdings`）：标的自 Portfolio 持仓重放自动展开（活跃账户、非零数量），转债持仓跳过（由 cb_ohlc 覆盖），股票落 `stock_daily`（instrument_type=stock）、ETF 支持 159/513/589 等代码（instrument_type=etf），增量起点复用本地历史（无历史回溯至 2025-01-01），`symbols` 可过滤；正股抓取器市场前缀映射抽为独立函数并扩展支持沪/深 ETF。同步后持仓页现价/市值即可对股票与 ETF 估值；已纳入盘后调度链路（每日 20:00 `cb_after_close_sync_time` 定时任务与 `cb_scheduled` 手动触发，盘中链路不变）。
 - [改进] 持仓明细标的列展示「中文名称（代码）」：`/portfolio/snapshot` 持仓行新增 `symbol_name` 字段，名称取本地离线数据（转债主表 `strategy_lab_cb_basic` 优先，QMT 上报持仓名兜底），查不到回退仅展示代码；Web 端同步渲染。
 - [改进] 持仓页删除账户增加二次确认：第一层确认后弹出最终确认弹窗（明确提示页面无恢复入口），两次确认后才执行删除，降低误删风险。
 - [新功能] 持仓管理接入 QMT 当日成交上报：新增 `POST /api/v1/trading/qmt/deals`（`X-QMT-Token` 鉴权），QMT 收盘后上报当日成交，服务端校验、日志留档并逐笔自动入账 Portfolio 账本（按资金账号同名自动匹配/新建账户），持仓、成本、已实现/浮动盈亏随快照查询自动更新；按 `account + trade_id` 幂等，重发安全；`unknown` 方向跳过、失败笔逐笔回报不阻断整批；每笔入账配平现金使总权益=市值。与「QMT 持仓同步」互斥使用（文档已注明）。

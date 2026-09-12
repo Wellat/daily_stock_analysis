@@ -11,7 +11,9 @@ import time
 from typing import Any, Dict, List, Optional, Set
 from uuid import uuid4
 
+from src.repositories.portfolio_repo import PortfolioRepository
 from src.repositories.strategy_lab.data_repo import StrategyLabDataRepository
+from src.services.portfolio_service import PortfolioService
 from src.services.strategy_lab.cb_providers import (
     CbUnderlyingStockOhlcFetcher,
     ConvertibleBondOhlcFetcher,
@@ -51,7 +53,8 @@ class StrategyLabDataSyncService:
         整条链路承载在**一条** sync run 上，``run_kind`` 与 ``trade_date``
         落列，供实盘下单前的盘中数据检查（``latest_sync_run``）与同步
         状态查询使用；成功后统一 complete（quality_status 置 usable），
-        失败统一 fail。盘后链路含基础数据，盘中链路仅行情 + 因子。
+        失败统一 fail。盘后链路含基础数据与持仓股票/ETF 行情，盘中链路
+        仅行情 + 因子。
         ``symbols`` 缺省时全量同步；传入时仅同步指定标的。
         ``_run_id`` 由 ``start_data_sync`` 后台线程透传以复用外层 run。
         """
@@ -77,14 +80,17 @@ class StrategyLabDataSyncService:
             _run_id = run.id
         try:
             result: Dict[str, Any] = {}
-            # 三个子任务签名不同：cb_basic 无日期参数；cb_ohlc 只收窄上界
+            # 各子任务签名不同：cb_basic 无日期参数；cb_ohlc 只收窄上界
             # （起点保持增量语义，漏跑的日子可自愈回补）；cb_factors 是单日
-            # 语义，直接用外层 trade_date。
+            # 语义，直接用外层 trade_date；portfolio_holdings 只收窄上界，
+            # 增量起点可自愈回补漏跑的持仓日线。
             stages = ()
             if run_kind == "after_close":
                 # 仅盘后同步 cb_basic
                 stages += (
                     ("cb_basic", self.sync_cb_basic, {}),
+                    # 盘后链路顺带同步持仓股票/ETF 日线（转债行情已由 cb_ohlc 覆盖）
+                    ("portfolio_holdings", self.sync_portfolio_holdings_ohlc, {"end_date": trade_date}),
                 )
 
             stages += (
@@ -711,6 +717,136 @@ class StrategyLabDataSyncService:
             raise
 
     # ------------------------------------------------------------------
+    # 持仓行情同步（Portfolio 持仓中的股票 / ETF → stock_daily）
+    # ------------------------------------------------------------------
+
+    def sync_portfolio_holdings_ohlc(
+        self,
+        *,
+        market: str = "cn",
+        start_date: Optional[date] = None,
+        end_date: Optional[date] = None,
+        symbols: Optional[List[str]] = None,
+        _run_id: Optional[int] = None,
+        _complete_on_success: bool = True,
+    ) -> Dict[str, Any]:
+        """Sync daily OHLC for stocks / ETFs held in Portfolio into ``stock_daily``.
+
+        - 标的自 Portfolio 持仓重放（活跃账户、非零数量、指定 market）：
+          可转债持仓跳过（行情由 ``cb_ohlc`` 覆盖），其余按 A 股 / ETF 同步
+          日线，``instrument_type``：0/3/6 开头 'stock'，1/5 开头 'etf'。
+        - ``start_date`` 缺省增量：有本地历史则从最后日期次日开始，否则从
+          ``2025-01-01`` 开始；``end_date`` 缺省为今天。
+        - ``symbols`` 语义与其他同步方法一致，为持仓代码过滤。
+        """
+        fetcher = CbUnderlyingStockOhlcFetcher()
+        symbol_filter = {str(symbol).strip().lower().split(".")[-1] for symbol in symbols or [] if str(symbol).strip()}
+        snapshot = PortfolioService(repo=PortfolioRepository(self.repository.db)).get_portfolio_snapshot(
+            include_realtime=False
+        )
+        held: Set[str] = set()
+        for account in snapshot.get("accounts", []):
+            for position in account.get("positions", []):
+                if position.get("market") != market:
+                    continue
+                if float(position.get("quantity") or 0.0) <= 0:
+                    continue
+                symbol = str(position.get("symbol") or "").strip().lower()
+                if symbol:
+                    held.add(symbol)
+        cb_codes = {code.lower() for code in self.repository.list_cb_basic_codes(market=market, status=None)}
+        codes = sorted(held - cb_codes)
+        bonds_skipped = len(held & cb_codes)
+        if symbol_filter:
+            codes = [code for code in codes if code in symbol_filter]
+        effective_end = end_date or date.today()
+        payload = {
+            "market": market,
+            "start_date": start_date.isoformat() if start_date else None,
+            "end_date": effective_end.isoformat(),
+            "symbols": symbols or [],
+            "holdings_total": len(codes),
+            "bonds_skipped": bonds_skipped,
+        }
+        if _run_id is None:
+            run = self.repository.create_sync_run(
+                run_uid=uuid4().hex,
+                sync_type="portfolio_holdings",
+                market=market,
+                payload=payload,
+            )
+            run_id = run.id
+        else:
+            run_id = _run_id
+        try:
+            result = {
+                "holdings_total": len(codes),
+                "bonds_skipped": bonds_skipped,
+                "stock_daily_rows_new": 0,
+                "holdings_skipped": 0,
+                "holdings_failed": [],
+            }
+            if not codes:
+                self._raise_if_cancel_requested(run_id)
+                if _complete_on_success:
+                    self.repository.complete_sync_run(run_id, result=result)
+                return {"sync_run_id": run_id, **result}
+            for idx, code in enumerate(codes, 1):
+                self._raise_if_cancel_requested(run_id)
+                instrument_type = "stock" if code[0] in ("0", "3", "6") else "etf"
+                effective_start = self._ohlc_start_date(
+                    code, start_date, instrument_type=instrument_type, default_start=date(2025, 1, 1)
+                )
+                try:
+                    frame = fetcher.fetch_daily(code, effective_start, effective_end)
+                    self._raise_if_cancel_requested(run_id)
+                    if frame.empty:
+                        result["holdings_skipped"] += 1
+                        logger.info(
+                            "[跳过] 持仓 %s 无行情数据（%s~%s）", code, effective_start, effective_end
+                        )
+                    else:
+                        result["stock_daily_rows_new"] += self.repository.db.save_daily_data(
+                            frame,
+                            code,
+                            data_source=fetcher.last_source or "portfolio_holdings",
+                            instrument_type=instrument_type,
+                        )
+                        logger.info(
+                            "[完成] 持仓 %s（%s）行情同步：%d 条（%s~%s，source=%s）",
+                            code,
+                            instrument_type,
+                            len(frame),
+                            effective_start,
+                            effective_end,
+                            fetcher.last_source,
+                        )
+                except _DataSyncCancelled:
+                    raise
+                except Exception as exc:  # noqa: BLE001 - single symbol failure never aborts the batch
+                    result["holdings_failed"].append({"symbol": code, "error": str(exc)})
+                    logger.warning("[失败] 持仓 %s 行情同步失败: %s", code, exc)
+                if idx % 20 == 0 or idx == len(codes):
+                    self.repository.update_sync_run_progress(run_id, result={
+                        "stage": "fetching_holdings_ohlc",
+                        "processed": idx,
+                        "total": len(codes),
+                        "stock_daily_rows_new": result["stock_daily_rows_new"],
+                        "holdings_skipped": result["holdings_skipped"],
+                    })
+            if _complete_on_success:
+                self.repository.complete_sync_run(run_id, result=result)
+            return {"sync_run_id": run_id, **result}
+        except _DataSyncCancelled:
+            result = locals().get("result", {})
+            result["cancelled"] = True
+            self.repository.cancel_sync_run(run_id, result=result)
+            return {"sync_run_id": run_id, "status": "cancelled", **result}
+        except Exception as exc:
+            self.repository.fail_sync_run(run_id, str(exc))
+            raise
+
+    # ------------------------------------------------------------------
     # 可转债因子计算（正股价 / 溢价率 / 剩余规模 → strategy_lab_cb_daily_factors）
     # ------------------------------------------------------------------
 
@@ -880,12 +1016,17 @@ class StrategyLabDataSyncService:
         ``sync_type``: ``cb_basic``（基础数据）/ ``cb_ohlc``（行情）/
         ``cb_premium_history``（补空字段）/ ``cb_factors``（因子计算，日期取
         ``end_date or start_date``，缺省今天）/ ``cb_scheduled``（手动触发
-        调度链路：基础 + 行情 + 因子 + 盘后通知，``run_kind='after_close'``）/
+        调度链路：基础 + 行情 + 因子 + 持仓股票/ETF 行情 + 盘后通知，
+        ``run_kind='after_close'``）/
+        ``portfolio_holdings``（Portfolio 持仓中股票 / ETF 的日线行情）/
         ``all``（先基础后行情）。
         后台任务复用 ``_PROVIDER_SYNC_LOCK`` 互斥，
         进度通过 ``list_sync_runs`` 轮询。
         """
-        if sync_type not in ("cb_basic", "cb_ohlc", "cb_premium_history", "cb_factors", "cb_scheduled", "all"):
+        if sync_type not in (
+            "cb_basic", "cb_ohlc", "cb_premium_history", "cb_factors", "cb_scheduled",
+            "portfolio_holdings", "all",
+        ):
             raise ValueError(f"Unsupported sync_type: {sync_type}")
         if not _PROVIDER_SYNC_LOCK.acquire(blocking=False):
             raise ValueError("已有数据源同步任务进行中，请等待完成后再试")
@@ -949,6 +1090,17 @@ class StrategyLabDataSyncService:
                     )
                     if result["cb_premium_history"].get("status") == "cancelled":
                         return
+                if sync_type == "portfolio_holdings":
+                    result["portfolio_holdings"] = self.sync_portfolio_holdings_ohlc(
+                        market=market,
+                        start_date=start_date,
+                        end_date=end_date,
+                        symbols=symbols,
+                        _run_id=run.id,
+                        _complete_on_success=True,
+                    )
+                    if result["portfolio_holdings"].get("status") == "cancelled":
+                        return
                 if sync_type == "cb_factors":
                     result["cb_factors"] = self.sync_cb_factors(
                         market=market,
@@ -991,7 +1143,8 @@ class StrategyLabDataSyncService:
             raise _DataSyncCancelled()
 
     def _ohlc_start_date(
-        self, code: str, explicit_start: Optional[date], *, instrument_type: str = "convertible_bond"
+        self, code: str, explicit_start: Optional[date], *,
+        instrument_type: str = "convertible_bond", default_start: date = date(2020, 1, 1),
     ) -> date:
         """Resolve the OHLC start date: explicit, else incremental from local history."""
         if explicit_start is not None:
@@ -999,4 +1152,4 @@ class StrategyLabDataSyncService:
         latest = self.repository.get_cb_ohlc_latest_date(code=code, instrument_type=instrument_type)
         if latest is not None:
             return latest + timedelta(days=1)
-        return date(2020, 1, 1)
+        return default_start

@@ -885,15 +885,33 @@ class ConvertibleBondOhlcFetcher:
         return _fetch_tencent_kline(symbol, start_date=start_date, end_date=end_date, timeout=self.timeout)
 
 
+def _a_share_etf_market_prefix(code: str) -> str:
+    """SH/SZ 股票与 ETF 六位代码 → 腾讯行情前缀；不支持的代码返回空串。
+
+    ``6/5`` 开头 → ``sh``（沪市股票与 51x/56x/58x 基金），``0/1/3`` 开头 →
+    ``sz``（深市股票、159 基金与 16x LOF）。可转债（沪 11x / 深 12x）与
+    北交所等其余前缀返回空串，由调用方跳过。
+    """
+    if len(code) != 6 or not code.isdigit():
+        return ""
+    if code[:2] in ("11", "12"):
+        return ""
+    if code[0] in ("6", "5"):
+        return "sh"
+    if code[0] in ("0", "1", "3"):
+        return "sz"
+    return ""
+
+
 class CbUnderlyingStockOhlcFetcher:
     """Fetch underlying-stock (可转债正股) daily OHLC bars via Tencent kline.
 
     The returned frame uses the same standardized columns as
     ``ConvertibleBondOhlcFetcher`` and can be persisted straight into
     ``stock_daily`` with ``instrument_type='stock'``.
-    Code prefix mapping: ``6xxxxx -> sh``, ``0/3xxxxx -> sz``; any other
-    prefix yields an empty frame because CB underlyings are SH/SZ A-shares
-    only. Volume keeps Tencent's raw unit (手) to stay consistent with the
+    Code prefix mapping: ``6/5xxxxx -> sh``, ``0/1/3xxxxx -> sz``（含 159/51x
+    等 ETF）；convertible-bond and other prefixes yield an empty frame.
+    Volume keeps Tencent's raw unit (手) to stay consistent with the
     akshare A-share daily convention.
     """
 
@@ -913,7 +931,7 @@ class CbUnderlyingStockOhlcFetcher:
         self.last_source = None
         if not code.isdigit() or len(code) != 6:
             return _empty_ohlc_frame()
-        prefix = "sh" if code[0] == "6" else ("sz" if code[0] in ("0", "3") else "")
+        prefix = _a_share_etf_market_prefix(code)
         if not prefix:
             logger.warning("Underlying stock %s is not an SH/SZ A-share code, skip", code)
             return _empty_ohlc_frame()

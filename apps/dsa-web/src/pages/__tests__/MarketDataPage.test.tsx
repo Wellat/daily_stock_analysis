@@ -202,7 +202,7 @@ describe('MarketDataPage', () => {
     fireEvent.click(screen.getByRole('tab', { name: '数据同步' }));
     fireEvent.change(await screen.findByLabelText('同步来源'), { target: { value: 'cb_premium_history' } });
     fireEvent.click(screen.getByLabelText('包含已退市'));
-    fireEvent.change(await screen.findByLabelText('同步可转债代码'), { target: { value: '110081' } });
+    fireEvent.change(await screen.findByLabelText('同步标的代码'), { target: { value: '110081' } });
     fireEvent.click(screen.getByRole('button', { name: '开始同步' }));
     await waitFor(() => expect(cbApi.syncData).toHaveBeenCalledWith({
       market: 'cn',

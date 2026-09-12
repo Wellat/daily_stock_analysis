@@ -11,8 +11,8 @@ const TEXT_LIMIT = 200;
 const SYNC_RUN_POLL_INTERVAL_MS = 10_000;
 const SYNC_RUN_POLLING_STORAGE_KEY = 'dsa.data-sync-runs.polling-enabled';
 
-// 同步能力：cb_basic=基础数据 / cb_ohlc=行情 / cb_premium_history=补溢价率与剩余规模 / cb_factors=因子计算 / cb_scheduled=盘后调度链路
-type SyncKind = 'cb_basic' | 'cb_ohlc' | 'cb_premium_history' | 'cb_factors' | 'cb_scheduled';
+// 同步能力：cb_basic=基础数据 / cb_ohlc=行情 / cb_premium_history=补溢价率与剩余规模 / cb_factors=因子计算 / cb_scheduled=盘后调度链路 / portfolio_holdings=持仓股票与ETF日线
+type SyncKind = 'cb_basic' | 'cb_ohlc' | 'cb_premium_history' | 'cb_factors' | 'cb_scheduled' | 'portfolio_holdings';
 
 const statusTag = (status: string) => {
   const map: Record<string, string> = { completed: 'success', running: 'processing', failed: 'error', cancelled: 'default' };
@@ -171,7 +171,7 @@ export const DataSyncPanel: React.FC = () => {
             include_delisted: includeDelisted,
             symbols: parseSymbols(syncSymbols),
           };
-          if (syncKind === 'cb_ohlc') {
+          if (syncKind === 'cb_ohlc' || syncKind === 'portfolio_holdings') {
             if (startDate) payload.start_date = startDate;
             if (endDate) payload.end_date = endDate;
           }
@@ -191,14 +191,21 @@ export const DataSyncPanel: React.FC = () => {
               <option value="cb_ohlc">可转债行情（cb_ohlc）</option>
               <option value="cb_premium_history">可转债补溢价/规模（cb_premium_history）</option>
               <option value="cb_factors">可转债因子计算（cb_factors）</option>
-              <option value="cb_scheduled">可转债盘后调度同步（基础+行情+因子-cb_scheduled）</option>
+              <option value="cb_scheduled">盘后调度同步（基础+行情+因子+持仓行情-cb_scheduled）</option>
+              <option value="portfolio_holdings">持仓行情·股票/ETF（portfolio_holdings）</option>
             </select>
           </label>
           <label className="text-sm">
-            可转债代码
-            <input aria-label="同步可转债代码" className={`${SL_INPUT_CLASS} mt-1`} value={syncSymbols} onChange={(event) => setSyncSymbols(event.target.value)} placeholder="可选，逗号分隔" />
+            {syncKind === 'portfolio_holdings' ? '持仓标的过滤' : '可转债代码'}
+            <input
+              aria-label="同步标的代码"
+              className={`${SL_INPUT_CLASS} mt-1`}
+              value={syncSymbols}
+              onChange={(event) => setSyncSymbols(event.target.value)}
+              placeholder="可选，逗号分隔；留空同步全部持仓"
+            />
           </label>
-          {syncKind === 'cb_ohlc' ? (
+          {syncKind === 'cb_ohlc' || syncKind === 'portfolio_holdings' ? (
             <>
               <label className="text-sm">
                 起始日期
