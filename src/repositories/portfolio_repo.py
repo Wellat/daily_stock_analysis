@@ -318,11 +318,13 @@ class PortfolioRepository:
         tax: float,
         note: Optional[str] = None,
         dedup_hash: Optional[str] = None,
+        symbol_name: Optional[str] = None,
     ) -> PortfolioTrade:
         row = PortfolioTrade(
             account_id=account_id,
             trade_uid=trade_uid,
             symbol=symbol,
+            symbol_name=(symbol_name or "").strip() or None,
             market=market,
             currency=currency,
             trade_date=trade_date,
@@ -825,6 +827,58 @@ class PortfolioRepository:
             # Keep only the latest N calendar days window for risk calculations.
             cutoff_ordinal = as_of.toordinal() - lookback_days
             return [row for row in rows if row.snapshot_date.toordinal() >= cutoff_ordinal]
+
+    def list_daily_snapshots(
+        self,
+        *,
+        date_from: date,
+        date_to: date,
+        cost_method: str,
+        account_id: Optional[int] = None,
+    ) -> List[PortfolioDailySnapshot]:
+        """Load snapshot rows within [date_from, date_to] (inclusive), ascending by date."""
+        with self.db.get_session() as session:
+            query = (
+                select(PortfolioDailySnapshot)
+                .join(
+                    PortfolioAccount,
+                    PortfolioAccount.id == PortfolioDailySnapshot.account_id,
+                )
+                .where(
+                    and_(
+                        PortfolioDailySnapshot.snapshot_date >= date_from,
+                        PortfolioDailySnapshot.snapshot_date <= date_to,
+                        PortfolioDailySnapshot.cost_method == cost_method,
+                        PortfolioAccount.is_active.is_(True),
+                    )
+                )
+            )
+            if account_id is not None:
+                query = query.where(PortfolioDailySnapshot.account_id == account_id)
+            return list(
+                session.execute(
+                    query.order_by(
+                        PortfolioDailySnapshot.snapshot_date.asc(),
+                        PortfolioDailySnapshot.account_id.asc(),
+                    )
+                ).scalars().all()
+            )
+
+    def earliest_event_date(self, account_id: int) -> Optional[date]:
+        """Earliest trade/cash event date of an account, or None when no events."""
+        with self.db.get_session() as session:
+            trade_date = session.execute(
+                select(func.min(PortfolioTrade.trade_date)).where(
+                    PortfolioTrade.account_id == account_id
+                )
+            ).scalar()
+            cash_date = session.execute(
+                select(func.min(PortfolioCashLedger.event_date)).where(
+                    PortfolioCashLedger.account_id == account_id
+                )
+            ).scalar()
+            dates = [value for value in (trade_date, cash_date) if value is not None]
+            return min(dates) if dates else None
 
     def list_cached_position_identities(
         self,

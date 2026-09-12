@@ -1191,6 +1191,7 @@ class Config:
     cb_sync_enabled: bool = True
     cb_intraday_sync_time: str = "14:20"
     cb_after_close_sync_time: str = "20:00"
+    portfolio_snapshot_time: str = "20:05"     # 持仓每日快照生成时间（趋势图数据源，须晚于盘后行情同步）
     cb_intraday_data_max_age_minutes: int = 15
     cb_sync_notify_email_enabled: bool = True
     schedule_times: List[str] = field(default_factory=lambda: ["18:00"])
@@ -2151,6 +2152,7 @@ class Config:
             cb_sync_enabled=parse_env_bool(os.getenv('CB_SYNC_ENABLED'), default=True),
             cb_intraday_sync_time=(os.getenv('CB_INTRADAY_SYNC_TIME') or '14:20').strip(),
             cb_after_close_sync_time=(os.getenv('CB_AFTER_CLOSE_SYNC_TIME') or '20:00').strip(),
+            portfolio_snapshot_time=(os.getenv('PORTFOLIO_SNAPSHOT_TIME') or '20:05').strip(),
             cb_intraday_data_max_age_minutes=parse_env_int(os.getenv('CB_INTRADAY_DATA_MAX_AGE_MINUTES'), 15, field_name='CB_INTRADAY_DATA_MAX_AGE_MINUTES', minimum=1),
             cb_sync_notify_email_enabled=parse_env_bool(os.getenv('CB_SYNC_NOTIFY_EMAIL_ENABLED'), default=True),
             schedule_times=normalize_schedule_times(

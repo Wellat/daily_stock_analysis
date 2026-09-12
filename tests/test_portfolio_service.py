@@ -656,7 +656,7 @@ class PortfolioServiceTestCase(unittest.TestCase):
         self.assertIsNone(missing["unrealized_pnl_pct"])
 
     def test_build_positions_handles_zero_cost_without_division(self) -> None:
-        account = SimpleNamespace(base_currency="CNY")
+        account = SimpleNamespace(id=1, base_currency="CNY")
 
         positions, _, _, _, _ = self.service._build_positions(
             account=account,

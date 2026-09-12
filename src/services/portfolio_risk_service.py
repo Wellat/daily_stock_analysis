@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -334,15 +335,16 @@ class PortfolioRiskService:
             "failed_count": 0,
         }
         errors: List[str] = []
-        board_cache: Dict[Tuple[str, str], str] = {}
 
+        # 先收集所有持仓的 (symbol, market) 唯一键，避免重复拉取同一标的的板块。
+        positions: List[Tuple[str, str, float]] = []
+        seen_keys: set = set()
         for account in snapshot.get("accounts", []):
             for pos in account.get("positions", []):
                 symbol = str(pos.get("symbol") or "").strip().upper()
                 market = str(pos.get("market") or account.get("market") or "").strip().lower()
                 if not symbol:
                     continue
-
                 market_value = float(pos.get("market_value_base") or 0.0)
                 valuation_currency = str(pos.get("valuation_currency") or account.get("base_currency") or "CNY")
                 converted, _, _ = self.portfolio_service.convert_amount(
@@ -351,16 +353,37 @@ class PortfolioRiskService:
                     to_currency="CNY",
                     as_of_date=as_of_date,
                 )
+                positions.append((symbol, market, converted))
+                seen_keys.add((symbol, market))
 
-                sector = self._resolve_primary_sector(
-                    symbol=symbol,
-                    market=market,
-                    board_cache=board_cache,
-                    coverage=coverage,
-                    errors=errors,
-                )
-                sector_exposure[sector] = sector_exposure.get(sector, 0.0) + converted
-                sector_symbols.setdefault(sector, set()).add(symbol)
+        # 并发解析板块：每个唯一 (symbol, market) 只拉一次，网络耗时重叠，
+        # 避免持仓多时串行调用 efinance 累积超过前端超时。
+        board_cache: Dict[Tuple[str, str], str] = {}
+        if seen_keys:
+            with ThreadPoolExecutor(max_workers=min(8, len(seen_keys))) as executor:
+                future_map = {
+                    executor.submit(self._fetch_sector_name, symbol, market): (symbol, market)
+                    for symbol, market in seen_keys
+                }
+                for future in as_completed(future_map):
+                    symbol, market = future_map[future]
+                    try:
+                        sector_name = future.result()
+                    except Exception as exc:  # noqa: BLE001 - 单标的失败降级为 UNCLASSIFIED
+                        coverage["failed_count"] += 1
+                        errors.append(f"{symbol}: {exc}")
+                        sector_name = None
+                    if sector_name:
+                        coverage["classified_count"] += 1
+                        board_cache[(symbol, market)] = sector_name
+                    else:
+                        coverage["unclassified_count"] += 1
+                        board_cache[(symbol, market)] = "UNCLASSIFIED"
+
+        for symbol, market, converted in positions:
+            sector = board_cache.get((symbol, market), "UNCLASSIFIED")
+            sector_exposure[sector] = sector_exposure.get(sector, 0.0) + converted
+            sector_symbols.setdefault(sector, set()).add(symbol)
 
         rows = []
         for sector, exposure in sector_exposure.items():
@@ -386,38 +409,18 @@ class PortfolioRiskService:
             "errors": errors[:20],
         }
 
-    def _resolve_primary_sector(
-        self,
-        *,
-        symbol: str,
-        market: str,
-        board_cache: Dict[Tuple[str, str], str],
-        coverage: Dict[str, int],
-        errors: List[str],
-    ) -> str:
-        cache_key = (symbol, market)
-        if cache_key in board_cache:
-            return board_cache[cache_key]
+    def _fetch_sector_name(self, symbol: str, market: str) -> Optional[str]:
+        """拉取单个标的的板块名（纯函数，供并发调用）。
 
+        非 cn 市场或拉取失败返回 None，由调用方降级为 UNCLASSIFIED。
+        """
         if market != "cn":
-            coverage["unclassified_count"] += 1
-            board_cache[cache_key] = "UNCLASSIFIED"
-            return board_cache[cache_key]
-
+            return None
         try:
             boards = self._fetch_belong_boards(symbol)
-            sector_name = self._pick_primary_board_name(boards)
-            if sector_name:
-                coverage["classified_count"] += 1
-                board_cache[cache_key] = sector_name
-                return board_cache[cache_key]
-        except Exception as exc:
-            coverage["failed_count"] += 1
-            errors.append(f"{symbol}: {exc}")
-
-        coverage["unclassified_count"] += 1
-        board_cache[cache_key] = "UNCLASSIFIED"
-        return board_cache[cache_key]
+            return self._pick_primary_board_name(boards)
+        except Exception:
+            return None
 
     def _fetch_belong_boards(self, symbol: str) -> List[Dict[str, Any]]:
         manager = self._get_data_manager()

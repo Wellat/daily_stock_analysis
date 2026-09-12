@@ -192,7 +192,7 @@ export const DataSyncPanel: React.FC = () => {
               <option value="cb_premium_history">可转债补溢价/规模（cb_premium_history）</option>
               <option value="cb_factors">可转债因子计算（cb_factors）</option>
               <option value="cb_scheduled">盘后调度同步（基础+行情+因子+持仓行情-cb_scheduled）</option>
-              <option value="portfolio_holdings">持仓行情·股票/ETF（portfolio_holdings）</option>
+              <option value="portfolio_holdings">持仓行情·A股/ETF/港股（portfolio_holdings）</option>
             </select>
           </label>
           <label className="text-sm">

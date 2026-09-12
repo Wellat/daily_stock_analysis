@@ -21,6 +21,7 @@ import type {
   PortfolioQmtSyncResponse,
   PortfolioRiskResponse,
   PortfolioSnapshotResponse,
+  PortfolioTrendResponse,
   PortfolioTradeCreateRequest,
   PortfolioTradeListResponse,
 } from '../types/portfolio';
@@ -35,6 +36,13 @@ type SnapshotQuery = {
 type FxRefreshQuery = {
   accountId?: number;
   asOf?: string;
+};
+
+type TrendQuery = {
+  accountId?: number;
+  start?: string;
+  end?: string;
+  costMethod?: PortfolioCostMethod;
 };
 
 type EventQuery = {
@@ -83,6 +91,23 @@ function buildFxRefreshParams(query: FxRefreshQuery): Record<string, string | nu
   }
   if (query.asOf) {
     params.as_of = query.asOf;
+  }
+  return params;
+}
+
+function buildTrendParams(query: TrendQuery): Record<string, string | number> {
+  const params: Record<string, string | number> = {};
+  if (query.accountId != null) {
+    params.account_id = query.accountId;
+  }
+  if (query.start) {
+    params.start = query.start;
+  }
+  if (query.end) {
+    params.end = query.end;
+  }
+  if (query.costMethod) {
+    params.cost_method = query.costMethod;
   }
   return params;
 }
@@ -136,6 +161,13 @@ export const portfolioApi = {
       params: buildSnapshotParams(query),
     });
     return toCamelCase<PortfolioSnapshotResponse>(response.data);
+  },
+
+  async getTrend(query: TrendQuery = {}): Promise<PortfolioTrendResponse> {
+    const response = await apiClient.get<Record<string, unknown>>('/api/v1/portfolio/trend', {
+      params: buildTrendParams(query),
+    });
+    return toCamelCase<PortfolioTrendResponse>(response.data);
   },
 
   async analyzePosition(symbol: string, payload: PortfolioPositionAnalysisRequest = {}): Promise<TaskAccepted> {

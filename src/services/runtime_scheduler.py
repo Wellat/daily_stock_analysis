@@ -163,6 +163,37 @@ def build_convertible_bond_sync_background_tasks(config: Config) -> List[Dict[st
     ]
 
 
+# 持仓每日快照任务（趋势图数据源）
+def build_portfolio_snapshot_background_tasks(config: Config) -> List[Dict[str, Any]]:
+    """Schedule the daily portfolio snapshot used by the trend view.
+
+    默认 20:05（可转债盘后链路 20:00 之后，当日持仓行情已同步）每个 A 股
+    交易日为全部活跃账户生成 fifo/avg 两种成本法的当日快照。
+    """
+    from src.services.portfolio_trend_service import PortfolioTrendService
+    state = {"date": None}
+
+    def task() -> None:
+        now = datetime.now()
+        hhmm = getattr(config, "portfolio_snapshot_time", "20:05")
+        if now.strftime("%H:%M") != hhmm or state["date"] == now.date():
+            return
+        # 仅 A 股交易日运行（exchange-calendars 不可用时 fail-open 视为交易日）
+        if not _is_cn_trading_day(now.date()):
+            logger.info("Skip portfolio snapshot on non-trading day %s", now.date())
+            return
+        try:
+            result = PortfolioTrendService().run_daily_snapshot(trade_date=now.date())
+            state["date"] = now.date()
+            logger.info("[PortfolioSnapshot] scheduled run ok: %s", result)
+        except Exception:
+            logger.exception("Portfolio daily snapshot failed")
+
+    return [
+        {"task": task, "interval_seconds": 30, "run_immediately": False, "name": "portfolio_daily_snapshot"},
+    ]
+
+
 class RuntimeSchedulerService:
     """Manage scheduled analysis inside the current API/Web/Desktop process."""
 
@@ -282,6 +313,7 @@ class RuntimeSchedulerService:
         tasks = self._current_agent_event_monitor_background_tasks(config)
         tasks.extend(build_live_strategy_background_tasks(config))
         tasks.extend(build_convertible_bond_sync_background_tasks(config))
+        tasks.extend(build_portfolio_snapshot_background_tasks(config))
         return tasks
 
     def _current_agent_event_monitor_background_tasks(self, config: Config) -> List[Dict[str, Any]]:

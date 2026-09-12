@@ -1477,7 +1477,7 @@ def test_start_data_sync_dispatches_cb_scheduled_worker(
     assert run["trade_date"] == date.today().isoformat()
     assert run["quality_status"] == "usable"
     # 子任务按序执行（盘后链路含持仓行情），共享外层 run，且不各自 complete
-    assert [name for name, _ in calls] == ["cb_basic", "cb_ohlc", "cb_factors", "portfolio_holdings"]
+    assert [name for name, _ in calls] == ["cb_basic", "portfolio_holdings", "cb_ohlc", "cb_factors"]
     assert {kwargs["_run_id"] for _, kwargs in calls} == {start["sync_run_id"]}
     assert all(kwargs["_complete_on_success"] is False for _, kwargs in calls)
     assert notified == [("after_close", True)]
@@ -1513,7 +1513,7 @@ def test_run_scheduled_sync_standalone_keeps_scheduler_contract(
 
     result = service.run_scheduled_sync(run_kind="after_close", trade_date=date(2026, 9, 2))
 
-    assert [name for name, _ in calls] == ["cb_basic", "cb_ohlc", "cb_factors", "portfolio_holdings"]
+    assert [name for name, _ in calls] == ["cb_basic", "portfolio_holdings", "cb_ohlc", "cb_factors"]
     # 各 stage 只传自己签名支持的日期参数：cb_basic 无日期、cb_ohlc 单日窗口、
     # cb_factors 单日语义、portfolio_holdings 只收窄上界（起点增量自愈）；
     # 防止再次统一透传 start/end/trade_date 导致真实方法
@@ -1588,7 +1588,7 @@ def test_portfolio_holdings_sync_routes_stocks_etfs_and_skips_bonds(
 
     portfolio = PortfolioService(repo=PortfolioRepository(db_manager))
     account = portfolio.create_account(name="Main", broker="Demo", market="cn", base_currency="CNY")
-    for symbol in ("600519", "513010", "110077"):
+    for symbol in ("600519", "513010", "110077", "HK00981"):
         portfolio.record_trade(
             account_id=int(account["id"]),
             symbol=symbol,
@@ -1621,21 +1621,44 @@ def test_portfolio_holdings_sync_routes_stocks_etfs_and_skips_bonds(
         start_date=date(2026, 9, 12), end_date=date(2026, 9, 12)
     )
 
-    # 转债持仓跳过（由 cb_ohlc 覆盖），股票与 ETF 均同步
-    assert result["holdings_total"] == 2
+    # 转债持仓跳过（由 cb_ohlc 覆盖），A 股 / ETF / 港股均同步且保留原始代码大小写
+    assert result["holdings_total"] == 3
     assert result["bonds_skipped"] == 1
-    assert sorted(fetched) == ["513010", "600519"]
+    assert sorted(fetched) == ["513010", "600519", "HK00981"]
     assert result["holdings_failed"] == []
 
     with db_manager.get_session() as session:
         rows = session.execute(
-            select(StockDaily).where(StockDaily.code.in_(["600519", "513010", "110077"]))
+            select(StockDaily).where(StockDaily.code.in_(["600519", "513010", "110077", "HK00981"]))
         ).scalars().all()
     by_code = {row.code: row for row in rows}
     assert by_code["600519"].instrument_type == "stock"
     assert by_code["513010"].instrument_type == "etf"
     assert by_code["513010"].close == pytest.approx(100.5)
+    assert by_code["HK00981"].instrument_type == "hk_stock"  # 港股按原代码大小写落库
     assert "110077" not in by_code  # 转债不经本链路落库
+
+
+def test_underlying_stock_fetcher_routes_hk_codes_to_tencent_hk_prefix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def fake_kline(symbol, *, start_date, end_date, timeout):
+        calls.append(symbol)
+        return pd.DataFrame([{
+            "date": date(2026, 9, 12), "open": 10.0, "high": 11.0, "low": 9.0,
+            "close": 10.5, "volume": 1000.0, "amount": 10500.0, "pct_chg": 0.5,
+        }])
+
+    monkeypatch.setattr(cb_providers, "_fetch_tencent_kline", fake_kline)
+    fetcher = CbUnderlyingStockOhlcFetcher()
+
+    frame = fetcher.fetch_daily("HK00981", date(2026, 9, 1), date(2026, 9, 12))
+
+    assert calls == ["hk00981"]  # 港股走腾讯 hk 前缀
+    assert fetcher.last_source == "tencent"
+    assert frame["close"].iloc[0] == pytest.approx(10.5)
 
 
 def test_portfolio_holdings_sync_symbol_filter(

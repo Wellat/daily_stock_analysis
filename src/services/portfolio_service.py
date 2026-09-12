@@ -201,6 +201,7 @@ class PortfolioService:
         trade_uid: Optional[str] = None,
         dedup_hash: Optional[str] = None,
         note: Optional[str] = None,
+        symbol_name: Optional[str] = None,
     ) -> Dict[str, Any]:
         side_norm = (side or "").strip().lower()
         if side_norm not in VALID_SIDES:
@@ -250,6 +251,7 @@ class PortfolioService:
                     tax=float(tax),
                     note=(note or "").strip() or None,
                     dedup_hash=dedup_hash_norm,
+                    symbol_name=symbol_name,
                 )
                 return {"id": int(row.id)}
         except (DuplicateTradeUidError, DuplicateTradeDedupHashError) as exc:
@@ -613,6 +615,42 @@ class PortfolioService:
             "limitations": aggregate["limitations"],
             "accounts": accounts_payload,
         }
+
+    def replay_daily_snapshot(
+        self,
+        *,
+        account: Any,
+        as_of: date,
+        cost_method: str = "fifo",
+    ) -> Dict[str, Any]:
+        """Replay one account as of a date and persist ONLY the daily-snapshot row.
+
+        与 ``get_portfolio_snapshot`` 的区别：不覆盖最新持仓/批次缓存，适合
+        趋势回补与盘后快照任务（幂等，键 account_id + snapshot_date + cost_method）。
+        """
+        method = self._normalize_cost_method(cost_method)
+        snapshot = self._replay_account(
+            account=account,
+            as_of_date=as_of,
+            cost_method=method,
+            include_realtime=False,
+        )
+        self.repo.upsert_daily_snapshot(
+            account_id=account.id,
+            snapshot_date=as_of,
+            cost_method=method,
+            base_currency=account.base_currency,
+            total_cash=snapshot["total_cash"],
+            total_market_value=snapshot["total_market_value"],
+            total_equity=snapshot["total_equity"],
+            unrealized_pnl=snapshot["unrealized_pnl"],
+            realized_pnl=snapshot["realized_pnl"],
+            fee_total=snapshot["fee_total"],
+            tax_total=snapshot["tax_total"],
+            fx_stale=bool(snapshot["fx_stale"]),
+            payload=json.dumps(snapshot["payload"], ensure_ascii=False),
+        )
+        return snapshot
 
     def refresh_fx_rates(
         self,
@@ -1006,13 +1044,28 @@ class PortfolioService:
             "fx_stale": fx_stale,
         }
 
-    def _position_symbol_names(self, keys: Iterable[Tuple[str, str, str]]) -> Dict[str, str]:
-        """解析持仓展示名称：转债主表 → QMT 上报持仓名，均为本地离线数据。
+    def _position_symbol_names(
+        self,
+        keys: Iterable[Tuple[str, str, str]],
+        *,
+        account_id: Optional[int] = None,
+    ) -> Dict[str, str]:
+        """解析持仓展示名称：交易流水 symbol_name → 转债主表 → QMT 上报持仓名。
 
         返回以小写代码为键的名称映射；查不到的代码不产生条目，前端回退为仅展示代码。
         """
-        cn_symbols = sorted({symbol for symbol, market, _ in keys if market == "cn" and symbol})
         names: Dict[str, str] = {}
+        # 交易流水里显式记录的名称优先（source of truth，随录入/同步持久化）
+        if account_id is not None:
+            try:
+                for trade in self.repo.list_trades(account_id, as_of=date.today()):
+                    name = (trade.symbol_name or "").strip()
+                    symbol = (trade.symbol or "").strip().lower()
+                    if name and symbol and symbol not in names:
+                        names[symbol] = name
+            except Exception as exc:
+                logger.warning("Failed to resolve trade symbol names for positions: %s", exc)
+        cn_symbols = sorted({symbol for symbol, market, _ in keys if market == "cn" and symbol})
         if cn_symbols:
             try:
                 names.update(
@@ -1073,7 +1126,7 @@ class PortfolioService:
             if active_symbols
             else None
         )
-        symbol_names = self._position_symbol_names(keys)
+        symbol_names = self._position_symbol_names(keys, account_id=account.id)
 
         for key in sorted(keys):
             symbol, market, currency = key

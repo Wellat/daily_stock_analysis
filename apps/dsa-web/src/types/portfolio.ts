@@ -51,6 +51,27 @@ export interface PortfolioPositionItem {
   limitations?: string[];
 }
 
+export interface PortfolioTrendPoint {
+  date: string;
+  totalCash: number;
+  totalMarketValue: number;
+  totalEquity: number;
+  realizedPnl: number;
+  unrealizedPnl: number;
+  totalPnl: number;
+}
+
+export interface PortfolioTrendResponse {
+  accountId?: number | null;
+  costMethod: PortfolioCostMethod | string;
+  currency: string;
+  fromDate: string;
+  toDate: string;
+  backfilled: number;
+  truncated: boolean;
+  items: PortfolioTrendPoint[];
+}
+
 export interface PortfolioPositionAnalysisRequest {
   accountId?: number;
   analysisPhase?: 'auto' | 'premarket' | 'intraday' | 'postmarket';

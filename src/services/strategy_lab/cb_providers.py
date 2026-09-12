@@ -23,6 +23,7 @@ from tenacity import (
     before_sleep_log,
 )
 
+from data_provider import is_hk_stock_code
 from data_provider.akshare_fetcher import _akshare_call_with_timeout
 from src.config import get_config
 
@@ -924,11 +925,24 @@ class CbUnderlyingStockOhlcFetcher:
     def fetch_daily(self, stock_code: str, start_date: date, end_date: date) -> pd.DataFrame:
         """Fetch daily OHLC within ``[start_date, end_date]``; empty frame on total failure.
 
+        支持 A 股 / ETF（六位代码）与港股（``HK`` + 4-5 位数字，如
+        ``HK00981``；港股走腾讯 ``hk`` 前缀，返回港币原币收盘价）。
         ``self.last_source`` reports which upstream served the last frame
         ("tencent" / None when empty).
         """
         code = _strip_code(stock_code)
         self.last_source = None
+        if is_hk_stock_code(code):
+            try:
+                frame = _fetch_tencent_kline(
+                    f"hk{code[2:]}", start_date=start_date, end_date=end_date, timeout=self.timeout
+                )
+                if not frame.empty:
+                    self.last_source = "tencent"
+                return frame
+            except Exception as exc:  # noqa: BLE001 - single symbol failure never aborts the batch
+                logger.warning("Tencent HK-stock daily failed for %s: %s", code, exc)
+                return _empty_ohlc_frame()
         if not code.isdigit() or len(code) != 6:
             return _empty_ohlc_frame()
         prefix = _a_share_etf_market_prefix(code)

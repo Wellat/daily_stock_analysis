@@ -8,7 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
-- [新功能] 行情数据-数据同步新增「持仓行情·股票/ETF」（`sync_type=portfolio_holdings`）：标的自 Portfolio 持仓重放自动展开（活跃账户、非零数量），转债持仓跳过（由 cb_ohlc 覆盖），股票落 `stock_daily`（instrument_type=stock）、ETF 支持 159/513/589 等代码（instrument_type=etf），增量起点复用本地历史（无历史回溯至 2025-01-01），`symbols` 可过滤；正股抓取器市场前缀映射抽为独立函数并扩展支持沪/深 ETF。同步后持仓页现价/市值即可对股票与 ETF 估值；已纳入盘后调度链路（每日 20:00 `cb_after_close_sync_time` 定时任务与 `cb_scheduled` 手动触发，盘中链路不变）。
+- [新功能] 持仓页新增「趋势」Tab：基于每日快照展示总市值与总收益（已实现+浮动三线）的交易日曲线，支持单账户与全部账户汇总、近7/30/90天与自定义范围；每个 A 股交易日一份快照（`portfolio_daily_snapshots`），新增 `GET /api/v1/portfolio/trend`（缺失日期按需回补，上限 400 账户日，账本回溯修改自动失效自愈）与盘后定时任务 `PORTFOLIO_SNAPSHOT_TIME`（默认 20:05，晚于行情同步，fifo/avg 双口径）。
+- [改进] 持仓页 KPI 卡片调整：移除「汇率状态」卡（含手动刷新汇率入口与结果提示），新增「持仓盈亏」卡——展示已实现+浮动总盈亏（按基准币种）及相对当前持仓总成本的盈亏比例，红绿着色；`/portfolio/fx/refresh` 接口保持不变，仅移除页面入口。
+- [新功能] 行情数据-数据同步新增「持仓行情·A股/ETF/港股」（`sync_type=portfolio_holdings`）：标的自 Portfolio 持仓重放自动展开（活跃账户、非零数量），转债持仓跳过（由 cb_ohlc 覆盖），A 股落 `stock_daily`（instrument_type=stock）、ETF 支持 159/513/589 等代码（instrument_type=etf）、港股 `HK` 前缀代码走腾讯 hk 前缀 K 线（instrument_type=hk_stock，港币原币收盘价），增量起点复用本地历史（无历史回溯至 2025-01-01），`symbols` 可过滤；正股抓取器市场前缀映射抽为独立函数并扩展支持沪/深 ETF 与港股。同步后持仓页现价/市值即可对股票、ETF 与港股估值；已纳入盘后调度链路（每日 20:00 `cb_after_close_sync_time` 定时任务与 `cb_scheduled` 手动触发，盘中链路不变）。
 - [改进] 持仓明细标的列展示「中文名称（代码）」：`/portfolio/snapshot` 持仓行新增 `symbol_name` 字段，名称取本地离线数据（转债主表 `strategy_lab_cb_basic` 优先，QMT 上报持仓名兜底），查不到回退仅展示代码；Web 端同步渲染。
 - [改进] 持仓页删除账户增加二次确认：第一层确认后弹出最终确认弹窗（明确提示页面无恢复入口），两次确认后才执行删除，降低误删风险。
 - [新功能] 持仓管理接入 QMT 当日成交上报：新增 `POST /api/v1/trading/qmt/deals`（`X-QMT-Token` 鉴权），QMT 收盘后上报当日成交，服务端校验、日志留档并逐笔自动入账 Portfolio 账本（按资金账号同名自动匹配/新建账户），持仓、成本、已实现/浮动盈亏随快照查询自动更新；按 `account + trade_id` 幂等，重发安全；`unknown` 方向跳过、失败笔逐笔回报不阻断整批；每笔入账配平现金使总权益=市值。与「QMT 持仓同步」互斥使用（文档已注明）。

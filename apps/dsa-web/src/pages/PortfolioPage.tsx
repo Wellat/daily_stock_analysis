@@ -5,14 +5,14 @@ import { decisionSignalsApi } from '../api/decisionSignals';
 import { portfolioApi } from '../api/portfolio';
 import type { ParsedApiError } from '../api/error';
 import { getParsedApiError } from '../api/error';
-import { ApiErrorAlert, Card, Badge, ConfirmDialog, EmptyState, InlineAlert } from '../components/common';
+import { Tabs } from 'antd';
+import { ApiErrorAlert, Card, ConfirmDialog, EmptyState, InlineAlert } from '../components/common';
+import { PortfolioTrendTab } from '../components/portfolio/PortfolioTrendTab';
 import { PortfolioSignalSummary } from '../components/decision-signals/DecisionSignalDisplay';
 import { useUiLanguage } from '../contexts/UiLanguageContext';
 import { formatUiText } from '../i18n/uiText';
 import { PORTFOLIO_TEXT } from '../locales/featureText';
-import type { FxRefreshFeedback } from '../utils/portfolioFormat';
 import {
-  buildFxRefreshFeedback,
   formatBrokerLabel,
   formatCashDirectionLabel,
   formatCorporateActionLabel,
@@ -24,7 +24,6 @@ import {
   formatSignedPct,
   getCsvCommitVariant,
   getCsvParseVariant,
-  getFxRefreshFeedbackVariant,
   getPositionPriceLabel,
   getTodayIso,
   hasPositionPrice,
@@ -106,11 +105,6 @@ type PendingDelete =
 type PendingAccountDelete = {
   accountId: number;
   accountName: string;
-};
-
-type FxRefreshContext = {
-  viewKey: string;
-  requestId: number;
 };
 
 const PORTFOLIO_INPUT_CLASS =
@@ -206,8 +200,6 @@ const PortfolioPage: React.FC = () => {
   const [snapshot, setSnapshot] = useState<PortfolioSnapshotResponse | null>(null);
   const [risk, setRisk] = useState<PortfolioRiskResponse | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-  const [fxRefreshing, setFxRefreshing] = useState(false);
-  const [fxRefreshFeedback, setFxRefreshFeedback] = useState<FxRefreshFeedback | null>(null);
   const [error, setError] = useState<ParsedApiError | null>(null);
   const [riskWarning, setRiskWarning] = useState<string | null>(null);
   const [writeWarning, setWriteWarning] = useState<string | null>(null);
@@ -279,26 +271,17 @@ const PortfolioPage: React.FC = () => {
   });
 
   const queryAccountId = selectedAccount === 'all' ? undefined : selectedAccount;
-  const refreshViewKey = `${selectedAccount === 'all' ? 'all' : `account:${selectedAccount}`}:cost:${costMethod}`;
-  const refreshContextRef = useRef<FxRefreshContext>({ viewKey: refreshViewKey, requestId: 0 });
   const hasAccounts = accounts.length > 0;
   const writableAccount = selectedAccount === 'all' ? undefined : accounts.find((item) => item.id === selectedAccount);
   const writableAccountId = writableAccount?.id;
   const writeBlocked = !writableAccountId;
-  const canDeleteSelectedAccount = Boolean(writableAccountId) && !isLoading && !fxRefreshing && !accountDeleteLoading;
+  const canDeleteSelectedAccount = Boolean(writableAccountId) && !isLoading && !accountDeleteLoading;
   const totalEventPages = Math.max(1, Math.ceil(eventTotal / DEFAULT_PAGE_SIZE));
   const currentEventCount = eventType === 'trade'
     ? tradeEvents.length
     : eventType === 'cash'
       ? cashEvents.length
       : corporateEvents.length;
-
-  const isActiveRefreshContext = (requestedViewKey: string, requestedRequestId: number) => {
-    return (
-      refreshContextRef.current.viewKey === requestedViewKey
-      && refreshContextRef.current.requestId === requestedRequestId
-    );
-  };
 
   const loadAccounts = useCallback(async () => {
     try {
@@ -452,15 +435,6 @@ const PortfolioPage: React.FC = () => {
   }, [loadEvents]);
 
   useEffect(() => {
-    refreshContextRef.current = {
-      viewKey: refreshViewKey,
-      requestId: refreshContextRef.current.requestId + 1,
-    };
-    setFxRefreshing(false);
-    setFxRefreshFeedback(null);
-  }, [refreshViewKey]);
-
-  useEffect(() => {
     setEventPage(1);
   }, [eventType, queryAccountId, eventDateFrom, eventDateTo, eventSymbol, eventSide, eventDirection, eventActionType]);
 
@@ -485,6 +459,11 @@ const PortfolioPage: React.FC = () => {
     rows.sort((a, b) => Number(b.marketValueBase || 0) - Number(a.marketValueBase || 0));
     return rows;
   }, [snapshot]);
+
+  // 持仓盈亏 = 已实现 + 浮动；比例 = 总盈亏 / 当前持仓总成本
+  const positionPnlTotal = Number(snapshot?.realizedPnl ?? 0) + Number(snapshot?.unrealizedPnl ?? 0);
+  const positionCostTotal = positionRows.reduce((sum, row) => sum + Number(row.totalCost || 0), 0);
+  const positionPnlPct = positionCostTotal > 0 ? (positionPnlTotal / positionCostTotal) * 100 : null;
 
   const snapshotMatchesAccountScope = useMemo(() => {
     if (!snapshot) return false;
@@ -866,106 +845,6 @@ const PortfolioPage: React.FC = () => {
     setPortfolioSignalsRefreshKey((current) => current + 1);
   };
 
-  const reloadSnapshotAndRiskForScope = useCallback(async (
-    requestedViewKey: string,
-    requestedRequestId: number,
-    requestedAccountId: number | undefined,
-    requestedCostMethod: PortfolioCostMethod,
-  ): Promise<boolean> => {
-    if (!isActiveRefreshContext(requestedViewKey, requestedRequestId)) {
-      return false;
-    }
-
-    setRiskWarning(null);
-
-    try {
-      const snapshotData = await portfolioApi.getSnapshot({
-        accountId: requestedAccountId,
-        costMethod: requestedCostMethod,
-        includeRealtime: false,
-      });
-      if (!isActiveRefreshContext(requestedViewKey, requestedRequestId)) {
-        return false;
-      }
-      setSnapshot(snapshotData);
-      setError(null);
-
-      try {
-        const riskData = await portfolioApi.getRisk({
-          accountId: requestedAccountId,
-          costMethod: requestedCostMethod,
-          includeRealtime: false,
-        });
-        if (!isActiveRefreshContext(requestedViewKey, requestedRequestId)) {
-          return false;
-        }
-        setRisk(riskData);
-        setRiskWarning(null);
-      } catch (riskErr) {
-        if (!isActiveRefreshContext(requestedViewKey, requestedRequestId)) {
-          return false;
-        }
-        setRisk(null);
-        const parsed = getParsedApiError(riskErr);
-        setRiskWarning(parsed.message || '风险数据获取失败，已降级为仅展示快照数据。');
-      }
-      return true;
-    } catch (err) {
-      if (!isActiveRefreshContext(requestedViewKey, requestedRequestId)) {
-        return false;
-      }
-      setSnapshot(null);
-      setRisk(null);
-      setError(getParsedApiError(err));
-      return false;
-    }
-  }, []);
-
-  const handleRefreshFx = async () => {
-    if (!hasAccounts || isLoading || fxRefreshing) {
-      return;
-    }
-
-    const requestedViewKey = refreshViewKey;
-    const requestedAccountId = queryAccountId;
-    const requestedCostMethod = costMethod;
-    const requestedRequestId = refreshContextRef.current.requestId + 1;
-    refreshContextRef.current = {
-      viewKey: requestedViewKey,
-      requestId: requestedRequestId,
-    };
-
-    try {
-      setFxRefreshing(true);
-      setFxRefreshFeedback(null);
-      const result = await portfolioApi.refreshFx({
-        accountId: requestedAccountId,
-      });
-      if (!isActiveRefreshContext(requestedViewKey, requestedRequestId)) {
-        return;
-      }
-      const reloaded = await reloadSnapshotAndRiskForScope(
-        requestedViewKey,
-        requestedRequestId,
-        requestedAccountId,
-        requestedCostMethod,
-      );
-      if (!reloaded || !isActiveRefreshContext(requestedViewKey, requestedRequestId)) {
-        return;
-      }
-      setFxRefreshFeedback(buildFxRefreshFeedback(result));
-    } catch (err) {
-      if (!isActiveRefreshContext(requestedViewKey, requestedRequestId)) {
-        return;
-      }
-      setError(getParsedApiError(err));
-    } finally {
-      if (isActiveRefreshContext(requestedViewKey, requestedRequestId)) {
-        setFxRefreshing(false);
-      }
-    }
-  };
-
   const decisionSignalRiskPreviewItems = (risk?.decisionSignalRisk?.items ?? []).slice(0, 3);
   const formatDecisionSignalRiskAction = (signal: Partial<DecisionSignalItem>): string => (
     getDecisionActionLabel(
@@ -1035,7 +914,7 @@ const PortfolioPage: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => void handleRefresh()}
-                  disabled={isLoading || fxRefreshing}
+                  disabled={isLoading}
                   className="btn-secondary text-sm flex-1"
                 >
                   {isLoading ? text.refreshing : text.refreshData}
@@ -1060,6 +939,15 @@ const PortfolioPage: React.FC = () => {
         )}
       </section>
 
+      <Tabs
+        className="mt-2"
+        defaultActiveKey="overview"
+        items={[
+          {
+            key: 'overview',
+            label: '持仓总览',
+            children: (
+              <>
       {error ? <ApiErrorAlert error={error} onDismiss={() => setError(null)} /> : null}
       {riskWarning ? (
         <InlineAlert
@@ -1180,26 +1068,14 @@ const PortfolioPage: React.FC = () => {
           <p className="mt-1 text-xl font-semibold text-foreground">{formatMoney(snapshot?.totalCash, snapshot?.currency || 'CNY')}</p>
         </Card>
         <Card variant="gradient" padding="md">
-          <div className="flex items-start justify-between gap-3">
-            <p className="text-xs text-secondary">{text.fxStatus}</p>
-            <button
-              type="button"
-              className="btn-secondary !px-3 !py-1 !text-xs shrink-0"
-              onClick={() => void handleRefreshFx()}
-              disabled={!hasAccounts || isLoading || fxRefreshing}
-            >
-              {fxRefreshing ? text.refreshing : text.refreshFx}
-            </button>
-          </div>
-          <div className="mt-2">{snapshot?.fxStale ? <Badge variant="warning">{text.stale}</Badge> : <Badge variant="success">{text.latest}</Badge>}</div>
-          {fxRefreshFeedback ? (
-            <InlineAlert
-              variant={getFxRefreshFeedbackVariant(fxRefreshFeedback.tone)}
-              title={text.fxRefreshResult}
-              message={fxRefreshFeedback.text}
-              className="mt-3 rounded-xl px-3 py-2 text-xs shadow-none"
-            />
-          ) : null}
+          <p className="text-xs text-secondary">{text.positionPnl}</p>
+          <p className={`mt-1 text-xl font-semibold ${positionPnlTotal >= 0 ? 'text-success' : 'text-danger'}`}>
+            {positionPnlTotal >= 0 ? '+' : ''}
+            {formatMoney(positionPnlTotal, snapshot?.currency || 'CNY')}
+          </p>
+          <p className={`mt-0.5 text-xs font-medium ${positionPnlTotal >= 0 ? 'text-success' : 'text-danger'}`}>
+            {positionPnlPct === null ? '--' : formatSignedPct(positionPnlPct)}
+          </p>
         </Card>
       </section>
 
@@ -1717,6 +1593,18 @@ const PortfolioPage: React.FC = () => {
           </div>
         </Card>
       </section>
+              </>
+            ),
+          },
+          {
+            key: 'trend',
+            label: '趋势',
+            children: (
+              <PortfolioTrendTab accountId={queryAccountId} costMethod={costMethod} />
+            ),
+          },
+        ]}
+      />
       <ConfirmDialog
         isOpen={Boolean(pendingDelete)}
         title="删除错误流水"

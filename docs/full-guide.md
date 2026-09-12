@@ -1819,7 +1819,8 @@ worker 会把 `triggered`、`skipped`、`degraded`、`failed` 写入 `alert_trig
 
 ### `/portfolio` 页面可做什么
 
-- 查看全量持仓或切换到单个账户视角；持仓明细标的列展示「中文名称（代码）」，名称来自转债主表与 QMT 上报持仓名（本地离线数据），查不到时仅展示代码。现价/市值依赖本地日线（页面默认快速模式不走实时行情）：转债行情走「行情数据-数据同步」的 cb_ohlc，持仓中的股票/ETF 走「持仓行情·股票/ETF」（portfolio_holdings，标的自持仓自动展开）。
+- 查看全量持仓或切换到单个账户视角；持仓明细标的列展示「中文名称（代码）」，名称来自转债主表与 QMT 上报持仓名（本地离线数据），查不到时仅展示代码。现价/市值依赖本地日线（页面默认快速模式不走实时行情）：转债行情走「行情数据-数据同步」的 cb_ohlc，持仓中的 A 股/ETF/港股走「持仓行情·A股/ETF/港股」（portfolio_holdings，标的自持仓自动展开，港股收盘价为港币原币）。
+- 「趋势」Tab 展示总市值与总收益（已实现+浮动）的每日曲线：每个 A 股交易日一份快照，盘后定时生成（`PORTFOLIO_SNAPSHOT_TIME`，默认 20:05，晚于行情同步），首次查询自动回补缺失交易日（上限 400 账户日）；跟随页头的账户与成本法选择，支持单账户与全部账户汇总（跨币种账户按基准币直加）。
 - 在 `fifo` / `avg` 两种成本法之间切换，查看快照 KPI、风险摘要和 Top Positions 集中度图表。
 - 直接在 Web 页面新增账户、删除误建账户（删除需两次确认），或录入交易、现金流水、公司行动等事件。
 - 通过 CSV 导入持仓记录，支持先 `dry_run` 预览，再决定是否正式写入。
@@ -1848,6 +1849,7 @@ worker 会把 `triggered`、`skipped`、`degraded`、`failed` 写入 `alert_trig
 | 接口 | 方法 | 说明 |
 |------|------|------|
 | `/api/v1/portfolio/snapshot` | GET | 查询持仓快照 |
+| `/api/v1/portfolio/trend` | GET | 查询每日快照趋势（总市值/总收益，缺失日期自动回补） |
 | `/api/v1/portfolio/risk` | GET | 查询风险摘要 |
 | `/api/v1/portfolio/trades` | GET | 分页查询交易记录 |
 | `/api/v1/portfolio/cash-ledger` | GET | 分页查询现金流水 |

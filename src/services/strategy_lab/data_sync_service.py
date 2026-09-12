@@ -733,8 +733,10 @@ class StrategyLabDataSyncService:
         """Sync daily OHLC for stocks / ETFs held in Portfolio into ``stock_daily``.
 
         - 标的自 Portfolio 持仓重放（活跃账户、非零数量、指定 market）：
-          可转债持仓跳过（行情由 ``cb_ohlc`` 覆盖），其余按 A 股 / ETF 同步
-          日线，``instrument_type``：0/3/6 开头 'stock'，1/5 开头 'etf'。
+          可转债持仓跳过（行情由 ``cb_ohlc`` 覆盖），其余按 A 股 / ETF / 港股
+          同步日线，``instrument_type``：0/3/6 开头 'stock'，1/5 开头 'etf'，
+          ``HK`` 前缀 'hk_stock'（收盘价为港币原币，币种换算跟随账本交易
+          的 currency 口径）。
         - ``start_date`` 缺省增量：有本地历史则从最后日期次日开始，否则从
           ``2025-01-01`` 开始；``end_date`` 缺省为今天。
         - ``symbols`` 语义与其他同步方法一致，为持仓代码过滤。
@@ -744,6 +746,8 @@ class StrategyLabDataSyncService:
         snapshot = PortfolioService(repo=PortfolioRepository(self.repository.db)).get_portfolio_snapshot(
             include_realtime=False
         )
+        # 保留代码原始大小写（stock_daily 按精确 code 匹配估值，如 HK00981），
+        # 过滤与转债集合比较时统一小写
         held: Set[str] = set()
         for account in snapshot.get("accounts", []):
             for position in account.get("positions", []):
@@ -751,14 +755,15 @@ class StrategyLabDataSyncService:
                     continue
                 if float(position.get("quantity") or 0.0) <= 0:
                     continue
-                symbol = str(position.get("symbol") or "").strip().lower()
+                symbol = str(position.get("symbol") or "").strip()
                 if symbol:
                     held.add(symbol)
         cb_codes = {code.lower() for code in self.repository.list_cb_basic_codes(market=market, status=None)}
-        codes = sorted(held - cb_codes)
-        bonds_skipped = len(held & cb_codes)
+        held_lower = {symbol.lower(): symbol for symbol in held}
+        codes = sorted(symbol for lower, symbol in held_lower.items() if lower not in cb_codes)
+        bonds_skipped = len(held) - len(codes)
         if symbol_filter:
-            codes = [code for code in codes if code in symbol_filter]
+            codes = [code for code in codes if code.lower() in symbol_filter]
         effective_end = end_date or date.today()
         payload = {
             "market": market,
@@ -793,7 +798,10 @@ class StrategyLabDataSyncService:
                 return {"sync_run_id": run_id, **result}
             for idx, code in enumerate(codes, 1):
                 self._raise_if_cancel_requested(run_id)
-                instrument_type = "stock" if code[0] in ("0", "3", "6") else "etf"
+                if code[:2].upper() == "HK":
+                    instrument_type = "hk_stock"
+                else:
+                    instrument_type = "stock" if code[0] in ("0", "3", "6") else "etf"
                 effective_start = self._ohlc_start_date(
                     code, start_date, instrument_type=instrument_type, default_start=date(2025, 1, 1)
                 )

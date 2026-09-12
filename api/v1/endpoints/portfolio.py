@@ -36,11 +36,13 @@ from api.v1.schemas.portfolio import (
     PortfolioSnapshotResponse,
     PortfolioTradeListResponse,
     PortfolioTradeCreateRequest,
+    PortfolioTrendResponse,
 )
 from src.services.task_queue import get_task_queue
 from src.services.portfolio_import_service import PortfolioImportService
 from src.services.portfolio_qmt_sync import PortfolioQmtSyncService
 from src.services.portfolio_risk_service import PortfolioRiskService
+from src.services.portfolio_trend_service import PortfolioTrendService
 from src.services.portfolio_service import (
     PortfolioBusyError,
     PortfolioConflictError,
@@ -442,6 +444,33 @@ def get_snapshot(
         raise _bad_request(exc)
     except Exception as exc:
         raise _internal_error("Get snapshot failed", exc)
+
+
+@router.get(
+    "/trend",
+    response_model=PortfolioTrendResponse,
+    responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
+    summary="Get daily portfolio trend (market value / PnL)",
+)
+def get_trend(
+    account_id: Optional[int] = Query(None, description="Optional account id, default aggregates all active accounts"),
+    start: Optional[date] = Query(None, description="Start date YYYY-MM-DD, default 90 calendar days back"),
+    end: Optional[date] = Query(None, description="End date YYYY-MM-DD, default today"),
+    cost_method: str = Query("fifo", description="Cost method: fifo or avg"),
+) -> PortfolioTrendResponse:
+    try:
+        return PortfolioTrendResponse(
+            **PortfolioTrendService().get_trend(
+                account_id=account_id,
+                start=start,
+                end=end,
+                cost_method=cost_method,
+            )
+        )
+    except ValueError as exc:
+        raise _bad_request(exc)
+    except Exception as exc:
+        raise _internal_error("Get portfolio trend failed", exc)
 
 
 @router.post(

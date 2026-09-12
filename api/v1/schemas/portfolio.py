@@ -306,6 +306,27 @@ class PortfolioFxRefreshResponse(BaseModel):
     error_count: int
 
 
+class PortfolioTrendPoint(BaseModel):
+    date: str = Field(..., description="快照日期 YYYY-MM-DD")
+    total_cash: float = Field(0.0, description="总现金（基准币直加）")
+    total_market_value: float = Field(0.0, description="总市值")
+    total_equity: float = Field(0.0, description="总权益")
+    realized_pnl: float = Field(0.0, description="已实现盈亏（截至当日累计）")
+    unrealized_pnl: float = Field(0.0, description="浮动盈亏（当日持仓）")
+    total_pnl: float = Field(0.0, description="总收益 = 已实现 + 浮动")
+
+
+class PortfolioTrendResponse(BaseModel):
+    account_id: Optional[int] = Field(None, description="账户 ID，空为全部活跃账户汇总")
+    cost_method: str = Field("fifo", description="成本法")
+    currency: str = Field("CNY", description="汇总币种")
+    from_date: str = Field(..., description="起始日期 YYYY-MM-DD")
+    to_date: str = Field(..., description="结束日期 YYYY-MM-DD")
+    backfilled: int = Field(0, description="本次请求回补的快照数")
+    truncated: bool = Field(False, description="回补是否触达单次上限被截断")
+    items: List[PortfolioTrendPoint] = Field(default_factory=list, description="按日期升序的趋势点")
+
+
 class PortfolioDecisionSignalRiskItem(BaseModel):
     account_id: Optional[int] = None
     symbol: str

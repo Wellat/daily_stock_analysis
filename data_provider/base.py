@@ -210,6 +210,16 @@ def _is_etf_code(code: str) -> bool:
     )
 
 
+def _is_convertible_bond_code(code: str) -> bool:
+    """判定 A 股可转债代码（沪 11xxxx / 深 12xxxx）。"""
+    normalized = normalize_stock_code(code)
+    return (
+        normalized.isdigit()
+        and len(normalized) == 6
+        and normalized.startswith(("11", "12"))
+    )
+
+
 def _coerce_chip_metric(value: Any) -> Optional[float]:
     try:
         if value is None:
@@ -2310,6 +2320,10 @@ class DataFetcherManager:
         """
         stock_code = normalize_stock_code(stock_code)
         if _market_tag(stock_code) != "cn":
+            return []
+        # ETF 与可转债均无“所属板块”语义，efinance 对它们返回 None 并抛
+        # 'NoneType' object is not subscriptable；提前过滤，避免无谓调用与错误日志。
+        if _is_etf_code(stock_code) or _is_convertible_bond_code(stock_code):
             return []
         candidate_fetchers = [
             fetcher

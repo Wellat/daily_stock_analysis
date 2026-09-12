@@ -548,6 +548,7 @@ class PortfolioTrade(Base):
     account_id = Column(Integer, ForeignKey('portfolio_accounts.id'), nullable=False, index=True)
     trade_uid = Column(String(128))
     symbol = Column(String(16), nullable=False, index=True)
+    symbol_name = Column(String(64))
     market = Column(String(8), nullable=False, default='cn')
     currency = Column(String(8), nullable=False, default='CNY')
     trade_date = Column(Date, nullable=False, index=True)
@@ -1891,6 +1892,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             (StrategyLabSyncRun.__tablename__, "data_snapshot_at", "DATETIME"),
             (StrategyLabSyncRun.__tablename__, "quality_status", "VARCHAR(16) DEFAULT 'unknown'"),
             (StrategyLabSyncRun.__tablename__, "notification_status", "VARCHAR(16) DEFAULT 'pending'"),
+            (PortfolioTrade.__tablename__, "symbol_name", "VARCHAR(64)"),
         ]
         for table_name, column_name, ddl in migrations:
             if not inspector.has_table(table_name):

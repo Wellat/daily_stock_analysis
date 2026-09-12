@@ -63,7 +63,7 @@ python scripts/sync_cb_data.py --basic --bond 113709       # 单只
 `cb_premium_history` 会按可转债代码 + 日期补写已有 `strategy_lab_cb_daily_factors` 行中的 `premium_rate` / `remaining_size` 空值；已有值和不存在的行都会跳过。
 `cb_factors` 为单日因子计算：因子日期取 `end_date`（缺省 `start_date`，均缺省为今天），页面「数据同步」来源下拉框可直接选择触发。
 `cb_scheduled` 为手动触发盘后调度链路：按序执行基础数据 → 行情 → 因子计算 → 持仓股票/ETF 行情（等价定时调度使用的 `run_scheduled_sync`，`run_kind='after_close'`，与每日 20:00 的 `cb_after_close_sync_time` 定时任务同链路），整条链路复用一条 sync run（取消/进度挂在同一条记录上），完成后按配置发送盘后通知邮件；盘中链路（`run_kind='intraday'`）仍仅行情 + 因子。
-`portfolio_holdings` 同步 Portfolio 持仓中的股票与 ETF 日线：标的自持仓重放（活跃账户、非零数量）自动展开，可转债持仓跳过（行情由 `cb_ohlc` 覆盖）；`start_date` 缺省增量（无本地历史回溯至 `2025-01-01`）、`end_date` 缺省今天，`symbols` 为持仓代码过滤。落 `stock_daily`，`instrument_type` 为 `stock`（0/3/6 开头）或 `etf`（1/5 开头，如 159xxx/513xxx），供持仓页现价/市值估值使用；已纳入盘后调度链路（20:00 定时任务与 `cb_scheduled` 手动触发）。
+`portfolio_holdings` 同步 Portfolio 持仓中的 A 股、ETF 与港股日线：标的自持仓重放（活跃账户、非零数量）自动展开，可转债持仓跳过（行情由 `cb_ohlc` 覆盖）；`start_date` 缺省增量（无本地历史回溯至 `2025-01-01`）、`end_date` 缺省今天，`symbols` 为持仓代码过滤。落 `stock_daily`，`instrument_type` 为 `stock`（0/3/6 开头）、`etf`（1/5 开头，如 159xxx/513xxx）或 `hk_stock`（`HK` 前缀代码，腾讯 `hk` 前缀 K 线，收盘价为港币原币），供持仓页现价/市值估值使用；已纳入盘后调度链路（20:00 定时任务与 `cb_scheduled` 手动触发）。
 
 返回 `running` 后通过 `GET /api/v1/strategy-lab/data-sync/runs` 轮询进度。
 

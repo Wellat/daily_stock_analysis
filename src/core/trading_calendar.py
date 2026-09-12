@@ -175,6 +175,32 @@ def is_market_open(market: str, check_date: date) -> bool:
         return True
 
 
+def cn_trading_days_between(start: date, end: date) -> List[date]:
+    """
+    Enumerate CN (XSHG) trading sessions within [start, end] inclusive.
+
+    与 ``is_market_open`` 同一数据源（exchange-calendars，离线内存库）。
+    库缺失或范围异常时逐日回退 ``is_market_open``（fail-open 等价自然日），
+    保证调用方始终拿到可迭代的日期序列。
+    """
+    if end < start:
+        return []
+    if _XCALS_AVAILABLE:
+        try:
+            cal = xcals.get_calendar(MARKET_EXCHANGE["cn"])
+            sessions = cal.sessions_in_range(
+                pd.Timestamp(start), pd.Timestamp(end)
+            )
+            return [ts.date() for ts in sessions]
+        except Exception as e:  # pragma: no cover - defensive, keep fallback
+            logger.warning("cn_trading_days_between fallback to is_market_open: %s", e)
+    return [
+        start + timedelta(days=offset)
+        for offset in range((end - start).days + 1)
+        if is_market_open("cn", start + timedelta(days=offset))
+    ]
+
+
 def get_market_now(
     market: Optional[str], current_time: Optional[datetime] = None
 ) -> datetime:
