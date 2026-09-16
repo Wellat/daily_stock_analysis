@@ -21,7 +21,9 @@ const formatPrice = (value?: number | null): string => (value == null ? '--' : v
 const eventTypeTag = (eventType: string) => {
   const map: Record<string, string> = {
     strong_redeem: 'error',
+    force_redemption: 'error',
     down_revise: 'warning',
+    no_revise: 'warning',
     put: 'processing',
     new_issue: 'success',
     listing: 'success',

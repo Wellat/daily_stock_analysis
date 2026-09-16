@@ -1,3 +1,4 @@
+import json
 from datetime import date
 from uuid import uuid4
 
@@ -11,11 +12,13 @@ from src.storage import StrategyLabCbBasic, StrategyLabCbDailyFactor, StrategyDe
 
 
 def _seed_cb_universe(db: DatabaseManager, trade_date: date, bonds: list[dict]) -> None:
-    """写入策略上下文依赖的 cb_basic + 当日因子行（含可选强赎告警）。"""
+    """写入策略上下文依赖的 cb_basic + 当日因子行（含可选强赎告警/最后交易日）。"""
     with db.get_session() as session:
         for b in bonds:
             session.add(StrategyLabCbBasic(bond_code=b["code"], bond_name=b["name"],
-                                           stock_code=f"SH{b['code']}", market="cn", status="active"))
+                                           stock_code=f"SH{b['code']}", market="cn", status="active",
+                                           terms_json=json.dumps({"last_trading_date": b["ltd"].isoformat()})
+                                           if b.get("ltd") else None))
         session.commit()
         for b in bonds:
             session.add(StrategyLabCbDailyFactor(bond_code=b["code"], trade_date=trade_date,
@@ -461,5 +464,145 @@ def test_frequency_one_rebalances_every_trading_day(monkeypatch: pytest.MonkeyPa
         saturday = service.run(trade_date=date(2024, 1, 6), preview=True, mode="rebalance")
         assert saturday["skip_reason"] == "rebalance_frequency"
         assert service.run(trade_date=date(2024, 1, 8), preview=True)["mode"] == "rebalance"
+    finally:
+        DatabaseManager.reset_instance()
+
+
+def test_last_trading_day_forces_exit_even_without_event_alert(monkeypatch: pytest.MonkeyPatch):
+    """最后交易日风控独立于事件告警：无 redeem_alert 但临近/已过最后交易日的持仓强制退出。"""
+    _weekdays_only(monkeypatch)
+    DatabaseManager.reset_instance()
+    db = DatabaseManager(db_url="sqlite:///:memory:")
+    try:
+        service = LiveStrategyService(db)
+        service.save_config({"qmt_account": "testS", "enabled": True, "data_sync_before_run": False,
+                             "parameters": {"max_positions": 1}})
+        trade_date = date(2024, 1, 2)  # 周二
+        _seed_cb_universe(db, trade_date, [
+            {"code": "113001", "name": "正常债", "close": 100.0, "premium": 5.0},  # 无最后交易日约束
+            {"code": "113003", "name": "临末期债", "close": 105.0, "premium": 8.0, "ltd": date(2024, 1, 3)},  # 周三止交易
+            {"code": "113004", "name": "已过期债", "close": 102.0, "premium": 6.0, "ltd": date(2023, 12, 20)},  # 已过最后交易日仍 active
+        ])
+        QmtPositionService(db).report_positions(account="testS", positions=[
+            {"symbol": "113001", "volume": 50, "can_use_volume": 50},
+            {"symbol": "113003", "volume": 80, "can_use_volume": 80},
+            {"symbol": "113004", "volume": 30, "can_use_volume": 30},
+        ])
+
+        result = service.run(trade_date=trade_date, mode="event_check", preview=True)
+
+        actions = {d["symbol"]: (d["action"], d.get("reason")) for d in result["decisions"]}
+        assert actions["113001"] == ("hold", "no_blocking_event")  # 正常持仓不受影响
+        assert actions["113003"] == ("exit", "last_trading_day_exit")
+        assert actions["113004"] == ("exit", "last_trading_day_exit")  # 已过最后交易日 → 剩余 0 天
+        orders = {(o["symbol"], o["side"], o["quantity"]) for o in result["rebalance"]}
+        assert orders == {("113003", "sell", 80), ("113004", "sell", 30)}
+        # 决策附带最后交易日信息，便于运行详情对账
+        detail = next(d for d in result["decisions"] if d["symbol"] == "113003")
+        assert detail["decision_data"]["last_trading_date"] == "2024-01-03"
+    finally:
+        DatabaseManager.reset_instance()
+
+
+def test_last_trading_day_blocks_buy_and_dedupes_reconciliation_sell(monkeypatch: pytest.MonkeyPatch):
+    """rebalance：买入排除临近最后交易日的标的，强制退出与对账补卖不重复下单。"""
+    _weekdays_only(monkeypatch)
+    DatabaseManager.reset_instance()
+    db = DatabaseManager(db_url="sqlite:///:memory:")
+    try:
+        service = LiveStrategyService(db)
+        service.save_config({"qmt_account": "testS", "enabled": True, "data_sync_before_run": False,
+                             "parameters": {"max_positions": 1, "per_position_cash": 10000, "lot_size": 10}})
+        trade_date = date(2024, 1, 2)  # 周二
+        _seed_cb_universe(db, trade_date, [
+            # 最低溢价但周五止交易（剩余 4 个交易日 = 提前量1+3）→ 买入排除，不得入选
+            {"code": "113005", "name": "临期低溢价", "close": 100.0, "premium": 2.0, "ltd": date(2024, 1, 5)},
+            # 次低溢价、下周一止交易（剩余 5 个交易日）→ 可正常买入
+            {"code": "113006", "name": "次低溢价", "close": 100.0, "premium": 8.0, "ltd": date(2024, 1, 8)},
+        ])
+        # 持有周三止交易的债（剩余 2 个交易日 = 提前量1+1）→ 强制退出窗口内
+        with db.get_session() as session:
+            session.add(StrategyLabCbBasic(bond_code="113003", bond_name="强赎临期", stock_code="SH113003",
+                                           market="cn", status="active",
+                                           terms_json=json.dumps({"last_trading_date": "2024-01-03"})))
+            session.add(StrategyLabCbDailyFactor(bond_code="113003", trade_date=trade_date,
+                                                 close=105.0, premium_rate=4.0, remaining_size=5.0))
+            session.commit()
+        QmtPositionService(db).report_positions(account="testS", positions=[
+            {"symbol": "113003", "volume": 100, "can_use_volume": 100},
+        ])
+
+        result = service.run(trade_date=trade_date, mode="rebalance")
+
+        # 买入：排除了剩余 4 个交易日的 113005，选中剩余 5 个交易日的 113006
+        assert list(result["target"]) == ["113006"]
+        sells = [o for o in result["rebalance"] if o["side"] == "sell" and o["symbol"] == "113003"]
+        # 强制退出仅一张卖单（对账补卖跳过同一标的），不重复、不超卖
+        assert len(sells) == 1
+        assert sells[0]["quantity"] == 100
+        assert sells[0]["reason"] == "last_trading_day_exit"
+        with db.get_session() as session:
+            run = session.execute(select(LiveStrategyRun).order_by(desc(LiveStrategyRun.id))).scalars().first()
+            orders = session.execute(select(TradingOrder).where(TradingOrder.live_run_id == run.id)).scalars().all()
+        sell_orders = [o for o in orders if o.side == "sell" and o.symbol == "113003"]
+        assert len(sell_orders) == 1 and sell_orders[0].quantity == 100
+    finally:
+        DatabaseManager.reset_instance()
+
+
+def test_last_trading_day_exit_disabled_by_config(monkeypatch: pytest.MonkeyPatch):
+    """风控开关关闭：临近最后交易日的持仓不强制退出（回到纯事件/对账语义）。"""
+    _weekdays_only(monkeypatch)
+    DatabaseManager.reset_instance()
+    db = DatabaseManager(db_url="sqlite:///:memory:")
+    try:
+        service = LiveStrategyService(db)
+        service.save_config({"qmt_account": "testS", "enabled": True, "data_sync_before_run": False,
+                             "last_trading_day_exit_enabled": False,
+                             "parameters": {"max_positions": 1}})
+        trade_date = date(2024, 1, 2)
+        _seed_cb_universe(db, trade_date, [
+            {"code": "113003", "name": "临末期债", "close": 105.0, "premium": 8.0, "ltd": date(2024, 1, 3)},
+        ])
+        QmtPositionService(db).report_positions(account="testS", positions=[
+            {"symbol": "113003", "volume": 80, "can_use_volume": 80},
+        ])
+
+        result = service.run(trade_date=trade_date, mode="event_check", preview=True)
+
+        assert result["rebalance"] == []
+        actions = {d["symbol"]: d["action"] for d in result["decisions"]}
+        assert actions == {"113003": "hold"}
+    finally:
+        DatabaseManager.reset_instance()
+
+
+def test_last_trading_day_exit_respects_buffer_days(monkeypatch: pytest.MonkeyPatch):
+    """提前量按交易日生效：buffer=0 时仅最后交易日当天触发；提前量增大则提前触发。"""
+    _weekdays_only(monkeypatch)
+    DatabaseManager.reset_instance()
+    db = DatabaseManager(db_url="sqlite:///:memory:")
+    try:
+        service = LiveStrategyService(db)
+        service.save_config({"qmt_account": "testS", "enabled": True, "data_sync_before_run": False,
+                             "last_trading_day_exit_buffer_days": 0,
+                             "parameters": {"max_positions": 1}})
+        _seed_cb_universe(db, date(2024, 1, 2), [
+            {"code": "113003", "name": "临末期债", "close": 105.0, "premium": 8.0, "ltd": date(2024, 1, 3)},
+        ])
+        with db.get_session() as session:  # 补最后交易日当天的因子行（主表不重复插）
+            session.add(StrategyLabCbDailyFactor(bond_code="113003", trade_date=date(2024, 1, 3),
+                                                 close=105.0, premium_rate=8.0, remaining_size=5.0))
+            session.commit()
+        QmtPositionService(db).report_positions(account="testS", positions=[
+            {"symbol": "113003", "volume": 80, "can_use_volume": 80},
+        ])
+
+        # 周二（最后交易日前 1 个交易日）：buffer=0 → 不触发
+        tuesday = service.run(trade_date=date(2024, 1, 2), mode="event_check", preview=True)
+        assert tuesday["rebalance"] == []
+        # 周三（最后交易日当天）：剩余 1 个交易日 → 触发
+        wednesday = service.run(trade_date=date(2024, 1, 3), mode="event_check", preview=True)
+        assert [(o["symbol"], o["side"]) for o in wednesday["rebalance"]] == [("113003", "sell")]
     finally:
         DatabaseManager.reset_instance()

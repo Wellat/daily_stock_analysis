@@ -13,7 +13,7 @@ import logging
 from datetime import date, timedelta
 from typing import Any, Dict, List, Optional
 
-from src.core.trading_calendar import cn_trading_days_between
+from src.core.trading_calendar import cn_trading_days_between, is_market_open
 from src.repositories.portfolio_repo import PortfolioRepository
 from src.services.portfolio_service import PortfolioService
 from src.storage import DatabaseManager
@@ -145,8 +145,12 @@ class PortfolioTrendService:
         """每个活跃账户 × 两种成本法生成当日快照（盘后定时任务入口）。
 
         幂等：已有当日快照会被重放结果覆盖（upsert），晚间行情补齐后重跑可刷新。
+        仅 A 股交易日写入；非交易日直接跳过，避免手动调用写入脏数据。
         """
         day = trade_date or date.today()
+        if not is_market_open("cn", day):
+            logger.info("[PortfolioTrend] skip daily snapshot on non-trading day %s", day.isoformat())
+            return {"trade_date": day.isoformat(), "accounts": 0, "snapshots": 0, "skipped": "non_trading_day"}
         accounts = [item for item in self.repo.list_accounts() if item.is_active]
         written = 0
         for account in accounts:

@@ -318,7 +318,7 @@ def test_opencli_provider_fetches_list_and_details(monkeypatch: pytest.MonkeyPat
     payload = OpencliConvertibleBondProvider(timeout=5, workers=1).fetch(market="cn")
 
     assert payload.cb_basic[0]["bond_code"] == "123001"
-    assert payload.cb_basic[0]["status"] == "正常"
+    assert payload.cb_basic[0]["status"] == "active"
     assert payload.cb_basic[0]["list_date"] == date(2024, 1, 2)
     assert payload.cb_basic[0]["remaining_size"] == 12.3
     assert payload.cb_basic[0]["terms"]["industry"] == "测试行业"
@@ -344,7 +344,7 @@ def test_opencli_provider_delisted_list_flag(monkeypatch: pytest.MonkeyPatch) ->
     provider = OpencliConvertibleBondProvider(timeout=5)
     rows = provider.fetch_list(include_delisted=True)
     basic = provider.normalize_list_row(rows[0])
-    assert basic["status"] == "已退市"
+    assert basic["status"] == "delisted"
     assert basic["terms"]["last_price"] == 105.0
     assert basic["terms"]["last_trade_date"] == "2026-01-15"
 
@@ -871,7 +871,7 @@ def test_opencli_provider_detail_delisted_and_dash_dates() -> None:
     normalized = OpencliConvertibleBondProvider(timeout=5).normalize_detail(record)
     assert normalized["basic"]["list_date"] is None
     assert normalized["basic"]["maturity_date"] == date(2026, 1, 15)
-    assert normalized["status"] == "已退市"
+    assert normalized["status"] == "delisted"
     assert normalized["meta"]["delist_reason"] == "强赎"
 
 
@@ -1753,3 +1753,174 @@ def test_portfolio_holdings_incremental_start_defaults_to_2025(
     starts.clear()
     service.sync_portfolio_holdings_ohlc(end_date=date(2026, 9, 12))
     assert starts == [date(2025, 1, 1), date(2026, 9, 11)]
+
+
+def test_cb_detail_normalize_maps_force_redemption_to_strong_redeem() -> None:
+    """jisilu cb_event_list 的 force_redemption 事件应归一化为统一词表 strong_redeem。"""
+    normalized = cb_providers._cb_detail_normalize(
+        {
+            "bond_code": "118053",
+            "delisted": False,
+            "cb_event_list": [
+                {
+                    "event_time": "2026-08-07",
+                    "event_type": "force_redemption",
+                    "detail": "强赎公告 | 强赎公告价 100.1622",
+                }
+            ],
+        }
+    )
+    assert normalized is not None
+    assert len(normalized["events"]) == 1
+    assert normalized["events"][0]["event_type"] == "strong_redeem"
+    assert normalized["events"][0]["event_date"] == date(2026, 8, 7)
+    assert "强赎公告价" in normalized["events"][0]["event_detail"]
+
+
+def test_cb_detail_normalize_synthesizes_strong_redeem_when_event_list_missing() -> None:
+    """已公告强赎但 cb_event_list 缺失强赎事件时，应按倒计时字段兜底合成。"""
+    normalized = cb_providers._cb_detail_normalize(
+        {
+            "bond_code": "123258",
+            "delisted": False,
+            "force_redeem_countdown": "已公告 2026-09-29 强赎 !",
+            "last_trading_date": "2026-09-29",
+            "last_conversion_date": "2026-10-09",
+            "cb_event_list": [
+                {"event_time": "2026-05-19", "event_type": "no_redemption", "detail": "本次不提前赎回"}
+            ],
+        }
+    )
+    assert normalized is not None
+    redeem_events = [e for e in normalized["events"] if e["event_type"] == "strong_redeem"]
+    assert len(redeem_events) == 1
+    assert redeem_events[0]["event_date"] == date(2026, 9, 29)
+    assert "兜底" in redeem_events[0]["event_detail"]
+    assert "2026-10-09" in redeem_events[0]["event_detail"]
+
+
+def test_cb_detail_normalize_skips_synthesis_when_countdown_not_announced() -> None:
+    """计数中 / 暂不强赎 / 即将到期等状态不得合成强赎事件。"""
+    for countdown in ("15/30 | 15", "暂不强赎 ! 2026-12-01重新计", "存续期内不强赎", "0/15 | 30"):
+        normalized = cb_providers._cb_detail_normalize(
+            {
+                "bond_code": "123071",
+                "delisted": False,
+                "force_redeem_countdown": countdown,
+                "last_trading_date": "2026-10-15",
+                "cb_event_list": [],
+            }
+        )
+        assert normalized is not None
+        assert normalized["events"] == [], countdown
+
+
+def test_cb_detail_normalize_skips_synthesis_when_redeem_event_exists() -> None:
+    """cb_event_list 已含强赎事件（归一化后）时不得重复合成。"""
+    normalized = cb_providers._cb_detail_normalize(
+        {
+            "bond_code": "123258",
+            "delisted": False,
+            "force_redeem_countdown": "已公告 2026-09-29 强赎 !",
+            "cb_event_list": [
+                {
+                    "event_time": "2026-09-02",
+                    "event_type": "force_redemption",
+                    "detail": "强赎公告",
+                }
+            ],
+        }
+    )
+    assert normalized is not None
+    redeem_events = [e for e in normalized["events"] if e["event_type"] == "strong_redeem"]
+    assert len(redeem_events) == 1
+    assert redeem_events[0]["event_date"] == date(2026, 9, 2)
+    assert "强赎公告" in redeem_events[0]["event_detail"]
+
+
+def test_upsert_cb_events_renames_legacy_force_redemption_rows(
+    db_manager: DatabaseManager,
+) -> None:
+    """存量 force_redemption 行应在事件写入时幂等迁移为 strong_redeem。"""
+    service = StrategyLabDataSyncService(db_manager)
+    with db_manager.get_session() as session:
+        session.add_all(
+            [
+                StrategyLabCbBasic(
+                    bond_code="118053",
+                    bond_name="测试转债",
+                    stock_code="600001",
+                    market="cn",
+                ),
+                StrategyLabCbEvent(
+                    bond_code="118053",
+                    event_date=date(2026, 8, 7),
+                    event_type="force_redemption",
+                    event_detail="强赎公告 | 强赎公告价 100.1622",
+                    source="legacy",
+                ),
+            ]
+        )
+        session.commit()
+
+    service.repository.upsert_cb_events(
+        [{"bond_code": "118053", "event_date": date(2026, 8, 8), "event_type": "bonus", "event_detail": "分红"}],
+        source="opencli",
+    )
+
+    with db_manager.get_session() as session:
+        rows = session.execute(select(StrategyLabCbEvent).order_by(StrategyLabCbEvent.event_date)).scalars().all()
+        assert len(rows) == 2
+        assert rows[0].event_type == "strong_redeem"
+        assert rows[0].source == "legacy"  # 迁移只改词表，保留原始来源
+        assert rows[1].event_type == "bonus"
+
+
+def test_list_cb_factor_inputs_flags_redeem_alert_from_strong_redeem_event(
+    db_manager: DatabaseManager,
+) -> None:
+    """当日存在 strong_redeem 事件时因子输入的 redeem_alert 应为 True。"""
+    repo = StrategyLabDataSyncService(db_manager).repository
+    repo.upsert_cb_basic(
+        [
+            {
+                "bond_code": "113001",
+                "bond_name": "CB Alpha",
+                "stock_code": "600001",
+                "market": "cn",
+                "status": "active",
+                "convert_price": 100.0,
+            },
+            {
+                "bond_code": "113002",
+                "bond_name": "CB Beta",
+                "stock_code": "600002",
+                "market": "cn",
+                "status": "active",
+                "convert_price": 100.0,
+            },
+        ],
+        source="fixture",
+    )
+    repo.upsert_cb_daily_factors(
+        [
+            {"bond_code": "113001", "trade_date": date(2026, 9, 14), "close": 130.0},
+            {"bond_code": "113002", "trade_date": date(2026, 9, 14), "close": 110.0},
+        ],
+        source="fixture",
+    )
+    repo.upsert_cb_events(
+        [
+            {
+                "bond_code": "113001",
+                "event_date": date(2026, 9, 14),
+                "event_type": "strong_redeem",
+                "event_detail": "强赎公告",
+            }
+        ],
+        source="fixture",
+    )
+
+    inputs = repo.list_cb_factor_inputs(market="cn", trade_date=date(2026, 9, 14))
+    flags = {item["bond_code"]: item["redeem_alert"] for item in inputs}
+    assert flags == {"113001": True, "113002": False}

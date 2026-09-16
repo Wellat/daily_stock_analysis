@@ -13,6 +13,10 @@ class LiveStrategyConfigRequest(BaseModel):
     rebalance_frequency_days: int = Field(1, ge=1)
     event_check_enabled: bool = True
     data_sync_before_run: bool = True
+    # 最后交易日风控：强赎/到期停止交易前（含 buffer_days 个交易日提前量）
+    # 强制全量卖出持仓，买入侧排除剩余交易日不足的标的
+    last_trading_day_exit_enabled: bool = True
+    last_trading_day_exit_buffer_days: int = Field(1, ge=0, le=10)
 
 class LiveStrategyConfigResponse(LiveStrategyConfigRequest):
     id: Optional[int] = None

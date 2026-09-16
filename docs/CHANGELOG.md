@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [新功能] 实盘新增「最后交易日风控」：持仓转债剩余交易日（含当日）≤ 提前量+1（提前量默认 1 个交易日，可配）时，无论调仓还是事件检查模式都强制全量卖出（`reason=last_trading_day_exit`，覆盖策略决策并与对账补卖去重）；剩余交易日 ≤ 提前量+3 的标的禁止新建仓。数据基于 cb_basic `terms_json.last_trading_date`（已公告强赎与临近到期停止交易），修复强赎/到期拖到停止交易后持仓被 active 过滤隐身、永远无法卖出的问题；新增配置 `last_trading_day_exit_enabled`（默认开）与 `last_trading_day_exit_buffer_days`，Web 策略配置页补开关与提前量输入。
+- [修复] 可转债强赎事件词表统一为 `strong_redeem`：opencli cb_event_list 原样落库的 `force_redemption` 现在入库前归一化，存量行在下一次事件写入时幂等迁移，修复因子计算 `redeem_alert`（判断 `strong_redeem`）对 600 余条存量强赎事件永远为 False、前端事件标签不着色的问题。
+- [新功能] 可转债强赎事件兜底：实测部分已公告强赎的转债（如 123258/123112）cb_event_list 中没有强赎事件，现按 cb-detail `force_redeem_countdown`「已公告…强赎」状态自动合成 `strong_redeem` 事件（事件日期取最后交易日并在详情中标注兜底来源与最后转股日；计数中/暂不强赎不触发），保证事件记录、`redeem_alert` 因子与事件研究可见该状态。
 - [新功能] 持仓页新增「趋势」Tab：基于每日快照展示总市值与总收益（已实现+浮动三线）的交易日曲线，支持单账户与全部账户汇总、近7/30/90天与自定义范围；每个 A 股交易日一份快照（`portfolio_daily_snapshots`），新增 `GET /api/v1/portfolio/trend`（缺失日期按需回补，上限 400 账户日，账本回溯修改自动失效自愈）与盘后定时任务 `PORTFOLIO_SNAPSHOT_TIME`（默认 20:05，晚于行情同步，fifo/avg 双口径）。
 - [改进] 持仓页 KPI 卡片调整：移除「汇率状态」卡（含手动刷新汇率入口与结果提示），新增「持仓盈亏」卡——展示已实现+浮动总盈亏（按基准币种）及相对当前持仓总成本的盈亏比例，红绿着色；`/portfolio/fx/refresh` 接口保持不变，仅移除页面入口。
 - [新功能] 行情数据-数据同步新增「持仓行情·A股/ETF/港股」（`sync_type=portfolio_holdings`）：标的自 Portfolio 持仓重放自动展开（活跃账户、非零数量），转债持仓跳过（由 cb_ohlc 覆盖），A 股落 `stock_daily`（instrument_type=stock）、ETF 支持 159/513/589 等代码（instrument_type=etf）、港股 `HK` 前缀代码走腾讯 hk 前缀 K 线（instrument_type=hk_stock，港币原币收盘价），增量起点复用本地历史（无历史回溯至 2025-01-01），`symbols` 可过滤；正股抓取器市场前缀映射抽为独立函数并扩展支持沪/深 ETF 与港股。同步后持仓页现价/市值即可对股票、ETF 与港股估值；已纳入盘后调度链路（每日 20:00 `cb_after_close_sync_time` 定时任务与 `cb_scheduled` 手动触发，盘中链路不变）。

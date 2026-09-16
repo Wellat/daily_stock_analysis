@@ -75,7 +75,7 @@ python scripts/sync_cb_data.py --basic --bond 113709       # 单只
 |---|---|---|
 | `bondId` | `bond_code`（PK） | 直接 |
 | `bondName` | `bond_name` | 直接 |
-| `status`（active/delisted） | `status` | active→`"正常"`，delisted→`"已退市"` |
+| `status`（active/delisted） | `status` | 直接存 `active` / `delisted`（查询层同时兼容历史中文值 `正常`） |
 | `lastPrice` / `lastTradeDate` | `terms_json` 元数据 `last_price` / `last_trade_date` | 仅已退市列表有效 |
 
 ### 基础数据：cb-detail → `strategy_lab_cb_basic`（直列字段）
@@ -108,9 +108,16 @@ python scripts/sync_cb_data.py --basic --bond 113709       # 单只
 | 源字段 | 落库字段 | 处理 |
 |---|---|---|
 | `event_time` | `event_date` | 直接 |
-| `event_type` | `event_type` | 原样存储（down_revise / no_revise / no_redemption / other / bonus / stock_incentive / issue / bond_rating_change / undefined） |
+| `event_type` | `event_type` | 入库前归一化：`force_redemption` → `strong_redeem`（与 akshare/jisilu 快照 provider 及 `redeem_alert` 因子判断统一词表）；其余类型小写原样存储（down_revise / no_revise / no_redemption / other / bonus / stock_incentive / issue / bond_rating_change / undefined） |
 | `detail` | `event_detail` | 直接 |
 | `rating_from` / `rating_to` / `issuer_rating` | `event_detail` | 仅 `bond_rating_change` 事件，拼入详情文本 |
+
+词表迁移：历史同步落库的 `force_redemption` 存量行会在下一次事件写入时被幂等改写为 `strong_redeem`（同一 `(bond_code, event_date)` 已存在 `strong_redeem` 行时跳过，保留原 `source`）。
+
+强赎事件兜底：实测部分已公告强赎的转债 `cb_event_list` 中没有强赎事件（如 2026-09 的 123258 / 123112，但 `force_redeem_countdown` 为「已公告 YYYY-MM-DD 强赎」）。当倒计时字段命中「已公告…强赎」且事件列表中无 `strong_redeem` 事件时，自动合成一条 `strong_redeem` 事件：
+
+- `event_date` 取倒计时文本中的日期（即最后交易日），其次取 `last_trading_date`——该日期是**最后交易日而非公告日**（公告日在 cb-detail payload 中不可得），`event_detail` 会明确标注「详情字段兜底推断」及最后转股日，使用方需注意与 cb_event_list 原生事件（`event_date` 为公告日）的锚点差异；
+- 计数中（如 `15/30 | 15`）、暂不强赎、存续期内不强赎等状态不会触发合成；`last_trading_date` 单独存在不构成强赎信号（临近到期停止交易的同字段语义不同）。
 
 ### 行情：东财 / 腾讯 日K → `stock_daily`
 

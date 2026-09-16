@@ -7,7 +7,8 @@ import json
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import and_, desc, func, or_, select
+from sqlalchemy import and_, desc, func, or_, select, update
+from sqlalchemy.orm import aliased
 
 from src.storage import (
     DatabaseManager,
@@ -240,6 +241,7 @@ class StrategyLabDataRepository:
 
         count = 0
         with self.db.get_session() as session:
+            self._rename_legacy_force_redemption_events(session)
             for item in unique_rows:
                 bond_code = str(item["bond_code"])
                 event_date = item["event_date"]
@@ -270,6 +272,35 @@ class StrategyLabDataRepository:
                 count += 1
             session.commit()
         return count
+
+    @staticmethod
+    def _rename_legacy_force_redemption_events(session: Any) -> None:
+        """把存量 ``force_redemption`` 事件行迁移为统一词表 ``strong_redeem``。
+
+        历史同步按 jisilu cb_event_list 原文落库了 force_redemption，而
+        redeem_alert 因子与前端标签判断的是 strong_redeem；provider 已在入库
+        前归一化新数据，这里在每次事件写入时幂等迁移存量行（无匹配行时为
+        空操作）。同一 (bond_code, event_date) 已存在 strong_redeem 行时跳过
+        迁移，避免触发 UNIQUE 约束。
+        """
+        twin = aliased(StrategyLabCbEvent)
+        has_twin = (
+            select(twin.id)
+            .where(
+                twin.bond_code == StrategyLabCbEvent.bond_code,
+                twin.event_date == StrategyLabCbEvent.event_date,
+                func.lower(twin.event_type) == "strong_redeem",
+            )
+            .exists()
+        )
+        session.execute(
+            update(StrategyLabCbEvent)
+            .where(
+                func.lower(StrategyLabCbEvent.event_type) == "force_redemption",
+                ~has_twin,
+            )
+            .values(event_type="strong_redeem")
+        )
 
     def list_sync_runs(self, *, limit: int, offset: int) -> Dict[str, Any]:
         with self.db.get_session() as session:
@@ -384,6 +415,38 @@ class StrategyLabDataRepository:
             return list(
                 session.execute(statement.order_by(StrategyLabCbBasic.bond_code.asc())).scalars().all()
             )
+
+    def get_cb_last_trading_dates(self, *, market: str, codes: List[str]) -> Dict[str, date]:
+        """Map bond codes to their scheduled last trading date.
+
+        ``last_trading_date`` 只在转债已有明确终止交易安排时存在（已公告强赎
+        或临近到期停止交易，存于 ``terms_json`` 元数据）；其余转债返回缺省，
+        表示无最后交易日约束。
+        """
+        wanted = sorted({str(code).strip() for code in codes if str(code).strip()})
+        if not wanted:
+            return {}
+        with self.db.get_session() as session:
+            rows = session.execute(
+                select(StrategyLabCbBasic.bond_code, StrategyLabCbBasic.terms_json).where(
+                    StrategyLabCbBasic.market == market,
+                    StrategyLabCbBasic.bond_code.in_(wanted),
+                )
+            ).all()
+        result: Dict[str, date] = {}
+        for bond_code, terms_json in rows:
+            try:
+                terms = json.loads(terms_json or "{}")
+            except (TypeError, ValueError):
+                continue
+            raw = terms.get("last_trading_date")
+            if raw in (None, ""):
+                continue
+            try:
+                result[str(bond_code)] = date.fromisoformat(str(raw)[:10])
+            except ValueError:
+                continue
+        return result
 
     def get_cb_names(self, *, market: str, codes: List[str]) -> Dict[str, str]:
         """Map bond codes (lowercased) to bond names for display enrichment.

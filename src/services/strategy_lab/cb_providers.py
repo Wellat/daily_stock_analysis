@@ -9,6 +9,7 @@ from datetime import date
 import json
 import logging
 import os
+import re
 import requests
 import subprocess
 import time
@@ -670,6 +671,31 @@ CB_DETAIL_META_FIELDS = [
     "last_conversion_date",
 ]
 
+# jisilu cb_event_list 的强赎事件类型为 force_redemption，与 akshare/jisilu
+# 快照 provider 及下游 redeem_alert 判断（strong_redeem）词表不一致，入库前统一归一化
+_CB_EVENT_TYPE_ALIASES = {
+    "force_redemption": "strong_redeem",
+}
+
+
+def _force_redeem_announced(record: Dict[str, Any]) -> tuple[bool, Optional[date]]:
+    """从 cb-detail 字段判断是否已公告强赎，并返回可用的锚定日期。
+
+    ``force_redeem_countdown`` 含「已公告…强赎」即视为已公告（计数中 /
+    暂不强赎 / 存续期内不强赎等状态不会命中）；锚定日期优先取倒计时文本
+    中的日期（即最后交易日），其次取 ``last_trading_date``。注意该日期是
+    最后交易日而非公告日，公告日在该 payload 中不可得。
+    """
+    countdown = str(_first_value(record, "force_redeem_countdown", "forceRedeemCountdown") or "")
+    if "已公告" not in countdown or "强赎" not in countdown:
+        return False, None
+    match = re.search(r"\d{4}-\d{2}-\d{2}", countdown)
+    if match:
+        parsed = _parse_date(match.group(0))
+        if parsed is not None:
+            return True, parsed
+    return True, _parse_date(_first_value(record, "last_trading_date", "lastTradingDate"))
+
 
 def _cb_list_basic_row(record: Dict[str, Any]) -> Dict[str, Any] | None:
     """Map one ``cb-list`` row onto a ``strategy_lab_cb_basic`` row stub."""
@@ -760,6 +786,7 @@ def _cb_detail_normalize(record: Dict[str, Any]) -> Dict[str, Any] | None:
         event_type = str(_first_value(event, "event_type", "type") or "").strip()
         if event_date is None or not event_type:
             continue
+        event_type = _CB_EVENT_TYPE_ALIASES.get(event_type.lower(), event_type)
         detail_text = str(event.get("detail") or "")
         if event_type == "bond_rating_change":
             rating_from, rating_to = event.get("rating_from"), event.get("rating_to")
@@ -772,6 +799,30 @@ def _cb_detail_normalize(record: Dict[str, Any]) -> Dict[str, Any] | None:
                 "event_date": event_date,
                 "event_type": event_type,
                 "event_detail": detail_text or None,
+            }
+        )
+    # 兜底：部分已公告强赎的转债 cb_event_list 中没有强赎事件（实测
+    # 2026-09 的 123258/123112），按 force_redeem_countdown 的「已公告」
+    # 状态合成 strong_redeem 事件，保证 redeem_alert 因子与事件研究可用
+    announced, anchor_date = _force_redeem_announced(record)
+    if announced and anchor_date is not None and not any(
+        event["event_type"] == "strong_redeem" for event in events
+    ):
+        detail_parts = [
+            "已公告强赎（详情字段兜底推断，事件日期为最后交易日而非公告日）",
+            str(_first_value(record, "force_redeem_countdown", "forceRedeemCountdown") or "").strip(),
+        ]
+        last_conversion = _parse_date(
+            _first_value(record, "last_conversion_date", "lastConversionDate")
+        )
+        if last_conversion is not None:
+            detail_parts.append(f"最后转股日 {last_conversion.isoformat()}")
+        events.append(
+            {
+                "bond_code": code,
+                "event_date": anchor_date,
+                "event_type": "strong_redeem",
+                "event_detail": " | ".join(part for part in detail_parts if part),
             }
         )
     return {"basic": basic, "meta": meta, "status": status, "terms": terms, "events": events}

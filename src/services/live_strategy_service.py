@@ -77,6 +77,8 @@ class LiveStrategyService:
             row.rebalance_frequency_days = int(payload.get("rebalance_frequency_days", 1))
             row.event_check_enabled = bool(payload.get("event_check_enabled", True))
             row.data_sync_before_run = bool(payload.get("data_sync_before_run", True))
+            row.last_trading_day_exit_enabled = bool(payload.get("last_trading_day_exit_enabled", True))
+            row.last_trading_day_exit_buffer_days = max(int(payload.get("last_trading_day_exit_buffer_days", 1)), 0)
             row.updated_at = datetime.now()
             session.commit(); session.refresh(row)
             payload = self._config_payload(row)
@@ -159,15 +161,60 @@ class LiveStrategyService:
             positions={s: PositionSnapshot(quantity=v, available_quantity=v) for s, v in current.items()},
             account=config.qmt_account,
         )
+        # ---- 最后交易日风控层：强赎/到期停止交易前强制退出 + 买入排除 ----
+        # last_trading_date 来自盘后 cb_basic 同步（T-1 口径）；退市后持仓会被
+        # active 过滤隐身、永远无法再生成卖单，所以退出必须发生在还 active 时。
+        exit_buffer = getattr(config, "last_trading_day_exit_buffer_days", 1)
+        if exit_buffer is None:
+            exit_buffer = 1
+        forced_exit: Dict[str, Dict[str, Any]] = {}
+        if getattr(config, "last_trading_day_exit_enabled", True):
+            ltd_map = self.data.get_cb_last_trading_dates(
+                market="cn", codes=[i.symbol for i in context.instruments] + list(current)
+            )
+            remaining = {
+                symbol: self._remaining_trading_days(trade_date, last_day)
+                for symbol, last_day in ltd_map.items()
+            }
+            # 买入排除：剩余交易日（含当日）<= 提前量+3 的标的不允许新建仓
+            buy_blocked = {s for s, n in remaining.items() if n <= exit_buffer + 3}
+            if buy_blocked:
+                context = replace(
+                    context,
+                    instruments=[
+                        replace(i, tradable=False) if i.symbol in buy_blocked else i
+                        for i in context.instruments
+                    ],
+                )
+            # 强制卖出：剩余交易日（含当日）<= 提前量+1 的持仓全量退出
+            for symbol, n in remaining.items():
+                if symbol in current and current[symbol] > 0 and n <= exit_buffer + 1:
+                    forced_exit[symbol] = {
+                        "last_trading_date": ltd_map[symbol].isoformat(),
+                        "remaining_trading_days": n,
+                    }
         bars = context.bars
         decisions = get_strategy(config.strategy_id).evaluate(context, mode=resolved_mode, parameters=params)
+        # 强制退出覆盖策略对同一标的的全部决策（hold/exit/buy），保证全量卖出
+        if forced_exit:
+            exit_decisions = [
+                StrategyDecision(
+                    "exit", symbol=symbol, suggested_quantity=current[symbol],
+                    reason="last_trading_day_exit", decision_data=info,
+                )
+                for symbol, info in forced_exit.items()
+            ]
+            decisions = [d for d in decisions if d.symbol not in forced_exit] + exit_decisions
+            logger.info("[LiveStrategy] last-trading-day exit: %s",
+                        {s: info["remaining_trading_days"] for s, info in forced_exit.items()})
         # ---- 对账补卖：持仓中不在目标内的转债补卖出，使组合向目标收敛 ----
         # Target exits are portfolio reconciliation, not strategy logic.
         if resolved_mode == "rebalance":
             selected = {d.symbol for d in decisions if d.action == "buy" and d.symbol}
             decisions = list(decisions) + [StrategyDecision("sell", symbol=symbol,
                 suggested_quantity=volume, reason="live_target_exit")
-                for symbol, volume in current.items() if symbol not in selected and volume > 0]
+                for symbol, volume in current.items()
+                if symbol not in selected and symbol not in forced_exit and volume > 0]
         # 对账卖出/事件检查等路径只带代码不带名称，统一从上下文补齐，
         # 保证决策记录、订单的 symbol_name 完整（历史缺口曾导致前端名称列为空）
         names_by_symbol = {i.symbol: i.name for i in context.instruments if i.symbol and i.name}
@@ -318,6 +365,27 @@ class LiveStrategyService:
             cursor += timedelta(days=1)
         return cursor - timedelta(days=1)
 
+    @staticmethod
+    def _remaining_trading_days(trade_date: date, last_day: date) -> int:
+        """trade_date 当日起至最后交易日（含两端）的交易日数。
+
+        已过最后交易日返回 0（临近退市但仍未 delisted 的持仓必须立刻退出）；
+        超过 30 个自然日即超出任何风控窗口，直接返回大数避免无谓逐日计数。
+        """
+        from src.core.trading_calendar import is_market_open
+
+        if last_day < trade_date:
+            return 0
+        if (last_day - trade_date).days > 30:
+            return 999
+        count = 0
+        cursor = trade_date
+        while cursor <= last_day:
+            if is_market_open("cn", cursor):
+                count += 1
+            cursor += timedelta(days=1)
+        return count
+
     def _log_data_completeness(self, trade_date: date) -> None:
         """统计当日 active 转债的溢价率数据完整性，仅打印日志，不阻塞下单。
 
@@ -372,7 +440,8 @@ class LiveStrategyService:
 
     @staticmethod
     def _config_payload(row):
-        return {"id": row.id, "name": row.name, "strategy_id": row.strategy_id, "strategy_version": row.strategy_version, "qmt_account": row.qmt_account, "enabled": row.enabled, "symbols": json.loads(row.symbols_json or "[]"), "parameters": json.loads(row.parameters_json or "{}"), "rebalance_frequency_days": row.rebalance_frequency_days or 1, "event_check_enabled": row.event_check_enabled if row.event_check_enabled is not None else True, "data_sync_before_run": row.data_sync_before_run if row.data_sync_before_run is not None else True}
+        buffer_days = getattr(row, "last_trading_day_exit_buffer_days", None)
+        return {"id": row.id, "name": row.name, "strategy_id": row.strategy_id, "strategy_version": row.strategy_version, "qmt_account": row.qmt_account, "enabled": row.enabled, "symbols": json.loads(row.symbols_json or "[]"), "parameters": json.loads(row.parameters_json or "{}"), "rebalance_frequency_days": row.rebalance_frequency_days or 1, "event_check_enabled": row.event_check_enabled if row.event_check_enabled is not None else True, "data_sync_before_run": row.data_sync_before_run if row.data_sync_before_run is not None else True, "last_trading_day_exit_enabled": getattr(row, "last_trading_day_exit_enabled", True) if getattr(row, "last_trading_day_exit_enabled", None) is not None else True, "last_trading_day_exit_buffer_days": buffer_days if buffer_days is not None else 1}
 
     @staticmethod
     def _run_payload(row):
