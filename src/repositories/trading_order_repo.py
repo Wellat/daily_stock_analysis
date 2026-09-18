@@ -100,13 +100,17 @@ class TradingOrderRepository:
                 session.expunge(row)
             return rows
 
-    def list_pending(self) -> List[TradingOrder]:
+    def list_pending(self, *, created_from: Optional[datetime] = None) -> List[TradingOrder]:
+        """List pending orders; ``created_from`` restricts to orders created at/after it."""
         with self.db.get_session() as session:
-            rows = session.execute(
+            statement = (
                 select(TradingOrder)
                 .where(TradingOrder.status == "pending")
                 .order_by(asc(TradingOrder.created_at), asc(TradingOrder.id))
-            ).scalars().all()
+            )
+            if created_from is not None:
+                statement = statement.where(TradingOrder.created_at >= created_from)
+            rows = session.execute(statement).scalars().all()
             for row in rows:
                 session.expunge(row)
             return rows

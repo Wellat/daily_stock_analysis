@@ -36,14 +36,20 @@ QMT 回调 POST /qmt/orders/{id}/callback 回写结果（filled/rejected）
 
 `GET /api/v1/trading/qmt/pending`
 
-返回当前所有 `pending` 状态的指令（按创建时间升序）。
+返回 `pending` 状态的指令（按创建时间升序）。**默认只返回当天创建的指令**——隔日未认领的 pending 单是为历史交易日生成的，今天执行反而错账。排查历史遗留单时可传 `include_all=true` 返回全部。
 
 请求：
 
 ```bash
 curl -s http://localhost:8000/api/v1/trading/qmt/pending \
   -H 'X-QMT-Token: <token>'
+
+# 排查：返回包括隔日在内的全部 pending 指令
+curl -s 'http://localhost:8000/api/v1/trading/qmt/pending?include_all=true' \
+  -H 'X-QMT-Token: <token>'
 ```
+
+> 说明：隔日遗留的 pending 指令不会出现在默认返回中，也不会被自动取消；如需清理可调用取消接口或在 Web 端处理。
 
 响应示例：
 

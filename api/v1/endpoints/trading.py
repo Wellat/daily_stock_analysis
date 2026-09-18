@@ -159,9 +159,12 @@ def cancel_order(
 )
 def list_pending(
     db_manager: DatabaseManager = Depends(get_database_manager),
+    include_all: bool = Query(False, description="默认只返回当天创建的 pending 指令；true 返回全部（排查用）"),
 ) -> TradingOrderPendingListResponse:
     try:
-        return TradingOrderPendingListResponse(**TradingOrderService(db_manager).list_pending())
+        return TradingOrderPendingListResponse(
+            **TradingOrderService(db_manager).list_pending(include_all=include_all)
+        )
     except Exception as exc:
         logger.error("List pending trading orders failed: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail={"error": "internal_error", "message": "List pending orders failed"})

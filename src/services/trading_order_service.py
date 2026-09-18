@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, time
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
@@ -214,8 +214,14 @@ class TradingOrderService:
             ),
         }
 
-    def list_pending(self) -> Dict[str, Any]:
-        rows = self.repository.list_pending()
+    def list_pending(self, *, include_all: bool = False) -> Dict[str, Any]:
+        """List pending QMT orders.
+
+        默认只返回当天创建的指令——隔日未认领的 pending 单是为历史交易日生成
+        的，QMT 今天执行反而错账；``include_all=True`` 返回全部（排查用）。
+        """
+        created_from = None if include_all else datetime.combine(date.today(), time.min)
+        rows = self.repository.list_pending(created_from=created_from)
         return {
             "items": [
                 {

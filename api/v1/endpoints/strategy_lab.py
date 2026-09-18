@@ -7,6 +7,7 @@ import asyncio
 import json
 import logging
 from datetime import date
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
@@ -25,6 +26,7 @@ from api.v1.schemas.strategy_lab import (
     StrategyLabEventStudyResponse,
     StrategyLabInstrumentDetailItem,
     StrategyLabInstrumentListResponse,
+    StrategyLabPremiumTrackResponse,
     StrategyLabRunCreateRequest,
     StrategyLabRunItem,
     StrategyLabRunListResponse,
@@ -46,6 +48,7 @@ from src.services.strategy_lab.batch_service import (
 )
 from src.services.strategy_lab.data_sync_service import StrategyLabDataSyncService
 from src.services.strategy_lab.event_study_service import StrategyLabEventStudyService
+from src.services.strategy_lab.premium_track_service import StrategyLabPremiumTrackService
 from src.services.strategy_lab.signal_service import StrategyLabSignalService
 from src.services.strategy_lab.service import StrategyLabService
 from src.storage import DatabaseManager
@@ -382,6 +385,32 @@ def study_events(
     except Exception as exc:
         logger.error("Study Strategy Lab events failed: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail={"error": "internal_error", "message": "Study events failed"})
+
+
+@router.get(
+    "/cb/premium-track",
+    response_model=StrategyLabPremiumTrackResponse,
+    responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
+    summary="Track daily lowest-premium top-N convertible-bond membership stability",
+)
+def premium_track(
+    market: str = Query("cn", description="市场"),
+    start: Optional[date] = Query(None, description="开始日期（含），缺省近 90 天"),
+    end: Optional[date] = Query(None, description="结束日期（含），缺省今天"),
+    top_n: int = Query(10, ge=1, le=50, description="每日取溢价率最低的 N 只"),
+    db_manager: DatabaseManager = Depends(get_database_manager),
+) -> StrategyLabPremiumTrackResponse:
+    try:
+        return StrategyLabPremiumTrackResponse(
+            **StrategyLabPremiumTrackService(db_manager).premium_top_track(
+                market=market, start=start, end=end, top_n=top_n
+            )
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail={"error": "invalid_params", "message": str(exc)})
+    except Exception as exc:
+        logger.error("Strategy Lab premium track failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail={"error": "internal_error", "message": "Premium track failed"})
 
 
 @router.post(

@@ -101,7 +101,8 @@ pending -> cancelled
 写入数据库表 trading_orders（status=pending）
         │
         ▼
-QMT 定时轮询 GET /api/v1/trading/qmt/pending
+QMT 定时轮询 GET /api/v1/trading/qmt/pending（默认仅当天创建的 pending 指令，
+隔日遗留单需 include_all=true 查询后另行处理，不会被自动取消）
         │
         ▼
 QMT 在本机执行下单（buy/sell）

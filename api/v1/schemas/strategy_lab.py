@@ -277,6 +277,45 @@ class StrategyLabEventStudyResponse(BaseModel):
     items: List[StrategyLabEventStudyItem] = Field(default_factory=list)
 
 
+class StrategyLabPremiumTrackBondItem(BaseModel):
+    bond_code: str
+    bond_name: Optional[str] = None
+    days_count: int = Field(0, description="在榜交易日数")
+    ratio: float = Field(0, description="在榜天数 / 窗口交易日数")
+    first_date: Optional[str] = None
+    last_date: Optional[str] = None
+    avg_premium: Optional[float] = Field(None, description="在榜期间平均溢价率（百分数）")
+    best_rank: int = Field(0, description="窗口内最好名次")
+    day_indexes: List[int] = Field(default_factory=list, description="在榜日期在 dates 中的下标")
+    premiums: List[float] = Field(default_factory=list, description="与 day_indexes 一一对应的当日溢价率")
+
+
+class StrategyLabPremiumTrackTurnoverItem(BaseModel):
+    date: str
+    overlap: Optional[int] = Field(None, description="与前一日榜单的重叠只数（首日为空）")
+    entered: Optional[int] = Field(None, description="当日新进榜只数（首日为空）")
+    exited: Optional[int] = Field(None, description="当日退出只数（首日为空）")
+    threshold: Optional[float] = Field(None, description="当日第 top_n 名（榜单内最高）溢价率")
+
+
+class StrategyLabPremiumTrackStatsItem(BaseModel):
+    window_days: int = 0
+    distinct_bonds: int = 0
+    avg_overlap: Optional[float] = None
+    avg_entered: Optional[float] = None
+
+
+class StrategyLabPremiumTrackResponse(BaseModel):
+    market: str
+    top_n: int
+    start: str
+    end: str
+    dates: List[str] = Field(default_factory=list)
+    bonds: List[StrategyLabPremiumTrackBondItem] = Field(default_factory=list)
+    turnover: List[StrategyLabPremiumTrackTurnoverItem] = Field(default_factory=list)
+    stats: StrategyLabPremiumTrackStatsItem = Field(default_factory=StrategyLabPremiumTrackStatsItem)
+
+
 class StrategyLabBatchCreateRequest(BaseModel):
     strategy_id: str = Field("double-low", description="策略 ID")
     market: StrategyLabMarket = Field("cn", description="市场")

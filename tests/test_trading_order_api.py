@@ -62,6 +62,36 @@ def test_cancel_order(client: TestClient) -> None:
     assert cancelled.json()["status"] == "cancelled"
 
 
+def test_qmt_pending_defaults_to_today_and_include_all_returns_stale(client: TestClient) -> None:
+    """pending 拉取默认只返回当天创建的指令；include_all=true 兜底返回隔日遗留。"""
+    from datetime import datetime, timedelta
+
+    from sqlalchemy import update
+
+    from src.storage import TradingOrder
+
+    stale = client.post("/api/v1/trading/orders", json=_create_payload(symbol="113001")).json()
+    fresh = client.post("/api/v1/trading/orders", json=_create_payload(symbol="113003")).json()
+
+    # 把第一笔单改成昨天创建（模拟隔日未认领的遗留 pending 单）
+    db = DatabaseManager.get_instance()
+    with db.get_session() as session:
+        session.execute(
+            update(TradingOrder)
+            .where(TradingOrder.id == stale["id"])
+            .values(created_at=datetime.now() - timedelta(days=1))
+        )
+        session.commit()
+
+    pending = client.get("/api/v1/trading/qmt/pending")
+    assert pending.status_code == 200, pending.text
+    assert [item["id"] for item in pending.json()["items"]] == [fresh["id"]]
+
+    everything = client.get("/api/v1/trading/qmt/pending", params={"include_all": "true"})
+    assert everything.status_code == 200, everything.text
+    assert {item["id"] for item in everything.json()["items"]} == {stale["id"], fresh["id"]}
+
+
 def test_qmt_pending_and_callback_no_token(client: TestClient) -> None:
     created = client.post("/api/v1/trading/orders", json=_create_payload()).json()
 

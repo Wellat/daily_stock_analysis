@@ -1,6 +1,7 @@
 import { Tabs } from 'antd';
 import { AppPage, PageHeader } from '../components/common';
 import { LiveSignalPanel } from '../components/strategy-lab/LiveSignalPanel';
+import { LowPremiumTrackPanel } from '../components/strategy-lab/LowPremiumTrackPanel';
 import { ParameterSearchPanel } from '../components/strategy-lab/ParameterSearchPanel';
 import { StrategyResearchPanel } from '../components/strategy-lab/StrategyResearchPanel';
 
@@ -14,6 +15,7 @@ const StrategyLabPage = () => (
         { key: 'research', label: '策略研究', children: <StrategyResearchPanel /> },
         { key: 'search', label: '参数搜索', children: <ParameterSearchPanel /> },
         { key: 'signals', label: '实盘信号', children: <LiveSignalPanel /> },
+        { key: 'premium-track', label: '低溢价跟踪', children: <LowPremiumTrackPanel /> },
       ]}
     />
   </AppPage>

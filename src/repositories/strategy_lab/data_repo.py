@@ -874,6 +874,63 @@ class StrategyLabDataRepository:
                 if not normalized_symbols or basic.bond_code.lower() in normalized_symbols
             ]
 
+    def load_cb_premium_top_rows(
+        self,
+        *,
+        market: str,
+        start_date: Any,
+        end_date: Any,
+        top_n: int,
+    ) -> List[Dict[str, Any]]:
+        """每个交易日内转股溢价率最低的 ``top_n`` 只转债（含排名）。
+
+        窗口函数按 ``trade_date`` 分组、溢价率升序排名（并列时按代码稳定排序），
+        只取每日前 ``top_n``；缺溢价率的行不参与。
+        """
+        ranked = (
+            select(
+                StrategyLabCbDailyFactor.trade_date.label("trade_date"),
+                StrategyLabCbDailyFactor.bond_code.label("bond_code"),
+                StrategyLabCbBasic.bond_name.label("bond_name"),
+                StrategyLabCbDailyFactor.premium_rate.label("premium_rate"),
+                func.row_number()
+                .over(
+                    partition_by=StrategyLabCbDailyFactor.trade_date,
+                    order_by=(StrategyLabCbDailyFactor.premium_rate.asc(), StrategyLabCbDailyFactor.bond_code.asc()),
+                )
+                .label("rn"),
+            )
+            .join(StrategyLabCbBasic, StrategyLabCbBasic.bond_code == StrategyLabCbDailyFactor.bond_code)
+            .where(
+                StrategyLabCbBasic.market == market,
+                StrategyLabCbDailyFactor.trade_date >= start_date,
+                StrategyLabCbDailyFactor.trade_date <= end_date,
+                StrategyLabCbDailyFactor.premium_rate.is_not(None),
+            )
+        ).subquery()
+        with self.db.get_session() as session:
+            rows = session.execute(
+                select(
+                    ranked.c.trade_date,
+                    ranked.c.bond_code,
+                    ranked.c.bond_name,
+                    ranked.c.premium_rate,
+                    ranked.c.rn,
+                )
+                .where(ranked.c.rn <= top_n)
+                .order_by(ranked.c.trade_date.asc(), ranked.c.rn.asc())
+            ).all()
+            return [
+                {
+                    "trade_date": row.trade_date,
+                    "bond_code": str(row.bond_code),
+                    "bond_name": row.bond_name,
+                    "premium_rate": float(row.premium_rate),
+                    "rank": int(row.rn),
+                }
+                for row in rows
+            ]
+
     def load_cb_event_study_rows(
         self,
         *,

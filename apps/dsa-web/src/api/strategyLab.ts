@@ -283,4 +283,40 @@ export const strategyLabApi = {
     const { data } = await apiClient.get<{ bond_code: string; total: number; items: StrategyLabEventItem[] }>(`/api/v1/strategy-lab/instruments/${encodeURIComponent(bondCode)}/events`, { params });
     return data;
   },
+  async getPremiumTrack(params: { market?: string; start?: string; end?: string; top_n?: number } = {}) {
+    const { data } = await apiClient.get<StrategyLabPremiumTrack>('/api/v1/strategy-lab/cb/premium-track', { params });
+    return data;
+  },
+};
+
+export type StrategyLabPremiumTrackBond = {
+  bond_code: string;
+  bond_name?: string | null;
+  days_count: number;
+  ratio: number;
+  first_date?: string | null;
+  last_date?: string | null;
+  avg_premium?: number | null;
+  best_rank: number;
+  day_indexes: number[];
+  premiums: number[];
+};
+
+export type StrategyLabPremiumTrackTurnover = {
+  date: string;
+  overlap?: number | null;
+  entered?: number | null;
+  exited?: number | null;
+  threshold?: number | null;
+};
+
+export type StrategyLabPremiumTrack = {
+  market: string;
+  top_n: number;
+  start: string;
+  end: string;
+  dates: string[];
+  bonds: StrategyLabPremiumTrackBond[];
+  turnover: StrategyLabPremiumTrackTurnover[];
+  stats: { window_days: number; distinct_bonds: number; avg_overlap?: number | null; avg_entered?: number | null };
 };
