@@ -198,6 +198,17 @@ def callback_order(
     except TradingOrderNotFoundError as exc:
         raise HTTPException(status_code=404, detail={"error": "not_found", "message": str(exc)})
     except ValueError as exc:
+        # 400 拒绝在 access 日志里只有状态码没有原因，带上回调参数落 warning 便于事后定位。
+        logger.warning(
+            "Trading order callback rejected: order_id=%s status=%s qmt_order_id=%s "
+            "filled_quantity=%s filled_price=%s reason=%s",
+            order_id,
+            request.status,
+            request.qmt_order_id,
+            request.filled_quantity,
+            request.filled_price,
+            exc,
+        )
         raise HTTPException(status_code=400, detail={"error": "invalid_params", "message": str(exc)})
     except Exception as exc:
         logger.error("Trading order callback failed: %s", exc, exc_info=True)

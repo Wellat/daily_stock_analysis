@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [改进] QMT 回调 `POST /api/v1/trading/qmt/orders/{id}/callback` 被 400 拒绝时记录 warning 日志（含订单 id、回调状态、QMT 订单号、成交数量/价格与拒绝原因）：此前拒绝原因只出现在 HTTP 响应体，服务端日志仅有 access 日志的状态码，事后无法定位（如实盘部分成交 `filled_quantity != quantity` 被拒、订单卡在 submitted）。
 - [新功能] 策略实验室新增「低溢价跟踪」Tab：基于 `strategy_lab_cb_daily_factors` 每个交易日取转股溢价率最低 N 只（默认 10，可切 5/10/20），可视化榜单成员稳定性——在榜分布散点图（每只上榜转债的在榜日期，按在榜天数排序）、稳定性曲线（与前日重叠/新进/退出只数 + 第 N 名门槛溢价率双轴）、上榜统计表（在榜天数/占比/首末上榜/均溢价/最好名次）；新增 `GET /api/v1/strategy-lab/cb/premium-track`（窗口函数按日排名，默认近 90 天，最大 750 天）。
 - [改进] `GET /api/v1/trading/qmt/pending` 默认只返回当天创建的 pending 指令（隔日遗留单是历史交易日的计划，今天执行反而错账）；新增 `include_all=true` 查询参数兜底返回全部，QMT 侧对接文档已同步。
 - [新功能] 实盘新增「最后交易日风控」：持仓转债剩余交易日（含当日）≤ 提前量+1（提前量默认 1 个交易日，可配）时，无论调仓还是事件检查模式都强制全量卖出（`reason=last_trading_day_exit`，覆盖策略决策并与对账补卖去重）；剩余交易日 ≤ 提前量+3 的标的禁止新建仓。数据基于 cb_basic `terms_json.last_trading_date`（已公告强赎与临近到期停止交易），修复强赎/到期拖到停止交易后持仓被 active 过滤隐身、永远无法卖出的问题；新增配置 `last_trading_day_exit_enabled`（默认开）与 `last_trading_day_exit_buffer_days`，Web 策略配置页补开关与提前量输入。

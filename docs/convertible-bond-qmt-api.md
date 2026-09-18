@@ -93,7 +93,7 @@ curl -s 'http://localhost:8000/api/v1/trading/qmt/pending?include_all=true' \
 |---|---|---|---|
 | `status` | string | 是 | 执行结果：`submitted` / `filled` / `rejected` |
 | `qmt_order_id` | string | 否 | QMT 侧生成的订单号（成交/失败时建议带上） |
-| `filled_quantity` | number | 否 | 成交数量 |
+| `filled_quantity` | number | 否 | 成交数量（`filled` 时必填，且必须等于指令 `quantity`，部分成交暂不支持） |
 | `filled_price` | number | 否 | 成交价 |
 | `error_message` | string | 否 | 失败原因（`rejected` 时建议带上） |
 
@@ -352,7 +352,7 @@ if __name__ == "__main__":
 - **错误码**：
   - `401`：token 缺失或错误（检查 `X-QMT-Token`）。
   - `404`：`{id}` 对应的指令不存在。
-  - `400`：请求体字段非法（如 `status` 取值不在允许范围）。
+  - `400`：请求体字段非法（如 `status` 取值不在允许范围），或业务规则拒绝（如 `filled` 回调的 `filled_quantity` 与指令 `quantity` 不一致——部分成交暂不支持）。被拒请求会在服务端记录 warning 日志（含订单 id 与回调参数），便于事后定位。
   - `500`：服务端内部错误，稍后重试。
 
 ## 7. 联系方式

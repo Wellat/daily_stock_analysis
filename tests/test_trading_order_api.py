@@ -109,6 +109,26 @@ def test_qmt_pending_and_callback_no_token(client: TestClient) -> None:
     assert callback.json()["qmt_order_id"] == "q123"
 
 
+def test_qmt_callback_rejection_logged(client: TestClient, caplog) -> None:
+    """400 拒绝要落 warning 日志（含订单 id 与回调参数），否则 access 日志只有状态码无法定位。"""
+    import logging
+
+    created = client.post("/api/v1/trading/orders", json=_create_payload(quantity=20)).json()
+
+    with caplog.at_level(logging.WARNING, logger="api.v1.endpoints.trading"):
+        resp = client.post(
+            f"/api/v1/trading/qmt/orders/{created['id']}/callback",
+            json={"status": "filled", "qmt_order_id": "q557", "filled_quantity": 10, "filled_price": 111.7},
+        )
+
+    assert resp.status_code == 400, resp.text
+    assert "partial fills are not supported" in resp.json()["message"]
+    assert f"order_id={created['id']}" in caplog.text
+    assert "status=filled" in caplog.text
+    assert "qmt_order_id=q557" in caplog.text
+    assert "filled_quantity=10.0" in caplog.text
+
+
 def test_qmt_requires_token_when_configured(client: TestClient, monkeypatch) -> None:
     monkeypatch.setenv("QMT_API_TOKEN", "secret")
 
