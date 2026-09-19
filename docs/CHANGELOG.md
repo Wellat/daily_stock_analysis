@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [改进] 移除策略实验室「实盘信号」Tab 及其专用接口（`POST/GET /api/v1/strategy-lab/signals`、`POST /signals/{id}/confirm`）：与实盘页的交易指令/策略看板能力重复；后端 signal service/repo、`strategy_lab_signals` 存储模型与前端 LiveSignalPanel 一并移除（表内无数据；存量库中的空表保留无害）。
+- [新功能] 低溢价/双低策略新增 `per_position_quantity`（单债固定张数）参数：>0 时买入决策按固定张数发单（整手取整），=0 沿用原「单债目标资金」金额口径；用于固定金额 vs 固定张数两种仓位口径的对比研究与实盘配置。
 - [改进] QMT 回调 `POST /api/v1/trading/qmt/orders/{id}/callback` 被 400 拒绝时记录 warning 日志（含订单 id、回调状态、QMT 订单号、成交数量/价格与拒绝原因）：此前拒绝原因只出现在 HTTP 响应体，服务端日志仅有 access 日志的状态码，事后无法定位（如实盘部分成交 `filled_quantity != quantity` 被拒、订单卡在 submitted）。
 - [新功能] 策略实验室新增「低溢价跟踪」Tab：基于 `strategy_lab_cb_daily_factors` 每个交易日取转股溢价率最低 N 只（默认 10，可切 5/10/20），可视化榜单成员稳定性——在榜分布散点图（每只上榜转债的在榜日期，按在榜天数排序）、稳定性曲线（与前日重叠/新进/退出只数 + 第 N 名门槛溢价率双轴）、上榜统计表（在榜天数/占比/首末上榜/均溢价/最好名次）；新增 `GET /api/v1/strategy-lab/cb/premium-track`（窗口函数按日排名，默认近 90 天，最大 750 天）。
 - [改进] `GET /api/v1/trading/qmt/pending` 默认只返回当天创建的 pending 指令（隔日遗留单是历史交易日的计划，今天执行反而错账）；新增 `include_all=true` 查询参数兜底返回全部，QMT 侧对接文档已同步。

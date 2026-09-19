@@ -95,7 +95,6 @@
 - `/api/v1/strategy-lab/strategies`
 - `/api/v1/strategy-lab/runs`
 - `/api/v1/strategy-lab/batches`
-- `/api/v1/strategy-lab/signals`
 - `/api/v1/strategy-lab/instruments`（标的列表、详情、日线因子、事件查询）
 - `/api/v1/strategy-lab/data-sync`
 

@@ -31,10 +31,6 @@ from api.v1.schemas.strategy_lab import (
     StrategyLabRunItem,
     StrategyLabRunListResponse,
     StrategyLabStrategyListResponse,
-    StrategyLabSignalCreateRequest,
-    StrategyLabSignalConfirmRequest,
-    StrategyLabSignalItem,
-    StrategyLabSignalListResponse,
     StrategyLabSyncRunListResponse,
     StrategyLabSyncRunItem,
     StrategyLabTradeListResponse,
@@ -49,7 +45,6 @@ from src.services.strategy_lab.batch_service import (
 from src.services.strategy_lab.data_sync_service import StrategyLabDataSyncService
 from src.services.strategy_lab.event_study_service import StrategyLabEventStudyService
 from src.services.strategy_lab.premium_track_service import StrategyLabPremiumTrackService
-from src.services.strategy_lab.signal_service import StrategyLabSignalService
 from src.services.strategy_lab.service import StrategyLabService
 from src.storage import DatabaseManager
 
@@ -600,82 +595,3 @@ def delete_batch(
     except Exception as exc:
         logger.error("Delete Strategy Lab batch failed: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail={"error": "internal_error", "message": "Delete batch failed"})
-
-
-@router.post(
-    "/signals",
-    response_model=StrategyLabSignalItem,
-    responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
-    summary="Create a Strategy Lab signal from one run",
-)
-def create_signal(
-    request: StrategyLabSignalCreateRequest,
-    db_manager: DatabaseManager = Depends(get_database_manager),
-) -> StrategyLabSignalItem:
-    try:
-        return StrategyLabSignalItem(
-            **StrategyLabSignalService(db_manager).create_from_run(
-                run_id=request.run_id,
-                portfolio_account_id=request.portfolio_account_id,
-                suggested_action=request.suggested_action,
-                signal_type=request.signal_type,
-                confidence=request.confidence,
-                reason=request.reason,
-            )
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail={"error": "invalid_params", "message": str(exc)})
-    except Exception as exc:
-        logger.error("Create Strategy Lab signal failed: %s", exc, exc_info=True)
-        raise HTTPException(status_code=500, detail={"error": "internal_error", "message": "Create signal failed"})
-
-
-@router.get(
-    "/signals",
-    response_model=StrategyLabSignalListResponse,
-    responses={500: {"model": ErrorResponse}},
-    summary="List Strategy Lab signals",
-)
-def list_signals(
-    page: int = Query(1, ge=1),
-    limit: int = Query(20, ge=1, le=200),
-    db_manager: DatabaseManager = Depends(get_database_manager),
-) -> StrategyLabSignalListResponse:
-    try:
-        return StrategyLabSignalListResponse(
-            **StrategyLabSignalService(db_manager).list_signals(page=page, limit=limit)
-        )
-    except Exception as exc:
-        logger.error("List Strategy Lab signals failed: %s", exc, exc_info=True)
-        raise HTTPException(status_code=500, detail={"error": "internal_error", "message": "List signals failed"})
-
-
-@router.post(
-    "/signals/{signal_id}/confirm",
-    response_model=StrategyLabSignalItem,
-    responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
-    summary="Confirm a Strategy Lab signal into Portfolio trades",
-)
-def confirm_signal(
-    signal_id: int,
-    request: StrategyLabSignalConfirmRequest,
-    db_manager: DatabaseManager = Depends(get_database_manager),
-) -> StrategyLabSignalItem:
-    try:
-        return StrategyLabSignalItem(
-            **StrategyLabSignalService(db_manager).confirm_signal_trade(
-                signal_id=signal_id,
-                portfolio_account_id=request.portfolio_account_id,
-                trade_date=request.trade_date,
-                quantity=request.quantity,
-                price=request.price,
-                side=request.side,
-                fee=request.fee,
-                tax=request.tax,
-            )
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail={"error": "invalid_params", "message": str(exc)})
-    except Exception as exc:
-        logger.error("Confirm Strategy Lab signal failed: %s", exc, exc_info=True)
-        raise HTTPException(status_code=500, detail={"error": "internal_error", "message": "Confirm signal failed"})

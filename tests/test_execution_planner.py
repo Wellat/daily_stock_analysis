@@ -46,13 +46,13 @@ def test_planner_caps_single_buy_amount_to_MAX_BUY_AMOUNT_EACH_SYMBOL():
 
 
 def test_planner_limits_buy_symbols_to_max_buy_symbols():
-    # 12 只各买 1000 元，只保留前 10 只的买入，后 2 只记入 skipped。
+    # 12 只各买 1000 元，单次买入标的数上限 5，只保留前 5 只，后 7 只记入 skipped。
     prices = {f"113{i:03d}": 100.0 for i in range(1, 13)}
     decisions = [StrategyDecision("buy", symbol=s, target_amount=1000) for s in prices]
     plan = ExecutionPlanner().plan(decisions, _multi_context(prices), lot_size=10)
-    assert len(plan.orders) == 10
+    assert len(plan.orders) == 5
     assert all(o.side == "buy" for o in plan.orders)
-    assert [s.decision.symbol for s in plan.skipped] == ["113011", "113012"]
+    assert [s.decision.symbol for s in plan.skipped] == [f"113{i:03d}" for i in range(6, 13)]
     assert all(s.reason == "max_buy_symbols" for s in plan.skipped)
 
 

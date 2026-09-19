@@ -4,9 +4,9 @@ import StrategyLabPage from '../StrategyLabPage';
 import { UiLanguageProvider } from '../../contexts/UiLanguageContext';
 
 const api = vi.hoisted(() => ({
-  listStrategies: vi.fn(), listRuns: vi.fn(), listBatches: vi.fn(), listSignals: vi.fn(),
+  listStrategies: vi.fn(), listRuns: vi.fn(), listBatches: vi.fn(),
   createRun: vi.fn(), listRunTrades: vi.fn(), getRun: vi.fn(), createBatch: vi.fn(), getBatch: vi.fn(),
-  retryBatch: vi.fn(), resumeBatch: vi.fn(), deleteBatch: vi.fn(), getBatchStreamUrl: vi.fn(), createSignal: vi.fn(), confirmSignal: vi.fn(),
+  retryBatch: vi.fn(), resumeBatch: vi.fn(), deleteBatch: vi.fn(), getBatchStreamUrl: vi.fn(),
   getPremiumTrack: vi.fn(),
 }));
 
@@ -29,7 +29,6 @@ describe('StrategyLabPage', () => {
     ]);
     api.listRuns.mockResolvedValue([]);
     api.listBatches.mockResolvedValue([]);
-    api.listSignals.mockResolvedValue([]);
     api.createBatch.mockResolvedValue({ id: 1, status: 'completed', total_tasks: 2, completed_tasks: 2 });
     api.createRun.mockResolvedValue({ id: 1, strategy_name: '双低轮动', engine_name: 'unified_low_premium_v1', status: 'completed', start_date: '2024-01-02', end_date: '2024-01-31', metrics: null, equity_curve: [] });
     api.listRunTrades.mockResolvedValue([]);
@@ -40,13 +39,13 @@ describe('StrategyLabPage', () => {
     liveApi.getConfig.mockReset();
   });
 
-  it('renders four top-level tabs and keeps backtest on the default research tab', async () => {
+  it('renders three top-level tabs and keeps backtest on the default research tab', async () => {
     render(<UiLanguageProvider><StrategyLabPage /></UiLanguageProvider>);
     expect(await screen.findByRole('heading', { name: '策略实验室' })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: '策略研究' })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: '参数搜索' })).toBeInTheDocument();
-    expect(screen.getByRole('tab', { name: '实盘信号' })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: '低溢价跟踪' })).toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: '实盘信号' })).not.toBeInTheDocument();
     expect(screen.queryByRole('tab', { name: '数据同步' })).not.toBeInTheDocument();
     expect(await screen.findByRole('button', { name: '运行回测' })).toBeInTheDocument();
   }, 15000);

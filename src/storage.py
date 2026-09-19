@@ -949,38 +949,6 @@ class StrategyLabBatchItem(Base):
     completed_at = Column(DateTime, index=True)
 
 
-class StrategyLabSignal(Base):
-    """Strategy Lab signal linked to Portfolio truth source."""
-
-    __tablename__ = 'strategy_lab_signals'
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    run_id = Column(Integer, ForeignKey('strategy_lab_runs.id', ondelete='CASCADE'), nullable=False, index=True)
-    portfolio_account_id = Column(
-        Integer,
-        ForeignKey('portfolio_accounts.id', ondelete='SET NULL'),
-        nullable=True,
-        index=True,
-    )
-    canonical_id = Column(String(64), nullable=False, index=True)
-    symbol = Column(String(32), nullable=False, index=True)
-    market = Column(String(16), nullable=False, default='cn', index=True)
-    instrument_type = Column(String(32), nullable=False, default='convertible_bond', index=True)
-    signal_type = Column(String(32), nullable=False, index=True)
-    suggested_action = Column(String(16), nullable=False)
-    confidence = Column(Float)
-    reason = Column(Text)
-    status = Column(String(16), nullable=False, default='active', index=True)
-    portfolio_trade_id = Column(
-        Integer,
-        ForeignKey('portfolio_trades.id', ondelete='SET NULL'),
-        nullable=True,
-        index=True,
-    )
-    created_at = Column(DateTime, default=datetime.now, index=True)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, index=True)
-
-
 class TradingOrder(Base):
     """可转债实盘交易指令（QMT 拉取执行，HTTP 回调回写结果）。"""
 

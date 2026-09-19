@@ -9,6 +9,7 @@ class LowPremiumStrategy(StrategyBase):
     parameter_definitions = (
         {"key":"max_positions","label":"最大持仓数","type":"integer","default":2,"min":1,"max":50},
         {"key":"per_position_cash","label":"单债目标资金","type":"number","default":10000,"min":100},
+        {"key":"per_position_quantity","label":"单债固定张数（0=按目标资金）","type":"integer","default":0,"min":0,"max":5000},
         {"key":"lot_size","label":"最小交易单位","type":"integer","default":10,"min":1},
         {"key":"max_abs_premium","label":"最大溢价率","type":"number","default":200,"min":0},
         {"key":"exclude_event_blocked","label":"排除风险事件","type":"boolean","default":True},
@@ -21,8 +22,8 @@ class LowPremiumStrategy(StrategyBase):
                 events=[e for e in context.events.get(symbol,[]) if e.blocking]
                 if events:
                     qty=pos.available
-                    out.append(StrategyDecision("exit" if qty>0 else "blocked", symbol=symbol, suggested_quantity=qty if qty>0 else None, 
-                    reason=";".join(e.event_type for e in events), decision_data={"event_types":[e.event_type for e in events]}, 
+                    out.append(StrategyDecision("exit" if qty>0 else "blocked", symbol=symbol, suggested_quantity=qty if qty>0 else None,
+                    reason=";".join(e.event_type for e in events), decision_data={"event_types":[e.event_type for e in events]},
                     risk_status="blocked" if qty<=0 else "passed"))
                 else: out.append(StrategyDecision("hold", symbol=symbol, reason="no_blocking_event"))
             return out
@@ -35,12 +36,20 @@ class LowPremiumStrategy(StrategyBase):
             blocked=any(e.blocking for e in context.events.get(i.symbol,[]))
             if abs(f.premium_rate)>p["max_abs_premium"] or (p["exclude_event_blocked"] and blocked): continue
             candidates.append((f.premium_rate,i,close,f,blocked))
+        fixed_qty=int(p.get("per_position_quantity") or 0)
+        lot=max(int(p["lot_size"]),1)
         out=[]
         for rank,(premium,i,close,f,_) in enumerate(sorted(candidates,key=lambda x:x[0])[:p["max_positions"]],1):
             # Quantity conversion is an execution concern.  Emit the portfolio
-            # intent (target amount) and let ExecutionPlanner apply prices,
-            # lot-size and account-risk constraints consistently in live/backtest.
-            out.append(StrategyDecision("buy",i.symbol,i.name,target_amount=p["per_position_cash"],reason="lowest_premium",
-            decision_data={"premium_rate":premium,"close":close,"remaining_size":f.remaining_size,"rank":rank,
-            "filter_results":{"premium_limit":True,"event_blocked":False}}))
+            # intent (target amount or fixed lots) and let ExecutionPlanner apply
+            # prices, lot-size and account-risk constraints consistently in
+            # live/backtest.
+            if fixed_qty>0:
+                out.append(StrategyDecision("buy",i.symbol,i.name,suggested_quantity=int(fixed_qty/lot)*lot,reason="lowest_premium",
+                decision_data={"premium_rate":premium,"close":close,"remaining_size":f.remaining_size,"rank":rank,
+                "filter_results":{"premium_limit":True,"event_blocked":False},"sizing":"fixed_quantity"}))
+            else:
+                out.append(StrategyDecision("buy",i.symbol,i.name,target_amount=p["per_position_cash"],reason="lowest_premium",
+                decision_data={"premium_rate":premium,"close":close,"remaining_size":f.remaining_size,"rank":rank,
+                "filter_results":{"premium_limit":True,"event_blocked":False}}))
         return out

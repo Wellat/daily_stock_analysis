@@ -76,20 +76,6 @@ export type StrategyLabBatchItem = {
   items?: Array<{ id: number; run_id?: number | null; parameters: Record<string, unknown>; status: string; error_message?: string | null }>;
 };
 
-export type StrategyLabSignalItem = {
-  id: number;
-  run_id: number;
-  portfolio_account_id?: number | null;
-  symbol: string;
-  market: string;
-  suggested_action: string;
-  confidence?: number | null;
-  reason?: string | null;
-  status: string;
-  portfolio_trade_id?: number | null;
-  created_at?: string | null;
-};
-
 export type StrategyLabSyncRunItem = {
   id: number;
   run_uid?: string;
@@ -230,18 +216,6 @@ export const strategyLabApi = {
   getBatchStreamUrl(batchId: number) {
     const baseUrl = apiClient.defaults.baseURL || '';
     return `${baseUrl}/api/v1/strategy-lab/batches/${batchId}/stream`;
-  },
-  async listSignals() {
-    const { data } = await apiClient.get<{ items: StrategyLabSignalItem[] }>('/api/v1/strategy-lab/signals');
-    return data.items;
-  },
-  async createSignal(payload: { run_id: number; portfolio_account_id?: number; suggested_action: string; confidence?: number; reason?: string }) {
-    const { data } = await apiClient.post<StrategyLabSignalItem>('/api/v1/strategy-lab/signals', payload);
-    return data;
-  },
-  async confirmSignal(signalId: number, payload: { portfolio_account_id: number; trade_date: string; quantity: number; price: number; side: 'buy' | 'sell'; fee?: number; tax?: number }) {
-    const { data } = await apiClient.post<StrategyLabSignalItem>(`/api/v1/strategy-lab/signals/${signalId}/confirm`, payload);
-    return data;
   },
   async listSyncRuns(params: { page?: number; limit?: number } = {}) {
     const { data } = await apiClient.get<{ items: StrategyLabSyncRunItem[]; total: number }>('/api/v1/strategy-lab/data-sync/runs', { params });

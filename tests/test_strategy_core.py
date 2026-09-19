@@ -16,6 +16,20 @@ def test_low_premium_sorts_and_limits_positions():
     assert [d.symbol for d in decisions] == ["B", "C"]
 
 
+def test_low_premium_fixed_quantity_overrides_target_amount():
+    """per_position_quantity>0 时发固定张数（suggested_quantity），否则发目标金额。"""
+    c = context([("A", "A", 100, 8), ("B", "B", 100, 2)])
+    decisions = LowPremiumStrategy().evaluate(
+        c, parameters={"max_positions": 1, "per_position_quantity": 45, "lot_size": 10}
+    )
+    assert [(d.symbol, d.suggested_quantity, d.target_amount) for d in decisions] == [("B", 40, None)]
+
+    decisions = LowPremiumStrategy().evaluate(
+        c, parameters={"max_positions": 1, "per_position_quantity": 0}
+    )
+    assert [(d.symbol, d.suggested_quantity, d.target_amount) for d in decisions] == [("B", None, 10000)]
+
+
 def test_event_check_only_exits_blocked_current_position():
     c = context([("A", "A", 100, 8), ("B", "B", 100, 2)],
         {"A": PositionSnapshot(20, 10)}, {"A": [MarketEvent("redemption")]})
