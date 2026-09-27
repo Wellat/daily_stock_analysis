@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [改进] 可转债列表详情改为行内展开：点击行在该行下方直接展开详情（再点收起，同一时间仅展开一行），替代原「列表底部详情区」的脱节交互；表格支持点击表头排序（转股溢价率 / 双低 / 最后交易日，默认溢价率升序，取消排序回到默认），`GET /instruments` 新增 `sort_by`/`sort_order` 参数（服务端全集排序后分页，排序值缺失的排最后）；最后交易日缺失时用到期时间兜底展示（弱色区分）并作为排序兜底键。
+- [改进] 行情数据-可转债列表改版为信息表格（服务端分页 50 只/页，active 默认溢价率升序）：列表新增双低、强赎/下修/回售计数（已公告强赎红色标记）、剩余规模、剩余年限、到期时间、最后交易日、评级等列；点击行在表格下方展开详情（原有两张趋势图与事件表保留，详情补充条款计数、评级、转股价值等字段）；`GET /instruments` 列表项新增 terms 扁平化字段（纯追加，旧客户端无感）。
 - [改进] 行情数据-可转债列表（未退市）按最新转股溢价率升序排序，溢价率缺失或无因子数据的排最后，低溢价标的优先展示（`GET /api/v1/strategy-lab/instruments?status=active`）；全部/已退市视图保持原有更新时间倒序。
 - [新功能] 行情数据-可转债详情新增「正股与溢价率」趋势图：正股收盘价（左轴）与转股溢价率（右轴）按交易日对齐，正股价按因子日期窗口实时拉取腾讯前复权日 K（与盘中因子同步同源，单次约 800 根上限），拉取失败或无正股代码时降级为提示、不影响现有图表；新增 `GET /api/v1/strategy-lab/instruments/{bond_code}/stock-bars`。
 - [修复] cb_basic 同步不再用空值覆盖库内已有 `convert_price`/`current_premium_rate`：上游 opencli 详情载荷缺字段时保留原值（与 stock_code/remaining_size 同语义），有新值（转股价下修）仍正常覆盖。2026-09-24 曾因详情载荷缺转股价把 24 只活跃转债转股价清空，次日溢价率整批失效、实盘低溢价策略从残缺候选选债并卖出全部低溢价持仓。

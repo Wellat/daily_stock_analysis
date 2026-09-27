@@ -331,13 +331,17 @@ class StrategyLabDataRepository:
         offset: int,
         status: Optional[str] = None,
         held_only: bool = False,
+        sort_by: Optional[str] = None,
+        sort_order: str = "asc",
     ) -> Dict[str, Any]:
         """List convertible-bond instruments with latest factor and event counts.
 
         ``status`` accepts "active"（正常）or "delisted"（已退市）; ``held_only``
         restricts to symbols still held in active Portfolio accounts.
-        未退市（active）列表按最新转股溢价率升序排序（溢价率缺失的排最后），
-        低溢价标的优先展示；其余视图保持更新时间倒序。
+        排序：缺省时未退市（active）按最新转股溢价率升序（缺失排最后）、其余
+        视图更新时间倒序；显式 ``sort_by``（premium_rate / double_low /
+        last_trading_date，``sort_order`` asc/desc）在匹配全集上排序后分页，
+        排序值缺失的标的始终排在最后。last_trading_date 缺失时用到期时间兜底。
         """
         normalized_keyword = str(keyword).strip().lower() if keyword else None
         with self.db.get_session() as session:
@@ -369,7 +373,12 @@ class StrategyLabDataRepository:
             total = session.execute(
                 select(func.count()).select_from(base.subquery())
             ).scalar_one()
-            if status == "active":
+            if sort_by is not None:
+                rows = self._sorted_instrument_page(
+                    session, base, sort_by=sort_by, sort_order=sort_order,
+                    offset=offset, limit=limit,
+                )
+            elif status == "active":
                 # 未退市列表按最新转股溢价率升序；子查询取每债最新因子行的
                 # premium_rate（与列表展示的 latest_premium_rate 同口径）。
                 # is_(None) 兜底把无因子/无溢价率的排最后（SQLite 各版本均可用，
@@ -825,12 +834,101 @@ class StrategyLabDataRepository:
                 ],
             }
 
+    _SORT_FIELDS = frozenset({"premium_rate", "double_low", "last_trading_date"})
+
+    def _sorted_instrument_page(
+        self,
+        session: Any,
+        base: Any,
+        *,
+        sort_by: str,
+        sort_order: str,
+        offset: int,
+        limit: int,
+    ) -> List[StrategyLabCbBasic]:
+        """在匹配全集上按 ``sort_by`` 排序后取分页行（排序值缺失的排最后）。
+
+        排序键需要最新因子（premium/close）或 terms 元数据（最后交易日），
+        均为非 SQL 列或跨行计算，故取全量行后在 Python 排序；标的总量为数百
+        量级，开销可忽略。SQL 路径见上方缺省排序分支。
+        """
+        if sort_by not in self._SORT_FIELDS:
+            raise ValueError(f"unsupported sort_by: {sort_by}")
+        all_rows = session.execute(base).scalars().all()
+        latest_by_code: Dict[str, StrategyLabCbDailyFactor] = {}
+        all_codes = [row.bond_code for row in all_rows]
+        # SQLite 单语句绑定参数上限 999，代码分批查询最新因子行
+        for chunk_start in range(0, len(all_codes), 500):
+            chunk = all_codes[chunk_start:chunk_start + 500]
+            latest_sq = (
+                select(
+                    StrategyLabCbDailyFactor.bond_code.label("bond_code"),
+                    func.max(StrategyLabCbDailyFactor.trade_date).label("max_date"),
+                )
+                .where(StrategyLabCbDailyFactor.bond_code.in_(chunk))
+                .group_by(StrategyLabCbDailyFactor.bond_code)
+                .subquery()
+            )
+            for factor in session.execute(
+                select(StrategyLabCbDailyFactor)
+                .join(
+                    latest_sq,
+                    and_(
+                        StrategyLabCbDailyFactor.bond_code == latest_sq.c.bond_code,
+                        StrategyLabCbDailyFactor.trade_date == latest_sq.c.max_date,
+                    ),
+                )
+            ).scalars():
+                latest_by_code[factor.bond_code] = factor
+
+        keyed: List[tuple] = []
+        for row in all_rows:
+            try:
+                terms_data = json.loads(row.terms_json) if row.terms_json else {}
+                if not isinstance(terms_data, dict):
+                    terms_data = {}
+            except (TypeError, ValueError):
+                terms_data = {}
+            keyed.append((self._instrument_sort_key(row, latest_by_code.get(row.bond_code), terms_data, sort_by), row))
+        # 稳定双趟：先按代码，再按值；缺失键（None）恒排最后，与升降序无关
+        non_null = [item for item in keyed if item[0] is not None]
+        nulls = [item for item in keyed if item[0] is None]
+        non_null.sort(key=lambda item: item[1].bond_code)
+        non_null.sort(key=lambda item: item[0], reverse=(sort_order == "desc"))
+        ordered = [row for _, row in non_null] + sorted((row for _, row in nulls), key=lambda r: r.bond_code)
+        return ordered[offset:offset + limit]
+
+    @staticmethod
+    def _instrument_sort_key(
+        basic: StrategyLabCbBasic,
+        factor: Optional[StrategyLabCbDailyFactor],
+        terms_data: Dict[str, Any],
+        sort_by: str,
+    ) -> Any:
+        if sort_by == "premium_rate":
+            return factor.premium_rate if factor else None
+        if sort_by == "double_low":
+            if factor is None or factor.close is None or factor.premium_rate is None:
+                return None
+            return factor.close + factor.premium_rate
+        # last_trading_date：缺失用到期时间兜底；iso 日期字符串字典序即时间序
+        value = terms_data.get("last_trading_date")
+        if isinstance(value, str) and value:
+            return value
+        return basic.maturity_date.isoformat() if basic.maturity_date else None
+
     @staticmethod
     def _instrument_list_item(
         basic: StrategyLabCbBasic,
         latest_factor: Optional[StrategyLabCbDailyFactor],
         event_count: int,
     ) -> Dict[str, Any]:
+        try:
+            terms_data = json.loads(basic.terms_json) if basic.terms_json else {}
+            if not isinstance(terms_data, dict):
+                terms_data = {}
+        except (TypeError, ValueError):
+            terms_data = {}
         return {
             "bond_code": basic.bond_code,
             "bond_name": basic.bond_name,
@@ -845,6 +943,13 @@ class StrategyLabDataRepository:
             "convert_price": basic.convert_price,
             "latest_close": latest_factor.close if latest_factor else None,
             "latest_premium_rate": latest_factor.premium_rate if latest_factor else None,
+            # 条款元数据扁平化（集思录原样字符串），列表筛选/展示直接可用
+            "force_redeem_countdown": terms_data.get("force_redeem_countdown"),
+            "down_revise_countdown": terms_data.get("down_revise_countdown"),
+            "put_countdown": terms_data.get("put_countdown"),
+            "last_trading_date": terms_data.get("last_trading_date"),
+            "bond_rating": terms_data.get("bond_rating"),
+            "industry": terms_data.get("industry"),
             "event_count": event_count,
             "source": basic.source,
             "updated_at": basic.updated_at.isoformat() if basic.updated_at else None,

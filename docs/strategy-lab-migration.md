@@ -394,7 +394,7 @@ cd apps/dsa-desktop && npm install && npm run build
 | Phase 4：Portfolio 统一与策略信号 | 已完成 | 信号只保存 Portfolio 账户/交易关联；确认通过现有 `PortfolioService.record_trade()`，增加账户 active/market 校验和幂等保护；收益口径已写明 |
 | Phase 5：前端策略实验室 | 已完成 | `/strategy-lab` 已改为顶部 Tab 布局（策略研究 / 参数搜索 / 数据同步 / 实盘信号），引入 antd 与 ECharts；行情数据页 `/market-data` 独立于左侧菜单入口；按 DSA 设计系统适配暗色主题并补 Web 测试 |
 | Phase 6：真实数据回归、文档与旧项目退役 | 已完成 | 已加入同一规范化快照的双低评分、选券和账户不变性回归；真实历史收益按数据快照、schema、撮合和费用口径分别解释，不宣称跨数据库曲线天然一致 |
-| 行情数据查询 API | 已完成 | `GET /instruments`、`GET /instruments/{bond_code}`、`GET /instruments/{bond_code}/bars`、`GET /instruments/{bond_code}/events` 已实现并挂载到 `/api/v1/strategy-lab`，配套查询测试通过；`GET /instruments/{bond_code}/stock-bars` 按日期窗口实时拉取正股腾讯前复权日 K（与盘中因子同步同源，单次约 800 根上限），供行情数据页「正股与溢价率」趋势图使用 |
+| 行情数据查询 API | 已完成 | `GET /instruments`（列表项含条款计数/最后交易日/评级等 terms 扁平化字段，active 按最新溢价率升序，支持 `sort_by`/`sort_order` 排序：premium_rate / double_low / last_trading_date，缺失值排最后、最后交易日缺失用到期时间兜底）、`GET /instruments/{bond_code}`、`GET /instruments/{bond_code}/bars`、`GET /instruments/{bond_code}/events` 已实现并挂载到 `/api/v1/strategy-lab`，配套查询测试通过；`GET /instruments/{bond_code}/stock-bars` 按日期窗口实时拉取正股腾讯前复权日 K（与盘中因子同步同源，单次约 800 根上限），供行情数据页「正股与溢价率」趋势图使用 |
 | 本地初始化同步脚本 | 已完成 | `scripts/sync_cb_local_init.py`（一次性）：从本地 `localhost:5273` 拉取列表/详情/行情/事件入库；行情 OHLCV 共用 `stock_daily`（新增 `instrument_type` 区分可转债/股票），`strategy_lab_cb_basic` 新增 `status`（退市/上市状态）与详情补充元数据（terms_json）；溢价率/剩余规模/条款来源暂无，留空待其他数据源补充 |
 | 行情数据页筛选与股票 Tab | 已完成 | `/market-data` 拆为可转债/股票双 Tab；可转债列表支持 `status`（未退市/已退市）与 `held_only`（仅持仓）筛选（`GET /instruments` 新增参数）；股票 Tab 读取 `stock_daily`（新增 `GET /stocks/list`、`GET /stocks/{code}/bars`），有 OHLCV 时渲染 K 线 |
 | 数据同步 Tab 迁移 | 已完成 | 策略实验室"数据同步"Tab 移至行情数据页（可转债/股票/数据同步），`DataSyncPanel` 移入 `components/market-data` |

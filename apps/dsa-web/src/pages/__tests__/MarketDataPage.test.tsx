@@ -47,6 +47,12 @@ describe('MarketDataPage', () => {
           current_premium_rate: 18.5,
           latest_close: 101.2,
           latest_premium_rate: 17.8,
+          force_redeem_countdown: '已公告强赎',
+          down_revise_countdown: '10/30',
+          put_countdown: '2/30',
+          last_trading_date: '2028-01-01',
+          bond_rating: 'AA+',
+          industry: '电子-半导体-分立器件',
           event_count: 1,
         },
       ],
@@ -118,19 +124,72 @@ describe('MarketDataPage', () => {
     expect(screen.getByRole('tab', { name: '股票' })).toBeInTheDocument();
     await waitFor(() => expect(cbApi.listInstruments).toHaveBeenCalledWith({
       market: 'cn', keyword: undefined, status: 'active', held_only: undefined, page: 1, limit: 50,
+      sort_by: 'premium_rate', sort_order: 'asc',
     }));
     expect(await screen.findByText('123001')).toBeInTheDocument();
+    // 信息表格：条款计数等扩展列表头与已公告强赎标记
+    expect(screen.getByRole('columnheader', { name: '转股溢价率' })).toBeInTheDocument();
+    expect(screen.getByRole('columnheader', { name: '强赎计数' })).toBeInTheDocument();
+    expect(screen.getByRole('columnheader', { name: '剩余年限' })).toBeInTheDocument();
+    expect(screen.getByText('已公告强赎')).toBeInTheDocument();
   }, 15000);
 
-  it('shows CB detail, chart, and events after selection', async () => {
+  it('sorts the bond table via clickable column headers', async () => {
+    render(<MarketDataPage />);
+    await screen.findByText('123001');
+
+    // antd 排序点击区在列头内层，点列标题文字触发（标题 span 与其容器都含该文本，取第一个）
+    fireEvent.click(screen.getAllByText('双低')[0]);
+
+    await waitFor(() => expect(cbApi.listInstruments).toHaveBeenLastCalledWith({
+      market: 'cn', keyword: undefined, status: 'active', held_only: undefined, page: 1, limit: 50,
+      sort_by: 'double_low', sort_order: 'asc',
+    }));
+
+    // 再次点击切换为降序
+    fireEvent.click(screen.getAllByText('双低')[0]);
+
+    await waitFor(() => expect(cbApi.listInstruments).toHaveBeenLastCalledWith({
+      market: 'cn', keyword: undefined, status: 'active', held_only: undefined, page: 1, limit: 50,
+      sort_by: 'double_low', sort_order: 'desc',
+    }));
+  }, 15000);
+
+  it('paginates the bond table with server-side pages of 50', async () => {
+    cbApi.listInstruments.mockResolvedValue({
+      market: 'cn',
+      total: 120,
+      page: 1,
+      limit: 50,
+      items: [
+        {
+          bond_code: '123001', bond_name: '测试转债', stock_code: '600001', stock_name: '测试正股',
+          market: 'cn', status: '正常', current_premium_rate: 18.5, latest_close: 101.2, latest_premium_rate: 17.8,
+          event_count: 1,
+        },
+      ],
+    });
+    render(<MarketDataPage />);
+    await screen.findByText('共 120 只标的');
+    expect(screen.getByText('共 120 只')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTitle('2'));
+
+    await waitFor(() => expect(cbApi.listInstruments).toHaveBeenLastCalledWith({
+      market: 'cn', keyword: undefined, status: 'active', held_only: undefined, page: 2, limit: 50,
+      sort_by: 'premium_rate', sort_order: 'asc',
+    }));
+  }, 15000);
+
+  it('expands CB detail inline on row click and collapses on second click', async () => {
     render(<MarketDataPage />);
     const instrument = await screen.findByText('123001');
     fireEvent.click(instrument);
 
     await waitFor(() => expect(cbApi.getInstrumentDetail).toHaveBeenCalledWith('123001'));
-    expect(await screen.findByText('测试转债')).toBeInTheDocument();
+    expect(await screen.findAllByText('测试转债')).not.toHaveLength(0);
     expect(screen.getByText('电子-半导体-分立器件')).toBeInTheDocument();
-    expect(screen.getByText('101.20')).toBeInTheDocument();
+    expect(screen.getAllByText('101.20').length).toBeGreaterThan(0);
     expect(screen.queryByText('强赎条款：')).not.toBeInTheDocument();
     expect(screen.getByLabelText('价格与溢价率图表')).toBeInTheDocument();
     // 正股 K 线按因子日期窗口拉取，图表与主详情并行渲染
@@ -140,6 +199,10 @@ describe('MarketDataPage', () => {
     }));
     expect(await screen.findByLabelText('正股与溢价率图表')).toBeInTheDocument();
     expect(screen.getByText('董事会提议下修')).toBeInTheDocument();
+
+    // 再次点击同一行收起详情
+    fireEvent.click(screen.getAllByText('123001')[0]);
+    await waitFor(() => expect(screen.queryByLabelText('价格与溢价率图表')).not.toBeInTheDocument());
   }, 15000);
 
   it('shows a degraded hint when underlying-stock bars are unavailable', async () => {

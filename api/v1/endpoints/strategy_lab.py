@@ -251,6 +251,12 @@ def list_instruments(
     held_only: bool = Query(False, description="仅看 Portfolio 仍持有的标的"),
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=200),
+    sort_by: str | None = Query(
+        None,
+        pattern="^(premium_rate|double_low|last_trading_date)$",
+        description="排序字段：premium_rate=转股溢价率 / double_low=双低 / last_trading_date=最后交易日（缺失用到期时间兜底）",
+    ),
+    sort_order: str = Query("asc", pattern="^(asc|desc)$", description="排序方向"),
     db_manager: DatabaseManager = Depends(get_database_manager),
 ) -> StrategyLabInstrumentListResponse:
     try:
@@ -262,6 +268,8 @@ def list_instruments(
                 limit=limit,
                 status=status,
                 held_only=held_only,
+                sort_by=sort_by,
+                sort_order=sort_order,
             )
         )
     except Exception as exc:

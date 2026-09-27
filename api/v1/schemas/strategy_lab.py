@@ -179,6 +179,12 @@ class StrategyLabInstrumentItem(BaseModel):
     convert_price: Optional[float] = None
     latest_close: Optional[float] = None
     latest_premium_rate: Optional[float] = None
+    force_redeem_countdown: Optional[str] = None
+    down_revise_countdown: Optional[str] = None
+    put_countdown: Optional[str] = None
+    last_trading_date: Optional[str] = None
+    bond_rating: Optional[str] = None
+    industry: Optional[str] = None
     event_count: int = 0
     source: Optional[str] = None
     updated_at: Optional[str] = None

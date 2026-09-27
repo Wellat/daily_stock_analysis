@@ -153,6 +153,8 @@ class StrategyLabDataSyncService:
         limit: int = 20,
         status: Optional[str] = None,
         held_only: bool = False,
+        sort_by: Optional[str] = None,
+        sort_order: str = "asc",
     ) -> Dict[str, Any]:
         offset = (page - 1) * limit
         payload = self.repository.list_cb_instruments(
@@ -162,6 +164,8 @@ class StrategyLabDataSyncService:
             offset=offset,
             status=status,
             held_only=held_only,
+            sort_by=sort_by,
+            sort_order=sort_order,
         )
         return {"market": market, "page": page, "limit": limit, **payload}
 

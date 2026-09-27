@@ -112,6 +112,12 @@ export type StrategyLabInstrumentItem = {
   convert_price?: number | null;
   latest_close?: number | null;
   latest_premium_rate?: number | null;
+  force_redeem_countdown?: string | null;
+  down_revise_countdown?: string | null;
+  put_countdown?: string | null;
+  last_trading_date?: string | null;
+  bond_rating?: string | null;
+  industry?: string | null;
   event_count: number;
   source?: string | null;
   updated_at?: string | null;
@@ -255,7 +261,7 @@ export const strategyLabApi = {
     const { data } = await apiClient.post<StrategyLabEventStudyResponse>('/api/v1/strategy-lab/studies/events', payload);
     return data;
   },
-  async listInstruments(params: { market?: string; keyword?: string; status?: 'active' | 'delisted'; held_only?: boolean; page?: number; limit?: number } = {}) {
+  async listInstruments(params: { market?: string; keyword?: string; status?: 'active' | 'delisted'; held_only?: boolean; page?: number; limit?: number; sort_by?: 'premium_rate' | 'double_low' | 'last_trading_date'; sort_order?: 'asc' | 'desc' } = {}) {
     const { data } = await apiClient.get<{ market: string; total: number; page: number; limit: number; items: StrategyLabInstrumentItem[] }>('/api/v1/strategy-lab/instruments', { params });
     return data;
   },

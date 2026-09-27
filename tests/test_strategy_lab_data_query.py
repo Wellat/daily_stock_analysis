@@ -56,7 +56,16 @@ def _seed_fixture(db_manager: DatabaseManager) -> None:
             "remaining_size": 50.0,
             "current_premium_rate": 18.0,
             "convert_price": 100.0,
-            "terms": {"source": "fixture", "strategy": "double-low"},
+            "terms": {
+                "source": "fixture",
+                "strategy": "double-low",
+                "industry": "电子-半导体-分立器件",
+                "force_redeem_countdown": "已公告强赎",
+                "down_revise_countdown": "10/30",
+                "put_countdown": "2/30",
+                "last_trading_date": "2024-03-01",
+                "bond_rating": "AA+",
+            },
         },
         {
             "bond_code": "113002",
@@ -197,6 +206,39 @@ def test_list_instruments_active_sorted_by_premium_asc(db_manager: DatabaseManag
     # 不带状态过滤（全部）时保持原有更新时间倒序，不受溢价率排序影响
     unfiltered = service.list_instruments(market="cn", page=1, limit=10)
     assert unfiltered["total"] == 6
+
+
+def test_list_instruments_explicit_sort_fields(db_manager: DatabaseManager) -> None:
+    """显式排序：premium/double_low/last_trading_date（缺失到期兜底、无键排最后）。"""
+    _seed_fixture(db_manager)
+    repo = StrategyLabDataSyncService(db_manager).repository
+    # 113001 双低=105.0+16.5、113003 双低=116.0+10.0；113012 无因子
+    repo.upsert_cb_basic(
+        [
+            {"bond_code": "113012", "bond_name": "CB Active NoFactor", "stock_code": "113012", "market": "cn", "status": "active"},
+        ],
+        source="fixture",
+    )
+
+    service = StrategyLabDataSyncService(db_manager)
+
+    by_premium_desc = service.list_instruments(market="cn", sort_by="premium_rate", sort_order="desc", page=1, limit=10)
+    assert [item["bond_code"] for item in by_premium_desc["items"]] == ["113002", "113001", "113003", "113012"]
+
+    by_double_low = service.list_instruments(market="cn", sort_by="double_low", sort_order="asc", page=1, limit=10)
+    # 双低：113002=98.5+20.0、113001=105.0+16.5、113003=116.0+10.0
+    assert [item["bond_code"] for item in by_double_low["items"][:3]] == ["113002", "113001", "113003"]
+    assert by_double_low["items"][-1]["bond_code"] == "113012"  # 排序值缺失排最后
+
+    # last_trading_date：fixture 113001 terms 有 2024-03-01；其余用到期时间兜底（2028-01-01）；113012 无到期时间排最后
+    by_exit_date = service.list_instruments(market="cn", sort_by="last_trading_date", sort_order="asc", page=1, limit=10)
+    codes = [item["bond_code"] for item in by_exit_date["items"]]
+    assert codes[0] == "113001"
+    assert codes[-1] == "113012"
+    assert set(codes[1:-1]) == {"113002", "113003"}
+
+    with pytest.raises(ValueError, match="unsupported sort_by"):
+        service.list_instruments(market="cn", sort_by="unknown", page=1, limit=10)
 
 
 def test_get_instrument_detail_merges_terms_and_counts(db_manager: DatabaseManager) -> None:
@@ -388,6 +430,23 @@ class StrategyLabDataQueryApiTestCase(unittest.TestCase):
         self.assertEqual(payload["total"], 3)
         self.assertEqual(payload["limit"], 20)
         self.assertTrue(payload["items"])
+
+    def test_instruments_list_includes_terms_fields(self) -> None:
+        """列表项扁平化输出条款计数/最后交易日/评级等 terms 元数据。"""
+        response = self.client.get("/api/v1/strategy-lab/instruments?market=cn&limit=10")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        items = {item["bond_code"]: item for item in response.json()["items"]}
+        first = items["113001"]
+        self.assertEqual(first["force_redeem_countdown"], "已公告强赎")
+        self.assertEqual(first["down_revise_countdown"], "10/30")
+        self.assertEqual(first["put_countdown"], "2/30")
+        self.assertEqual(first["last_trading_date"], "2024-03-01")
+        self.assertEqual(first["bond_rating"], "AA+")
+        self.assertEqual(first["industry"], "电子-半导体-分立器件")
+        # terms 无对应键的标的输出 None（容错）
+        self.assertIsNone(items["113002"]["force_redeem_countdown"])
+        self.assertIsNone(items["113002"]["bond_rating"])
 
     def test_instruments_list_keyword_filter(self) -> None:
         list_payload = self.client.get("/api/v1/strategy-lab/instruments").json()
