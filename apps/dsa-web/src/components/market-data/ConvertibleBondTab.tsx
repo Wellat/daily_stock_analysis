@@ -12,6 +12,7 @@ import {
   type StrategyLabEventItem,
   type StrategyLabInstrumentDetail,
   type StrategyLabInstrumentItem,
+  type StrategyLabStockBarItem,
 } from '../../api/strategyLab';
 
 const formatNumber = (value?: number | null, digits = 2): string => (value == null ? '--' : value.toFixed(digits));
@@ -45,6 +46,8 @@ export const ConvertibleBondTab: React.FC = () => {
   const [selected, setSelected] = useState<StrategyLabInstrumentItem | null>(null);
   const [detail, setDetail] = useState<StrategyLabInstrumentDetail | null>(null);
   const [bars, setBars] = useState<StrategyLabBarItem[]>([]);
+  const [stockBars, setStockBars] = useState<StrategyLabStockBarItem[]>([]);
+  const [stockLoading, setStockLoading] = useState(false);
   const [events, setEvents] = useState<StrategyLabEventItem[]>([]);
   const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'delisted'>('active');
   const [heldOnly, setHeldOnly] = useState(false);
@@ -86,6 +89,7 @@ export const ConvertibleBondTab: React.FC = () => {
   const selectInstrument = useCallback(async (item: StrategyLabInstrumentItem) => {
     setSelected(item);
     setDetailLoading(true);
+    setStockLoading(true);
     setError(null);
     try {
       const [detailPayload, barsPayload, eventsPayload] = await Promise.all([
@@ -96,10 +100,22 @@ export const ConvertibleBondTab: React.FC = () => {
       setDetail(detailPayload);
       setBars(barsPayload.items);
       setEvents(eventsPayload.items);
+      // 正股 K 线按因子日期窗口实时拉取，失败降级为空（不影响详情主体加载）
+      try {
+        const stockPayload = await strategyLabApi.listInstrumentStockBars(item.bond_code, {
+          start_date: barsPayload.items[0]?.trade_date,
+          end_date: barsPayload.items[barsPayload.items.length - 1]?.trade_date,
+        });
+        setStockBars(stockPayload.items);
+      } catch {
+        setStockBars([]);
+      }
     } catch (exc) {
       setError(getParsedApiError(exc));
+      setStockBars([]);
     } finally {
       setDetailLoading(false);
+      setStockLoading(false);
     }
   }, []);
 
@@ -136,6 +152,44 @@ export const ConvertibleBondTab: React.FC = () => {
         ],
       }
     : {};
+
+  const stockCloseByDate = new Map(stockBars.map((bar) => [bar.trade_date, bar.close ?? null]));
+  const stockChartOption: EChartOption =
+    bars.length && stockBars.length
+      ? {
+          backgroundColor: 'transparent',
+          tooltip: { trigger: 'axis' },
+          legend: { data: ['正股收盘价', '转股溢价率'], textStyle: { color: '#94a3b8' }, top: 0 },
+          grid: { left: 56, right: 56, top: 32, bottom: 32 },
+          xAxis: { type: 'category', data: bars.map((bar) => bar.trade_date) },
+          yAxis: [
+            { type: 'value', name: '正股价格', scale: true },
+            { type: 'value', name: '溢价率', scale: true, splitLine: { show: false } },
+          ],
+          series: [
+            {
+              name: '正股收盘价',
+              type: 'line',
+              smooth: true,
+              showSymbol: false,
+              // 按交易日对齐：正股缺失的日期断线（腾讯接口单次最多约 800 根）
+              data: bars.map((bar) => stockCloseByDate.get(bar.trade_date) ?? null),
+              connectNulls: false,
+              lineStyle: { width: 2, color: '#4ade80' },
+              areaStyle: { color: 'rgba(74, 222, 128, 0.10)' },
+            },
+            {
+              name: '转股溢价率',
+              type: 'line',
+              yAxisIndex: 1,
+              smooth: true,
+              showSymbol: false,
+              data: bars.map((bar) => bar.premium_rate),
+              lineStyle: { width: 2, color: '#f59e0b' },
+            },
+          ],
+        }
+      : {};
 
   const eventColumns: ColumnsType<StrategyLabEventItem> = [
     { title: '日期', dataIndex: 'event_date', width: 110 },
@@ -244,6 +298,20 @@ export const ConvertibleBondTab: React.FC = () => {
             <div className="glass-panel px-4 py-4">
               <h3 className="mb-3 text-sm font-semibold text-foreground">价格与溢价率</h3>
               {detailLoading ? <Skeleton active paragraph={{ rows: 5 }} /> : <EChart option={chartOption} height={320} aria-label="价格与溢价率图表" />}
+            </div>
+
+            <div className="glass-panel px-4 py-4">
+              <h3 className="mb-3 text-sm font-semibold text-foreground">
+                正股与溢价率
+                {stockName !== '--' ? <span className="ml-2 text-xs font-normal text-secondary-text">{stockName} · {stockCode}</span> : null}
+              </h3>
+              {stockLoading ? (
+                <Skeleton active paragraph={{ rows: 5 }} />
+              ) : stockBars.length ? (
+                <EChart option={stockChartOption} height={320} aria-label="正股与溢价率图表" />
+              ) : (
+                <Empty description="正股行情暂不可用（实时拉取腾讯日 K 失败或无正股代码）" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+              )}
             </div>
 
             <div className="glass-panel px-4 py-4">

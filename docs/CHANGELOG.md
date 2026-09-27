@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [改进] 行情数据-可转债列表（未退市）按最新转股溢价率升序排序，溢价率缺失或无因子数据的排最后，低溢价标的优先展示（`GET /api/v1/strategy-lab/instruments?status=active`）；全部/已退市视图保持原有更新时间倒序。
+- [新功能] 行情数据-可转债详情新增「正股与溢价率」趋势图：正股收盘价（左轴）与转股溢价率（右轴）按交易日对齐，正股价按因子日期窗口实时拉取腾讯前复权日 K（与盘中因子同步同源，单次约 800 根上限），拉取失败或无正股代码时降级为提示、不影响现有图表；新增 `GET /api/v1/strategy-lab/instruments/{bond_code}/stock-bars`。
 - [修复] cb_basic 同步不再用空值覆盖库内已有 `convert_price`/`current_premium_rate`：上游 opencli 详情载荷缺字段时保留原值（与 stock_code/remaining_size 同语义），有新值（转股价下修）仍正常覆盖。2026-09-24 曾因详情载荷缺转股价把 24 只活跃转债转股价清空，次日溢价率整批失效、实盘低溢价策略从残缺候选选债并卖出全部低溢价持仓。
 - [新功能] 实盘调仓新增溢价率覆盖率门禁：当日 active 转债溢价率缺失占比超过 5%（覆盖率 < 95%）视为因子数据被污染/未就绪，真实运行抛错阻断下单，preview 返回 `skip_reason=premium_coverage_low` 并附 coverage/missing/total（前端运行记录同步展示中文标签）；event_check 模式不依赖溢价率、不受限。
 - [改进] 日线 K 线数据源默认优先级对调：AkshareFetcher 提为主源（Priority 0），EfinanceFetcher 降为兜底（Priority 1）。本机历史诊断显示 efinance 日线（Eastmoney push 接口）10/10 全部失败、akshare 10/10 成功，原顺序每次都白耗一次失败尝试；环境变量 `AKSHARE_PRIORITY`/`EFINANCE_PRIORITY` 覆盖机制不变，配置了 `TUSHARE_TOKEN` 时 Tushare 仍动态提权为绝对最高（Priority -1）。

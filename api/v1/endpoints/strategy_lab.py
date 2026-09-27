@@ -16,6 +16,7 @@ from api.deps import get_database_manager
 from api.v1.schemas.common import ErrorResponse
 from api.v1.schemas.strategy_lab import (
     StrategyLabBarListResponse,
+    StrategyLabStockBarListResponse,
     StrategyLabBatchCreateRequest,
     StrategyLabBatchItemResponse,
     StrategyLabBatchListResponse,
@@ -324,6 +325,36 @@ def list_instrument_bars(
     except Exception as exc:
         logger.error("List Strategy Lab instrument bars failed: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail={"error": "internal_error", "message": "List bars failed"})
+
+
+@router.get(
+    "/instruments/{bond_code}/stock-bars",
+    response_model=StrategyLabStockBarListResponse,
+    responses={404: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
+    summary="List underlying-stock daily bars for one Strategy Lab convertible-bond instrument (live Tencent kline)",
+)
+def list_instrument_stock_bars(
+    bond_code: str,
+    market: str = Query("cn", description="市场"),
+    start_date: date | None = Query(None, description="起始日期（缺省近一年）"),
+    end_date: date | None = Query(None, description="结束日期（缺省今天）"),
+    db_manager: DatabaseManager = Depends(get_database_manager),
+) -> StrategyLabStockBarListResponse:
+    try:
+        payload = StrategyLabDataSyncService(db_manager).list_instrument_stock_bars(
+            market=market,
+            bond_code=bond_code,
+            start_date=start_date,
+            end_date=end_date,
+        )
+        if payload is None:
+            raise HTTPException(status_code=404, detail={"error": "not_found", "message": "Instrument not found"})
+        return StrategyLabStockBarListResponse(**payload)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("List Strategy Lab instrument stock bars failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail={"error": "internal_error", "message": "List stock bars failed"})
 
 
 @router.get(

@@ -188,6 +188,41 @@ class StrategyLabDataSyncService:
             limit=limit,
         )
 
+    def list_instrument_stock_bars(
+        self,
+        *,
+        market: str,
+        bond_code: str,
+        start_date: Any = None,
+        end_date: Any = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Live-fetch the bond's underlying-stock daily closes, or None when the bond does not exist.
+
+        与盘中因子同步同源（``CbUnderlyingStockOhlcFetcher``，腾讯前复权日 K，
+        单次最多约 800 根）。fetcher 内部吞掉网络异常返回空帧，因此无正股代码
+        或拉取失败时返回空 items，由调用方降级展示，不报错。
+        """
+        detail = self.repository.get_cb_instrument_detail(bond_code=bond_code, market=market)
+        if detail is None:
+            return None
+        stock_code = str(detail.get("stock_code") or "").strip()
+        stock_name = detail.get("stock_name")
+        if not stock_code:
+            return {"bond_code": bond_code, "stock_code": "", "stock_name": stock_name,
+                    "total": 0, "source": None, "items": []}
+        effective_end = end_date or date.today()
+        effective_start = start_date or (effective_end - timedelta(days=365))
+        fetcher = CbUnderlyingStockOhlcFetcher()
+        frame = fetcher.fetch_daily(stock_code, effective_start, effective_end)
+        items = [
+            {"trade_date": row_date.isoformat(), "close": float(row_close) if row_close == row_close else None}
+            for row_date, row_close in zip(frame["date"], frame["close"])
+        ]
+        # iso 日期字符串字典序即时间序；防御 fetcher 返回顺序变化
+        items.sort(key=lambda item: item["trade_date"])
+        return {"bond_code": bond_code, "stock_code": stock_code, "stock_name": stock_name,
+                "total": len(items), "source": fetcher.last_source, "items": items}
+
     def list_instrument_events(
         self,
         *,

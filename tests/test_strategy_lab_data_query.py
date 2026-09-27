@@ -167,6 +167,38 @@ def test_list_instruments_keyword_filter(db_manager: DatabaseManager) -> None:
     assert filtered["items"][0]["bond_code"] == keyword
 
 
+def test_list_instruments_active_sorted_by_premium_asc(db_manager: DatabaseManager) -> None:
+    """未退市列表按最新转股溢价率升序，溢价率缺失/无因子的排最后。"""
+    _seed_fixture(db_manager)
+    repo = StrategyLabDataSyncService(db_manager).repository
+    repo.upsert_cb_basic(
+        [
+            {"bond_code": "113010", "bond_name": "CB Active High", "stock_code": "113010", "market": "cn", "status": "active"},
+            {"bond_code": "113011", "bond_name": "CB Active Low", "stock_code": "113011", "market": "cn", "status": "active"},
+            {"bond_code": "113012", "bond_name": "CB Active NoFactor", "stock_code": "113012", "market": "cn", "status": "active"},
+        ],
+        source="fixture",
+    )
+    repo.upsert_cb_daily_factors(
+        [
+            {"bond_code": "113010", "trade_date": date(2024, 1, 4), "close": 110.0, "premium_rate": 30.0},
+            {"bond_code": "113011", "trade_date": date(2024, 1, 4), "close": 100.0, "premium_rate": 5.0},
+        ],
+        source="fixture",
+    )
+    service = StrategyLabDataSyncService(db_manager)
+
+    payload = service.list_instruments(market="cn", status="active", page=1, limit=10)
+
+    assert payload["total"] == 3
+    assert [item["bond_code"] for item in payload["items"]] == ["113011", "113010", "113012"]
+    assert [item["latest_premium_rate"] for item in payload["items"][:2]] == [5.0, 30.0]
+
+    # 不带状态过滤（全部）时保持原有更新时间倒序，不受溢价率排序影响
+    unfiltered = service.list_instruments(market="cn", page=1, limit=10)
+    assert unfiltered["total"] == 6
+
+
 def test_get_instrument_detail_merges_terms_and_counts(db_manager: DatabaseManager) -> None:
     _seed_fixture(db_manager)
     service = StrategyLabDataSyncService(db_manager)
@@ -402,6 +434,58 @@ class StrategyLabDataQueryApiTestCase(unittest.TestCase):
         response = self.client.get("/api/v1/strategy-lab/instruments/999999/bars")
 
         self.assertEqual(response.status_code, 404, response.text)
+
+    def test_instrument_stock_bars_endpoint(self) -> None:
+        """正股 K 线端点：透传日期窗口给 fetcher，items 按交易日升序。"""
+        import pandas as pd
+        from unittest.mock import patch
+
+        code = self.client.get("/api/v1/strategy-lab/instruments").json()["items"][0]["bond_code"]
+        fetch_daily = MagicMock(return_value=pd.DataFrame({
+            "date": [date(2024, 1, 2), date(2024, 1, 1)],
+            "close": [10.5, 10.0],
+        }))
+        fetcher = MagicMock(fetch_daily=fetch_daily, last_source="tencent")
+
+        with patch(
+            "src.services.strategy_lab.data_sync_service.CbUnderlyingStockOhlcFetcher",
+            return_value=fetcher,
+        ):
+            response = self.client.get(
+                f"/api/v1/strategy-lab/instruments/{code}/stock-bars",
+                params={"start_date": "2024-01-01", "end_date": "2024-01-02"},
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertEqual(payload["bond_code"], code)
+        self.assertEqual(payload["stock_code"], code)
+        self.assertEqual(payload["source"], "tencent")
+        self.assertEqual(
+            [item["trade_date"] for item in payload["items"]], ["2024-01-01", "2024-01-02"]
+        )
+        self.assertEqual([item["close"] for item in payload["items"]], [10.0, 10.5])
+        fetch_daily.assert_called_once_with(code, date(2024, 1, 1), date(2024, 1, 2))
+
+    def test_instrument_stock_bars_not_found(self) -> None:
+        response = self.client.get("/api/v1/strategy-lab/instruments/999999/stock-bars")
+
+        self.assertEqual(response.status_code, 404, response.text)
+
+    def test_instrument_stock_bars_without_stock_code(self) -> None:
+        """无正股代码的转债返回空 items（200 降级），不报错。"""
+        repo = StrategyLabDataSyncService(DatabaseManager()).repository
+        repo.upsert_cb_basic(
+            [{"bond_code": "113009", "bond_name": "CB NoStock", "stock_code": "", "market": "cn"}],
+            source="fixture",
+        )
+
+        response = self.client.get("/api/v1/strategy-lab/instruments/113009/stock-bars")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertEqual(payload["stock_code"], "")
+        self.assertEqual(payload["items"], [])
 
     def test_instrument_events_endpoint(self) -> None:
         list_payload = self.client.get("/api/v1/strategy-lab/instruments").json()

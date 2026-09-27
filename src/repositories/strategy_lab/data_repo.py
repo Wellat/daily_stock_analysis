@@ -336,6 +336,8 @@ class StrategyLabDataRepository:
 
         ``status`` accepts "active"（正常）or "delisted"（已退市）; ``held_only``
         restricts to symbols still held in active Portfolio accounts.
+        未退市（active）列表按最新转股溢价率升序排序（溢价率缺失的排最后），
+        低溢价标的优先展示；其余视图保持更新时间倒序。
         """
         normalized_keyword = str(keyword).strip().lower() if keyword else None
         with self.db.get_session() as session:
@@ -367,11 +369,33 @@ class StrategyLabDataRepository:
             total = session.execute(
                 select(func.count()).select_from(base.subquery())
             ).scalar_one()
-            rows = session.execute(
-                base.order_by(StrategyLabCbBasic.updated_at.desc(), StrategyLabCbBasic.bond_code.asc())
-                .offset(offset)
-                .limit(limit)
-            ).scalars().all()
+            if status == "active":
+                # 未退市列表按最新转股溢价率升序；子查询取每债最新因子行的
+                # premium_rate（与列表展示的 latest_premium_rate 同口径）。
+                # is_(None) 兜底把无因子/无溢价率的排最后（SQLite 各版本均可用，
+                # 不依赖 NULLS LAST 语法）。
+                latest_premium = (
+                    select(StrategyLabCbDailyFactor.premium_rate)
+                    .where(StrategyLabCbDailyFactor.bond_code == StrategyLabCbBasic.bond_code)
+                    .order_by(StrategyLabCbDailyFactor.trade_date.desc())
+                    .limit(1)
+                    .scalar_subquery()
+                )
+                rows = session.execute(
+                    base.order_by(
+                        latest_premium.is_(None),
+                        latest_premium.asc(),
+                        StrategyLabCbBasic.bond_code.asc(),
+                    )
+                    .offset(offset)
+                    .limit(limit)
+                ).scalars().all()
+            else:
+                rows = session.execute(
+                    base.order_by(StrategyLabCbBasic.updated_at.desc(), StrategyLabCbBasic.bond_code.asc())
+                    .offset(offset)
+                    .limit(limit)
+                ).scalars().all()
             codes = [row.bond_code for row in rows]
             latest_by_code: Dict[str, StrategyLabCbDailyFactor] = {}
             event_counts: Dict[str, int] = {}

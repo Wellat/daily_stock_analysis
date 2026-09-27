@@ -237,6 +237,20 @@ class StrategyLabBarListResponse(BaseModel):
     items: List[StrategyLabBarItem] = Field(default_factory=list)
 
 
+class StrategyLabStockBarItem(BaseModel):
+    trade_date: Optional[str] = None
+    close: Optional[float] = None
+
+
+class StrategyLabStockBarListResponse(BaseModel):
+    bond_code: str
+    stock_code: str = ""
+    stock_name: Optional[str] = None
+    total: int = 0
+    source: Optional[str] = None
+    items: List[StrategyLabStockBarItem] = Field(default_factory=list)
+
+
 class StrategyLabEventItem(BaseModel):
     event_date: str
     event_type: str

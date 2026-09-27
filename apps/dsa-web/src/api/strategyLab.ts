@@ -140,6 +140,20 @@ export type StrategyLabBarItem = {
   source?: string | null;
 };
 
+export type StrategyLabStockBarItem = {
+  trade_date: string;
+  close?: number | null;
+};
+
+export type StrategyLabStockBarList = {
+  bond_code: string;
+  stock_code: string;
+  stock_name?: string | null;
+  total: number;
+  source?: string | null;
+  items: StrategyLabStockBarItem[];
+};
+
 export type StrategyLabEventItem = {
   event_date: string;
   event_type: string;
@@ -251,6 +265,10 @@ export const strategyLabApi = {
   },
   async listInstrumentBars(bondCode: string, params: { market?: string; start_date?: string; end_date?: string; limit?: number } = {}) {
     const { data } = await apiClient.get<{ bond_code: string; total: number; items: StrategyLabBarItem[] }>(`/api/v1/strategy-lab/instruments/${encodeURIComponent(bondCode)}/bars`, { params });
+    return data;
+  },
+  async listInstrumentStockBars(bondCode: string, params: { market?: string; start_date?: string; end_date?: string } = {}) {
+    const { data } = await apiClient.get<StrategyLabStockBarList>(`/api/v1/strategy-lab/instruments/${encodeURIComponent(bondCode)}/stock-bars`, { params });
     return data;
   },
   async listInstrumentEvents(bondCode: string, params: { market?: string; event_type?: string; limit?: number } = {}) {

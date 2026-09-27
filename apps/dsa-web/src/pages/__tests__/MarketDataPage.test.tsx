@@ -7,6 +7,7 @@ const cbApi = vi.hoisted(() => ({
   listInstruments: vi.fn(),
   getInstrumentDetail: vi.fn(),
   listInstrumentBars: vi.fn(),
+  listInstrumentStockBars: vi.fn(),
   listInstrumentEvents: vi.fn(),
   listSyncRuns: vi.fn(),
   cancelSyncRun: vi.fn(),
@@ -77,6 +78,17 @@ describe('MarketDataPage', () => {
         { trade_date: '2024-01-03', close: 101.2, premium_rate: 17.8, remaining_size: 12.0, redeem_alert: false, down_revise_alert: false, put_alert: false },
       ],
     });
+    cbApi.listInstrumentStockBars.mockResolvedValue({
+      bond_code: '123001',
+      stock_code: '600001',
+      stock_name: '测试正股',
+      total: 2,
+      source: 'tencent',
+      items: [
+        { trade_date: '2024-01-02', close: 9.8 },
+        { trade_date: '2024-01-03', close: 9.9 },
+      ],
+    });
     cbApi.listInstrumentEvents.mockResolvedValue({
       bond_code: '123001',
       total: 1,
@@ -121,7 +133,24 @@ describe('MarketDataPage', () => {
     expect(screen.getByText('101.20')).toBeInTheDocument();
     expect(screen.queryByText('强赎条款：')).not.toBeInTheDocument();
     expect(screen.getByLabelText('价格与溢价率图表')).toBeInTheDocument();
+    // 正股 K 线按因子日期窗口拉取，图表与主详情并行渲染
+    await waitFor(() => expect(cbApi.listInstrumentStockBars).toHaveBeenCalledWith('123001', {
+      start_date: '2024-01-02',
+      end_date: '2024-01-03',
+    }));
+    expect(await screen.findByLabelText('正股与溢价率图表')).toBeInTheDocument();
     expect(screen.getByText('董事会提议下修')).toBeInTheDocument();
+  }, 15000);
+
+  it('shows a degraded hint when underlying-stock bars are unavailable', async () => {
+    cbApi.listInstrumentStockBars.mockResolvedValue({
+      bond_code: '123001', stock_code: '', stock_name: null, total: 0, source: null, items: [],
+    });
+    render(<MarketDataPage />);
+    fireEvent.click(await screen.findByText('123001'));
+
+    expect(await screen.findByText(/正股行情暂不可用/)).toBeInTheDocument();
+    expect(screen.queryByLabelText('正股与溢价率图表')).not.toBeInTheDocument();
   }, 15000);
 
   it('switches to the stock tab and shows stock bars', async () => {
