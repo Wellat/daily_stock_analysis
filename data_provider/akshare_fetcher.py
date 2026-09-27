@@ -401,7 +401,7 @@ class AkshareFetcher(BaseFetcher):
     """
     
     name = "AkshareFetcher"
-    priority = int(os.getenv("AKSHARE_PRIORITY", "1"))
+    priority = int(os.getenv("AKSHARE_PRIORITY", "0"))  # 日线主源（em 失败自动切 sina），EfinanceFetcher 降为其兜底
     
     def __init__(self, sleep_min: float = 2.0, sleep_max: float = 5.0):
         """

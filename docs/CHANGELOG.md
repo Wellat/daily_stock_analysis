@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [修复] cb_basic 同步不再用空值覆盖库内已有 `convert_price`/`current_premium_rate`：上游 opencli 详情载荷缺字段时保留原值（与 stock_code/remaining_size 同语义），有新值（转股价下修）仍正常覆盖。2026-09-24 曾因详情载荷缺转股价把 24 只活跃转债转股价清空，次日溢价率整批失效、实盘低溢价策略从残缺候选选债并卖出全部低溢价持仓。
+- [新功能] 实盘调仓新增溢价率覆盖率门禁：当日 active 转债溢价率缺失占比超过 5%（覆盖率 < 95%）视为因子数据被污染/未就绪，真实运行抛错阻断下单，preview 返回 `skip_reason=premium_coverage_low` 并附 coverage/missing/total（前端运行记录同步展示中文标签）；event_check 模式不依赖溢价率、不受限。
+- [改进] 日线 K 线数据源默认优先级对调：AkshareFetcher 提为主源（Priority 0），EfinanceFetcher 降为兜底（Priority 1）。本机历史诊断显示 efinance 日线（Eastmoney push 接口）10/10 全部失败、akshare 10/10 成功，原顺序每次都白耗一次失败尝试；环境变量 `AKSHARE_PRIORITY`/`EFINANCE_PRIORITY` 覆盖机制不变，配置了 `TUSHARE_TOKEN` 时 Tushare 仍动态提权为绝对最高（Priority -1）。
 - [改进] 移除策略实验室「实盘信号」Tab 及其专用接口（`POST/GET /api/v1/strategy-lab/signals`、`POST /signals/{id}/confirm`）：与实盘页的交易指令/策略看板能力重复；后端 signal service/repo、`strategy_lab_signals` 存储模型与前端 LiveSignalPanel 一并移除（表内无数据；存量库中的空表保留无害）。
 - [新功能] 低溢价/双低策略新增 `per_position_quantity`（单债固定张数）参数：>0 时买入决策按固定张数发单（整手取整），=0 沿用原「单债目标资金」金额口径；用于固定金额 vs 固定张数两种仓位口径的对比研究与实盘配置。
 - [改进] QMT 回调 `POST /api/v1/trading/qmt/orders/{id}/callback` 被 400 拒绝时记录 warning 日志（含订单 id、回调状态、QMT 订单号、成交数量/价格与拒绝原因）：此前拒绝原因只出现在 HTTP 响应体，服务端日志仅有 access 日志的状态码，事后无法定位（如实盘部分成交 `filled_quantity != quantity` 被拒、订单卡在 submitted）。

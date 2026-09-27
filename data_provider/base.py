@@ -1158,8 +1158,8 @@ class DataFetcherManager:
         - 如果配置了 Longbridge OAuth 或 Legacy 凭据：实例化 LongbridgeFetcher 作为美股/港股兜底
         - 未配置的可选数据源不实例化，避免在批量拉取时反复探测无效源
         - 默认优先级：
-          0. EfinanceFetcher (Priority 0) - 最高优先级
-          1. AkshareFetcher (Priority 1)
+          0. AkshareFetcher (Priority 0) - 最高优先级
+          1. EfinanceFetcher (Priority 1) - 日线兜底
           2. PytdxFetcher (Priority 2) - 通达信
           3. BaostockFetcher (Priority 3)
           4. YfinanceFetcher (Priority 4)

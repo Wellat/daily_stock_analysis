@@ -9,6 +9,7 @@ const SKIP_REASON_LABELS: Record<string, string> = {
   intraday_sync_unavailable: '盘中数据同步未完成，暂不能生成调仓',
   rebalance_frequency: '未到调仓日，本次不生成调仓',
   event_check_disabled: '事件检查已关闭，非调仓日不执行持仓扫描',
+  premium_coverage_low: '溢价率覆盖率不足（数据缺失过多），本次不生成调仓',
 };
 
 export const runStatusTag = (status?: string) => {

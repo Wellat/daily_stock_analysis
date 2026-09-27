@@ -150,8 +150,14 @@ class StrategyLabDataRepository:
                 remaining_size = item.get("remaining_size")
                 if remaining_size is not None or row.remaining_size is None:
                     row.remaining_size = remaining_size
-                row.current_premium_rate = item.get("current_premium_rate")
-                row.convert_price = item.get("convert_price")
+                # 详情缺字段时保留库内已有值：转股价被清空会让该债溢价率
+                # 整列失效（2026-09-24 曾因上游降级响应抹掉 24 只转股价）
+                current_premium_rate = item.get("current_premium_rate")
+                if current_premium_rate is not None or row.current_premium_rate is None:
+                    row.current_premium_rate = current_premium_rate
+                convert_price = item.get("convert_price")
+                if convert_price is not None or row.convert_price is None:
+                    row.convert_price = convert_price
                 row.terms_json = json.dumps(
                     item.get("terms") or {},
                     ensure_ascii=False,

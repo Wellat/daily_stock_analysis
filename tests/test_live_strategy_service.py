@@ -383,6 +383,49 @@ def test_rebalance_pipeline_buys_lowest_premium_and_exits_offtarget_holding(capl
         DatabaseManager.reset_instance()
 
 
+def test_rebalance_blocked_when_premium_coverage_low():
+    """溢价率覆盖率门禁：缺失过多时 preview 标注返回、真实 run 抛错；event_check 不受限。"""
+    DatabaseManager.reset_instance()
+    db = DatabaseManager(db_url="sqlite:///:memory:")
+    try:
+        service = LiveStrategyService(db)
+        service.save_config({"qmt_account": "testS", "enabled": True, "data_sync_before_run": False,
+                             "parameters": {"max_positions": 5, "per_position_cash": 10000, "lot_size": 10}})
+        trade_date = date(2024, 1, 2)
+        # 20 只因子行、10 只溢价率缺失（50% < 95% 阈值）
+        bonds = (
+            [{"code": f"1130{i:02d}", "name": f"有溢价{i}", "close": 100.0, "premium": 5.0} for i in range(10)]
+            + [{"code": f"1131{i:02d}", "name": f"缺溢价{i}", "close": 110.0, "premium": None} for i in range(10)]
+        )
+        _seed_cb_universe(db, trade_date, bonds)
+        QmtPositionService(db).report_positions(account="testS", positions=[])
+
+        preview = service.run(trade_date=trade_date, mode="rebalance", preview=True)
+        assert preview["skip_reason"] == "premium_coverage_low"
+        assert preview["risk"]["reason"] == "premium_coverage_low"
+        assert preview["risk"]["total"] == 20 and preview["risk"]["missing"] == 10
+        assert preview["rebalance"] == []
+
+        with pytest.raises(ValueError, match="premium coverage"):
+            service.run(trade_date=trade_date, mode="rebalance")
+
+        # event_check 只扫持仓事件，不依赖溢价率，同一数据不受门禁限制
+        result = service.run(trade_date=trade_date, mode="event_check")
+        assert result["mode"] == "event_check"
+        assert result.get("skip_reason") != "premium_coverage_low"
+
+        # 边界：缺失 1/20 = 95% 正好达标，门禁放行（preview 正常给出目标组合）
+        _seed_cb_universe(db, date(2024, 1, 3), (
+            [{"code": f"1140{i:02d}", "name": f"达标{i}", "close": 100.0, "premium": 5.0} for i in range(19)]
+            + [{"code": "114100", "name": "缺一只", "close": 110.0, "premium": None}]
+        ))
+        passed = service.run(trade_date=date(2024, 1, 3), mode="rebalance", preview=True)
+        assert passed.get("skip_reason") is None
+        assert len(passed["target"]) == 5
+    finally:
+        DatabaseManager.reset_instance()
+
+
 def test_event_check_exits_blocked_holding_without_buying():
     """event_check 只扫持仓：强赎持仓退出、无事件持仓 hold，绝不选债买入。"""
     DatabaseManager.reset_instance()

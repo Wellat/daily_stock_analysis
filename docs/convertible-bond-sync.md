@@ -88,6 +88,8 @@ python scripts/sync_cb_data.py --basic --bond 113709       # 单只
 | `list_date` / `maturity_date` | `list_date` / `maturity_date` | `"-"`（未上市/未知）→ NULL |
 | `remaining_size` / `convert_price` | `remaining_size` / `convert_price` | 字符串→浮点 |
 
+写入保护：`stock_code` / `stock_name` / `remaining_size` / `convert_price` / `current_premium_rate` 在本次载荷缺值（详情缺字段、列表行兜底落库）时**保留库内已有值**，不覆盖清空；有新值（如转股价下修）时正常覆盖。2026-09-24 曾因上游详情载荷缺转股价把 24 只活跃转债的转股价清空，导致次日溢价率整批失效、实盘策略从残缺候选选债。
+
 ### 基础数据：cb-detail → `strategy_lab_cb_basic.terms_json`（元数据）
 
 以下字段无独立列，统一存入 `terms_json` 元数据（与 `sync_cb_local_init.py` 的元数据模式一致）：

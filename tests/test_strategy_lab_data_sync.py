@@ -203,6 +203,44 @@ def test_upsert_cb_basic_preserves_stock_fields_when_update_omits_them(
         assert row.stock_name == "闻泰科技"
 
 
+def test_upsert_cb_basic_preserves_convert_price_when_update_omits_it(
+    db_manager: DatabaseManager,
+) -> None:
+    """上游详情缺转股价/溢价率时不得清空库内已有值（2026-09-24 事故回归）。"""
+    service = StrategyLabDataSyncService(db_manager)
+    service.repository.upsert_cb_basic(
+        [
+            {
+                "bond_code": "110077",
+                "bond_name": "洪城转债",
+                "stock_code": "600461",
+                "market": "cn",
+                "convert_price": 8.76,
+                "current_premium_rate": -0.18,
+            }
+        ],
+        source="opencli",
+    )
+    # opencli 列表行不含转股价/溢价率，详情缺字段时载荷里没有这两个键
+    service.repository.upsert_cb_basic(
+        [{"bond_code": "110077", "bond_name": "洪城转债", "market": "cn", "status": "active"}],
+        source="opencli",
+    )
+
+    with db_manager.get_session() as session:
+        row = session.get(StrategyLabCbBasic, "110077")
+        assert row.convert_price == 8.76
+        assert row.current_premium_rate == -0.18
+
+    # 有新值时正常覆盖（转股价下修）
+    service.repository.upsert_cb_basic(
+        [{"bond_code": "110077", "bond_name": "洪城转债", "market": "cn", "convert_price": 7.5}],
+        source="opencli",
+    )
+    with db_manager.get_session() as session:
+        assert session.get(StrategyLabCbBasic, "110077").convert_price == 7.5
+
+
 def test_akshare_provider_normalizes_master_terms_daily_and_events(monkeypatch: pytest.MonkeyPatch) -> None:
     fake_akshare = SimpleNamespace(
         bond_zh_cov=lambda: [
