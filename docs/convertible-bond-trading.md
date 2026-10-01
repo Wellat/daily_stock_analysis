@@ -146,6 +146,7 @@ QMT 通过 HTTP 回调 POST /api/v1/trading/qmt/orders/{id}/callback
 ```
 pending ──> submitted ──> filled
    │            └───────> rejected
+   │            └───────> cancelled              (admin 手动取消，人工兜底)
    └─────────────────────> filled / rejected   (跳过 submitted 的简化流程)
    └──────> cancelled                          (admin 取消)
 ```
@@ -153,6 +154,7 @@ pending ──> submitted ──> filled
 - `submitted` 为可选中间态：QMT 拉取后、下单前可先回调 `submitted` 避免重复执行，也可直接回调终态。
 - `filled` / `rejected` / `cancelled` 为终态，不可再变更。
 - 重复回调终态为幂等操作，返回当前记录，不覆盖已有结果。
+- QMT 回调无 `cancelled` 状态：已 `submitted` 但挂单未成交且不会有终态回调的订单（如委托滞留券商、隔日未成交），由管理端撤单接口人工兜底置为 `cancelled`。该操作只改写本系统记录，不会撤销 QMT 侧委托。
 
 ## API 契约
 
@@ -173,7 +175,7 @@ pending ──> submitted ──> filled
 ```
 
 - `GET /api/v1/trading/orders?status=pending&page=1&limit=20` 分页查询
-- `POST /api/v1/trading/orders/{id}/cancel` 取消 `pending` 指令
+- `POST /api/v1/trading/orders/{id}/cancel` 取消 `pending` / `submitted` 指令（`submitted` 为人工兜底终态：仅改写系统记录，不撤销 QMT 侧委托；委托仍在挂单时请先在 QMT 终端撤单）
 - `GET /api/v1/trading/dashboard?start=2026-01-01&end=2026-01-31` 策略看板聚合（日期参数可选，默认全部）：
   - `summary`：成交笔数、买入/卖出笔数与金额、已实现盈亏、盈利/亏损笔数、胜率、无配对卖出总量
   - `curve`：按成交日聚合的每日/累计已实现盈亏序列（收益曲线数据点）
@@ -242,6 +244,7 @@ openssl rand -hex 32
 ## 已知风险与限制
 
 - **重复执行风险**：MVP 中 `submitted` 为非强制中间态；若 QMT 下单后回调失败，同一指令可能被再次拉取并重复执行。建议 QMT 侧自行记录已处理的 `order_uid` 去重；强幂等认领（拉取即认领 + 超时回收）留待二期。
+- **submitted 滞留**：QMT 回调链路无 `cancelled` 状态，委托在券商侧滞留未成交时订单会一直停在 `submitted`（成交字段为空）。可在 Web「实盘 → 交易记录」对 `pending` / `submitted` 订单手动取消兜底，但该操作不会撤销 QMT 侧委托，取消前请先确认券商侧委托状态。
 - **鉴权默认放行**：未配置 `QMT_API_TOKEN` 时 QMT 端点不校验 token，仅限可信内网使用。
 - **SQLite 并发**：项目默认开启 WAL，降低 QMT 并发回调与本地写库的锁竞争，但高并发场景仍建议评估是否迁移到独立数据库。
 

@@ -14,7 +14,7 @@ import {
 } from '../common';
 import type { TradingOrderItem, TradingOrderStatus } from '../../types/trading';
 import { formatDateTime } from '../../utils/format';
-import { Tooltip } from 'antd';
+import { Button, Popconfirm, Tooltip } from 'antd';
 
 const PAGE_SIZE = 20;
 
@@ -57,6 +57,10 @@ function orderTypeLabel(orderType: string): string {
   return orderType;
 }
 
+function canCancel(order: TradingOrderItem): boolean {
+  return order.status === 'pending' || order.status === 'submitted';
+}
+
 export const TradingOrdersTab: React.FC = () => {
   const [orders, setOrders] = useState<TradingOrderItem[]>([]);
   const [total, setTotal] = useState(0);
@@ -64,6 +68,7 @@ export const TradingOrdersTab: React.FC = () => {
   const [statusFilter, setStatusFilter] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<ParsedApiError | null>(null);
+  const [cancellingId, setCancellingId] = useState<number | null>(null);
 
   const loadOrders = useCallback(async () => {
     setLoading(true);
@@ -86,6 +91,22 @@ export const TradingOrdersTab: React.FC = () => {
   useEffect(() => {
     void loadOrders();
   }, [loadOrders]);
+
+  const handleCancel = useCallback(
+    async (order: TradingOrderItem) => {
+      setCancellingId(order.id);
+      setError(null);
+      try {
+        await tradingApi.cancelOrder(order.id);
+        await loadOrders();
+      } catch (err) {
+        setError(getParsedApiError(err));
+      } finally {
+        setCancellingId(null);
+      }
+    },
+    [loadOrders],
+  );
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
@@ -137,6 +158,7 @@ export const TradingOrdersTab: React.FC = () => {
                   <th className="px-4 py-3">成交数量</th>
                   <th className="px-4 py-3">成交价</th>
                   <th className="px-4 py-3">成交时间</th>
+                  <th className="px-4 py-3">操作</th>
                   <th className="px-4 py-3">更多</th>
                 </tr>
               </thead>
@@ -156,6 +178,25 @@ export const TradingOrdersTab: React.FC = () => {
                     <td className="px-4 py-3">{order.filledQuantity ?? '—'}</td>
                     <td className="px-4 py-3">{order.filledPrice ?? '—'}</td>
                     <td className="px-4 py-3">{formatDateTime(order.completedAt)}</td>
+                    <td className="px-4 py-3">
+                      {canCancel(order) ? (
+                        <Popconfirm
+                          title="取消该笔交易指令？"
+                          description={
+                            order.status === 'submitted'
+                              ? '仅将本系统记录置为已取消，不会撤销 QMT 侧委托；若 QMT 终端仍在挂单，请先在 QMT 侧撤单。'
+                              : undefined
+                          }
+                          okText="确认取消"
+                          cancelText="返回"
+                          onConfirm={() => void handleCancel(order)}
+                        >
+                          <Button size="small" danger loading={cancellingId === order.id}>
+                            取消
+                          </Button>
+                        </Popconfirm>
+                      ) : null}
+                    </td>
                     <td className="px-4 py-3"><Tooltip title={<div><div>原因：{order.reason ?? '—'}</div><div>QMT：{order.qmtOrderId ?? '—'}</div><div>创建：{formatDateTime(order.createdAt)}</div><div>提交：{formatDateTime(order.submittedAt)}</div><div>失败：{order.errorMessage ?? '—'}</div></div>}><span className="cursor-help text-cyan">查看</span></Tooltip></td>
                   </tr>
                 ))}

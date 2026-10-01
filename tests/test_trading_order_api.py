@@ -62,6 +62,22 @@ def test_cancel_order(client: TestClient) -> None:
     assert cancelled.json()["status"] == "cancelled"
 
 
+def test_cancel_submitted_order(client: TestClient) -> None:
+    """已提交（QMT 认领后）订单可通过管理端取消接口手动回终态。"""
+    created = client.post("/api/v1/trading/orders", json=_create_payload()).json()
+
+    submitted = client.post(
+        f"/api/v1/trading/qmt/orders/{created['id']}/callback",
+        json={"status": "submitted"},
+    )
+    assert submitted.status_code == 200, submitted.text
+
+    cancelled = client.post(f"/api/v1/trading/orders/{created['id']}/cancel")
+    assert cancelled.status_code == 200, cancelled.text
+    assert cancelled.json()["status"] == "cancelled"
+    assert cancelled.json()["completed_at"] is not None
+
+
 def test_qmt_pending_defaults_to_today_and_include_all_returns_stale(client: TestClient) -> None:
     """pending 拉取默认只返回当天创建的指令；include_all=true 兜底返回隔日遗留。"""
     from datetime import datetime, timedelta

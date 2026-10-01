@@ -71,8 +71,29 @@ def test_cancel_only_pending(db_manager: DatabaseManager) -> None:
     cancelled = service.cancel_order(order["id"])
     assert cancelled["status"] == "cancelled"
 
-    with pytest.raises(ValueError, match="only pending"):
+    with pytest.raises(ValueError, match="only pending or submitted"):
         service.cancel_order(order["id"])
+
+
+def test_cancel_submitted_order(db_manager: DatabaseManager) -> None:
+    """已提交单可手动取消回终态：QMT 挂单未成交且不会有终态回调时的人工兜底。"""
+    service = TradingOrderService(db_manager)
+    order = _create(service)
+
+    submitted = service.apply_callback(order_id=order["id"], status="submitted")
+    assert submitted["status"] == "submitted"
+
+    cancelled = service.cancel_order(order["id"])
+    assert cancelled["status"] == "cancelled"
+    assert cancelled["completed_at"] is not None
+
+    # 终态幂等：取消后不可再次取消，也不能被回调改写
+    with pytest.raises(ValueError, match="only pending or submitted"):
+        service.cancel_order(order["id"])
+    rewritten = service.apply_callback(
+        order_id=order["id"], status="filled", filled_quantity=10, filled_price=120.5
+    )
+    assert rewritten["status"] == "cancelled"
 
 
 def test_cancel_missing_order(db_manager: DatabaseManager) -> None:

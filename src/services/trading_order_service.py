@@ -13,6 +13,8 @@ from src.storage import DatabaseManager
 
 _TERMINAL_STATUSES = frozenset({"filled", "rejected", "cancelled"})
 _CALLBACK_STATUSES = frozenset({"submitted", "filled", "rejected"})
+# submitted 允许人工取消：QMT 回调无 cancelled 终态，挂单未成交时需手动兜底回终态
+_CANCELLABLE_STATUSES = frozenset({"pending", "submitted"})
 _SIDES = frozenset({"buy", "sell"})
 _ORDER_TYPES = frozenset({"limit", "market"})
 
@@ -241,8 +243,10 @@ class TradingOrderService:
         row = self.repository.get(order_id)
         if row is None:
             raise TradingOrderNotFoundError(f"Trading order not found: {order_id}")
-        if row.status != "pending":
-            raise ValueError(f"only pending orders can be cancelled, current status: {row.status}")
+        if row.status not in _CANCELLABLE_STATUSES:
+            raise ValueError(
+                f"only pending or submitted orders can be cancelled, current status: {row.status}"
+            )
         updated = self.repository.update(order_id, status="cancelled", completed_at=datetime.now())
         return self.repository._payload(updated)
 
