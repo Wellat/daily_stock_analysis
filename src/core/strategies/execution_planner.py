@@ -31,10 +31,12 @@ class ExecutionPlanner:
     MAX_BUY_AMOUNT = 50000.0
 
 
-    def plan(self, decisions: list[StrategyDecision], context: MarketContext, *, cash: float | None = None, lot_size: int = 10) -> ExecutionPlan:
+    def plan(self, decisions: list[StrategyDecision], context: MarketContext, *, cash: float | None = None, lot_size: int = 10, max_buy_symbols: int | None = None, max_buy_amount_each_symbol: float | None = None) -> ExecutionPlan:
         orders=[]; skipped=[]; checks=[RiskCheck("context", True)]
         available_cash = context.cash if cash is None else cash
         available_cash = available_cash if available_cash is not None else self.MAX_BUY_AMOUNT
+        max_buy_symbols = self.MAX_BUY_SYMBOLS if max_buy_symbols is None else max(int(max_buy_symbols), 1)
+        max_buy_amount_each_symbol = self.MAX_BUY_AMOUNT_EACH_SYMBOL if max_buy_amount_each_symbol is None else max(float(max_buy_amount_each_symbol), 0.0)
 
         buy_symbols_seen = 0
         for d in decisions:
@@ -56,13 +58,13 @@ class ExecutionPlanner:
             if qty<=0: skipped.append(SkippedAction(d,"no_available_quantity")); continue
             if d.action=="buy":
                 price=(context.bars.get(d.symbol) or [None])[-1].close if context.bars.get(d.symbol) else None
-                # 单只买入金额封顶：按 MAX_BUY_AMOUNT_EACH_SYMBOL 截断数量（向下取整到手数）。
+                # 单只买入金额封顶：按 max_buy_amount_each_symbol 截断数量（向下取整到手数）。
                 if price is not None and price > 0:
-                    max_qty = int(self.MAX_BUY_AMOUNT_EACH_SYMBOL / price / lot_size) * lot_size
+                    max_qty = int(max_buy_amount_each_symbol / price / lot_size) * lot_size
                     if qty > max_qty:
                         qty = max_qty
-                # 最多买入标的数封顶：只保留前 MAX_BUY_SYMBOLS 只的买入。
-                if buy_symbols_seen >= self.MAX_BUY_SYMBOLS:
+                # 最多买入标的数封顶：只保留前 max_buy_symbols 只的买入。
+                if buy_symbols_seen >= max_buy_symbols:
                     skipped.append(SkippedAction(d,"max_buy_symbols")); continue
                 if qty <= 0:
                     skipped.append(SkippedAction(d,"no_available_quantity")); continue

@@ -69,6 +69,21 @@ class LiveStrategyService:
             raise ValueError(f"unsupported strategy_id: {strategy_id}")
         symbols = [str(x).strip() for x in payload.get("symbols", []) if str(x).strip()]
         params = dict(payload.get("parameters") or {})
+        # 参数键按策略定义白名单校验：键名形态漂移（如驼峰）会绕过默认值合并、
+        # 静默失效，必须在保存时拦截而不是等策略读参时走默认值。
+        definitions = {item["key"]: item for item in metadata.get("parameters", [])}
+        unknown = sorted(str(k) for k in params if k not in definitions)
+        if unknown:
+            raise ValueError(f"unknown strategy parameters: {', '.join(unknown)}")
+        # 布尔参数兼容 0/1 与 "true"/"false" 提交形态，统一归一为布尔。
+        for key, defn in definitions.items():
+            if defn.get("type") != "boolean" or key not in params:
+                continue
+            value = params[key]
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and value in (0, 1):
+                params[key] = bool(value)
+            elif isinstance(value, str) and value.strip().lower() in ("true", "false", "0", "1"):
+                params[key] = value.strip().lower() in ("true", "1")
         with self.db.get_session() as session:
             row = session.execute(select(LiveStrategyConfig).order_by(desc(LiveStrategyConfig.id))).scalars().first()
             if row is None:
@@ -257,7 +272,12 @@ class LiveStrategyService:
             grouped.setdefault(d.action, []).append(f"{d.symbol}({amount})" if amount is not None else str(d.symbol))
         logger.info("[LiveStrategy] evaluate: %d decisions %s", len(decisions), grouped)
         # ---- 排订单：决策转执行计划（手数取整、风控检查）----
-        plan = self.planner.plan(decisions, context, lot_size=int(params.get("lot_size", 10)))
+        # planner 的单只/单批硬顶对齐策略意图：入选数量与单只金额本身已是
+        # 策略约束（max_positions、per_position_cash、权重上限），保留截断
+        # 兜底但不允许默认硬顶（5 只、1 万元/只）悄悄吃掉更大的目标持仓。
+        plan = self.planner.plan(decisions, context, lot_size=int(params.get("lot_size", 10)),
+            max_buy_symbols=max(int(params.get("max_positions") or 5), 1),
+            max_buy_amount_each_symbol=max(self.planner.MAX_BUY_AMOUNT_EACH_SYMBOL, self._intended_max_buy_amount(decisions, context)))
         logger.info("[LiveStrategy] plan: orders=[%s] skipped=[%s] risk_checks=%s",
                     ", ".join(f"{o.symbol}:{o.side}:{o.quantity:g}" for o in plan.orders) or "-",
                     ", ".join(f"{s.decision.symbol}({s.reason})" for s in plan.skipped) or "-",
@@ -381,6 +401,22 @@ class LiveStrategyService:
             return {"anchor": None, "next_rebalance_date": None, "due": True}
         next_date = self._nth_trading_day_after(anchor, frequency)
         return {"anchor": anchor, "next_rebalance_date": next_date, "due": trade_date is None or trade_date >= next_date}
+
+    @staticmethod
+    def _intended_max_buy_amount(decisions, context) -> float:
+        """买入决策声明的单只最大金额（目标金额或固定张数×现价），供 planner 抬高单只硬顶。"""
+        amounts = []
+        for d in decisions:
+            if d.action != "buy" or not d.symbol:
+                continue
+            if d.target_amount is not None:
+                amounts.append(float(d.target_amount))
+            elif d.suggested_quantity:
+                bars = context.bars.get(d.symbol) or []
+                price = bars[-1].close if bars else None
+                if price:
+                    amounts.append(float(d.suggested_quantity) * float(price))
+        return max(amounts, default=0.0)
 
     @staticmethod
     def _nth_trading_day_after(anchor: date, count: int) -> date:

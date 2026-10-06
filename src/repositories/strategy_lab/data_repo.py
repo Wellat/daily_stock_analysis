@@ -999,6 +999,8 @@ class StrategyLabDataRepository:
                 {
                     "bond_code": basic.bond_code,
                     "bond_name": basic.bond_name,
+                    "stock_code": basic.stock_code,
+                    "stock_name": basic.stock_name,
                     "market": basic.market,
                     "trade_date": factor.trade_date,
                     "close": factor.close,

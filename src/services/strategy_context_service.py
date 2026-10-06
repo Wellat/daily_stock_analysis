@@ -15,7 +15,8 @@ class StrategyContextService:
             if not symbol: continue
             instruments.append(InstrumentSnapshot(symbol, row.get("bond_name")))
             bars[symbol]=[Bar(trade_date, close=row.get("close"))]
-            factors[symbol]=FactorSnapshot(row.get("premium_rate"), row.get("remaining_size"))
+            factors[symbol]=FactorSnapshot(row.get("premium_rate"), row.get("remaining_size"),
+                values={"stock_code": row.get("stock_code"), "stock_name": row.get("stock_name")})
             if row.get("event_blocked"): events[symbol]=[MarketEvent("event_blocked", trade_date)]
         pos={k: (v if isinstance(v, PositionSnapshot) else PositionSnapshot(**v) if isinstance(v,dict) else PositionSnapshot(v)) for k,v in (positions or {}).items()}
         return MarketContext(datetime.now(), "cn", "convertible_bond", instruments, bars, factors, events, pos, account=account)

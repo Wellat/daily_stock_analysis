@@ -35,3 +35,64 @@ def test_event_check_only_exits_blocked_current_position():
         {"A": PositionSnapshot(20, 10)}, {"A": [MarketEvent("redemption")]})
     decisions = LowPremiumStrategy().evaluate(c, mode="event_check")
     assert [(d.action, d.symbol, d.suggested_quantity) for d in decisions] == [("exit", "A", 10)]
+
+
+def test_event_check_holds_blocked_position_when_exclusion_disabled():
+    """exclude_event_blocked=False 时强赎/下修提醒不再触发持仓退出。"""
+    c = context([("A", "A", 100, 8)], {"A": PositionSnapshot(20, 10)}, {"A": [MarketEvent("redemption")]})
+    decisions = LowPremiumStrategy().evaluate(c, mode="event_check", parameters={"exclude_event_blocked": False})
+    assert [(d.action, d.reason) for d in decisions] == [("hold", "event_exit_disabled")]
+
+
+def test_low_premium_excludes_st_underlying_stock():
+    """exclude_st=True 时正股名称带 ST（含 *ST）的候选不入选。"""
+    c = context([("A", "A", 100, 1), ("B", "B", 100, 2), ("C", "C", 100, 3)])
+    c = MarketContext(c.as_of, "cn", "convertible_bond", c.instruments, c.bars,
+        {"A": FactorSnapshot(1, values={"stock_name": "*ST测试"}),
+         "B": FactorSnapshot(2, values={"stock_name": "ST测试"}),
+         "C": FactorSnapshot(3, values={"stock_name": "正常股份"})}, {}, {})
+    decisions = LowPremiumStrategy().evaluate(c, parameters={"max_positions": 3, "exclude_st": True})
+    assert [d.symbol for d in decisions] == ["C"]
+
+    decisions = LowPremiumStrategy().evaluate(c, parameters={"max_positions": 3})
+    assert [d.symbol for d in decisions] == ["A", "B", "C"]
+
+
+def test_low_premium_caps_target_amount_by_position_weight():
+    """account_capital×max_position_pct 折算单只金额上限，取与目标资金的较小值。"""
+    c = context([("B", "B", 100, 2)])
+    decisions = LowPremiumStrategy().evaluate(c, parameters={
+        "max_positions": 1, "per_position_cash": 9000,
+        "account_capital": 50000, "max_position_pct": 10,
+    })
+    assert [(d.symbol, d.target_amount) for d in decisions] == [("B", 5000)]
+
+    # 上限高于目标资金时不放大仓位
+    decisions = LowPremiumStrategy().evaluate(c, parameters={
+        "max_positions": 1, "per_position_cash": 4000,
+        "account_capital": 50000, "max_position_pct": 10,
+    })
+    assert decisions[0].target_amount == 4000
+
+    # 未启用（account_capital=0）时不设上限
+    decisions = LowPremiumStrategy().evaluate(c, parameters={
+        "max_positions": 1, "per_position_cash": 9000, "account_capital": 0, "max_position_pct": 10,
+    })
+    assert decisions[0].target_amount == 9000
+
+
+def test_low_premium_caps_fixed_quantity_by_position_weight():
+    """固定张数路径同样受权重上限约束，按手数向下取整。"""
+    c = context([("B", "B", 100, 2)])
+    decisions = LowPremiumStrategy().evaluate(c, parameters={
+        "max_positions": 1, "per_position_quantity": 100, "lot_size": 10,
+        "account_capital": 50000, "max_position_pct": 10,
+    })
+    assert decisions[0].suggested_quantity == 50
+
+    # 上限金额不足一手时跳过该候选
+    decisions = LowPremiumStrategy().evaluate(c, parameters={
+        "max_positions": 1, "per_position_quantity": 100, "lot_size": 10,
+        "account_capital": 5000, "max_position_pct": 10,
+    })
+    assert decisions == []

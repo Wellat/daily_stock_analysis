@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [新功能] 实盘低溢价/双低策略新增三个参数：`exclude_st`（排除正股 ST，按 `strategy_lab_cb_basic.stock_name` 含 ST/*ST 判定，候选不入选）、`account_capital` + `max_position_pct`（单只最大权重上限，新建仓金额封顶于资金基准×权重%，任一为 0 不启用；只约束新开仓，存量持仓漂移不修剪）。
+- [改进] 实盘「排除风险事件」开关语义收敛为同时控制买入候选排除与持仓事件退出：此前 event_check 模式对带强赎/下修/回售提醒的持仓无条件清仓，不受开关控制；关闭开关后买卖两侧均不响应风险事件提醒（最后交易日强退在服务层，不受影响）。
+- [修复] 实盘策略配置保存增加参数键白名单校验并归一布尔值：未知参数键（含键名形态漂移，如驼峰 `excludeEventBlocked`）直接拒绝保存，不再静默绕过默认值合并失效；布尔参数兼容 0/1 与 "true"/"false" 提交形态。此前实盘库中 `excludeEventBlocked: 0` 为死键，实际仍按默认 True 排除风险事件。
+- [改进] 实盘订单计划的单只买入硬顶对齐策略意图：`ExecutionPlanner.plan` 支持透传 `max_buy_symbols`/`max_buy_amount_each_symbol`，实盘按 `max_positions` 与买入决策声明的单只金额抬高默认硬顶（5 只、1 万元/只），避免更大目标持仓被硬顶悄悄截断；回测与其他调用方默认行为不变。
+- [改进] 实盘 Web 参数面板布尔参数渲染为开关（Switch）并按布尔值提交，替代原先一律数字输入框（填 0/1）的形态，消除键值形态漂移温床。
 - [改进] 策略实验室「运行记录」列表改版为分页表格（默认 5 条/页，可切 5/10/20，显示总数）：新增回测区间、总收益率、基准收益、最大回撤、夏普、参数摘要（预设·持仓数·换仓频率）、创建时间与状态等关键列，负值绿色正值红色，点击行查看详情并高亮选中；`GET /runs` 列表项新增紧凑 `metrics` 与 `parameters` 字段（不含 diagnostics，详情接口仍返回完整指标，纯追加）。
 - [新功能] 因子框架支持组合因子并新增「双低」因子：`FactorSpec` 支持 `columns` 数据依赖 + `compute` 派生取值（metadata 标注 `kind=composite`，可用于打分、排除规则与百分位变换）；内置 `double_low = 转债价格 + 转股溢价率×100%`（本库溢价率按百分数存储，即价格+溢价率，与双低预设完全等价，已用逐笔一致的回测等价性测试锁定）；溢价率缺失时组合因子整值缺失（遵循 skip/neutral 策略）。
 - [新功能] 策略实验室重构可转债回测（对标禄得网）：新增 backtrader 轮动引擎 `rotation`（按交易日/周/月 N 周期换仓、等金额权重、持有数量区间、单标的仓位上限、收盘成交、单边佣金、整手取整、换仓日再平衡开关），配套通用横截面因子框架（打分因子表 factor/方向/权重、排除因子表 factor/比较符/值、percentile/zscore/minmax 变换、双低/低溢价/加权双低/三低预设）；指标扩展为 12 列（索提诺/卡玛/日均换手/交易周期/盈亏周期/累计资产）并新增基准对比（标的池等权默认 / 沪深300 指数日线新表 / 指定转债）与相对超额行；结果页新增三行汇总对比表、双轴走势图（累计收益+回撤、线性/对数）、年/月/周回报分布、逐日持仓明细与导出报告（Markdown/持仓 CSV/成交 CSV）；全部结果从同一 equity/benchmark 曲线派生，口径一致。

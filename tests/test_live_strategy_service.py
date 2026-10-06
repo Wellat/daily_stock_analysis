@@ -16,7 +16,8 @@ def _seed_cb_universe(db: DatabaseManager, trade_date: date, bonds: list[dict]) 
     with db.get_session() as session:
         for b in bonds:
             session.add(StrategyLabCbBasic(bond_code=b["code"], bond_name=b["name"],
-                                           stock_code=f"SH{b['code']}", market="cn", status="active",
+                                           stock_code=f"SH{b['code']}", stock_name=b.get("stock_name"),
+                                           market="cn", status="active",
                                            terms_json=json.dumps({"last_trading_date": b["ltd"].isoformat()})
                                            if b.get("ltd") else None))
         session.commit()
@@ -647,5 +648,82 @@ def test_last_trading_day_exit_respects_buffer_days(monkeypatch: pytest.MonkeyPa
         # 周三（最后交易日当天）：剩余 1 个交易日 → 触发
         wednesday = service.run(trade_date=date(2024, 1, 3), mode="event_check", preview=True)
         assert [(o["symbol"], o["side"]) for o in wednesday["rebalance"]] == [("113003", "sell")]
+    finally:
+        DatabaseManager.reset_instance()
+
+
+def test_save_config_rejects_unknown_parameter_keys():
+    """参数键名不在策略定义内时保存失败，避免键名形态漂移静默失效。"""
+    DatabaseManager.reset_instance()
+    db = DatabaseManager(db_url="sqlite:///:memory:")
+    try:
+        service = LiveStrategyService(db)
+        with pytest.raises(ValueError, match="excludeEventBlocked"):
+            service.save_config({"qmt_account": "testS", "parameters": {"excludeEventBlocked": 0}})
+    finally:
+        DatabaseManager.reset_instance()
+
+
+def test_save_config_normalizes_boolean_parameter_values():
+    """布尔参数兼容 0/1 提交形态，落库归一为布尔。"""
+    DatabaseManager.reset_instance()
+    db = DatabaseManager(db_url="sqlite:///:memory:")
+    try:
+        service = LiveStrategyService(db)
+        service.save_config({"qmt_account": "testS", "parameters": {"exclude_event_blocked": 0}})
+        config = service.get_config()
+        assert config["parameters"]["exclude_event_blocked"] is False
+
+        service.save_config({"qmt_account": "testS", "parameters": {"exclude_event_blocked": 1}})
+        config = service.get_config()
+        assert config["parameters"]["exclude_event_blocked"] is True
+    finally:
+        DatabaseManager.reset_instance()
+
+
+def test_rebalance_excludes_st_underlying_stock_end_to_end():
+    """exclude_st=True：正股 ST 的转债即使溢价率最低也不建仓。"""
+    DatabaseManager.reset_instance()
+    db = DatabaseManager(db_url="sqlite:///:memory:")
+    try:
+        service = LiveStrategyService(db)
+        service.save_config({"qmt_account": "testS", "enabled": True, "data_sync_before_run": False,
+                             "parameters": {"max_positions": 2, "exclude_st": True}})
+        trade_date = date(2024, 1, 2)
+        _seed_cb_universe(db, trade_date, [
+            {"code": "113001", "name": "低溢ST债", "close": 100.0, "premium": 1.0, "stock_name": "*ST坑股"},
+            {"code": "113002", "name": "正常债", "close": 100.0, "premium": 5.0, "stock_name": "正常股份"},
+        ])
+        QmtPositionService(db).report_positions(account="testS", positions=[])
+
+        result = service.run(trade_date=trade_date, preview=True)
+
+        buys = [o["symbol"] for o in result["rebalance"] if o["side"] == "buy"]
+        assert buys == ["113002"]
+    finally:
+        DatabaseManager.reset_instance()
+
+
+def test_event_check_holds_blocked_holding_when_exclusion_disabled():
+    """exclude_event_blocked=False：强赎提醒持仓不再被事件检查清仓。"""
+    DatabaseManager.reset_instance()
+    db = DatabaseManager(db_url="sqlite:///:memory:")
+    try:
+        service = LiveStrategyService(db)
+        service.save_config({"qmt_account": "testS", "enabled": True, "data_sync_before_run": False,
+                             "parameters": {"max_positions": 1, "exclude_event_blocked": False}})
+        trade_date = date(2024, 1, 2)
+        _seed_cb_universe(db, trade_date, [
+            {"code": "113003", "name": "强赎债", "close": 105.0, "premium": 8.0, "alert": True},
+        ])
+        QmtPositionService(db).report_positions(account="testS", positions=[
+            {"symbol": "113003", "volume": 80, "can_use_volume": 80},
+        ])
+
+        result = service.run(trade_date=trade_date, mode="event_check", preview=True)
+
+        assert result["rebalance"] == []
+        actions = {d["symbol"]: d["action"] for d in result["decisions"]}
+        assert actions == {"113003": "hold"}
     finally:
         DatabaseManager.reset_instance()

@@ -29,6 +29,7 @@ const strategiesBackend = {
       parameters: [
         { key: 'max_positions', label: '最大持仓数', type: 'integer', default: 2 },
         { key: 'per_position_cash', label: '单债目标资金', type: 'number', default: 10000 },
+        { key: 'exclude_event_blocked', label: '排除风险事件', type: 'boolean', default: true },
       ],
     },
   ],
@@ -71,6 +72,18 @@ describe('LiveStrategyPanel 策略配置', () => {
       parameters: { max_positions: 3, per_position_cash: 25000 },
       symbols: ['113001'],
     }));
+  });
+
+  it('布尔参数渲染为开关并按布尔值提交（而不是数字输入框）', async () => {
+    render(<LiveStrategyPanel />);
+    const sw = await screen.findByRole('switch', { name: /排除风险事件/ });
+    expect(sw.getAttribute('aria-checked')).toBe('true'); // 未存储时回显元数据默认值
+    fireEvent.click(sw); // 关闭
+    fireEvent.click(screen.getByRole('button', { name: '保存配置' }));
+
+    await waitFor(() => expect(client.put).toHaveBeenCalled());
+    const body = client.put.mock.calls[0][1] as Record<string, unknown>;
+    expect((body.parameters as Record<string, unknown>).exclude_event_blocked).toBe(false);
   });
 
   it('调仓预览展示 名称（代码）、方向 Tag 与溢价率', async () => {
