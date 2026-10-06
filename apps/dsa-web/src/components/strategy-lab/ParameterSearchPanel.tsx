@@ -26,9 +26,10 @@ export const ParameterSearchPanel: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [error, setError] = useState<ParsedApiError | null>(null);
-  const [strategyId, setStrategyId] = useState('double-low');
+  const [strategyId, setStrategyId] = useState('rotation');
   const [runForm, setRunForm] = useState({ startDate: '2024-01-02', endDate: today, initialCash: '100000', symbols: '' });
   const [batchPositions, setBatchPositions] = useState('1,2,3');
+  const [batchIntervals, setBatchIntervals] = useState('');
   const [runBatchAsync, setRunBatchAsync] = useState(true);
 
   const refresh = useCallback(async () => {
@@ -97,6 +98,13 @@ export const ParameterSearchPanel: React.FC = () => {
         onSubmit={(event) => {
           event.preventDefault();
           void runAction('batch', async () => {
+            const parameter_grid: Record<string, unknown[]> = {
+              max_positions: parsePositiveNumbers(batchPositions),
+            };
+            const intervalCandidates = parsePositiveNumbers(batchIntervals);
+            if (strategyId === 'rotation' && intervalCandidates.length) {
+              parameter_grid.rebalance_interval = intervalCandidates;
+            }
             const batch = await strategyLabApi.createBatch({
               strategy_id: strategyId,
               market: 'cn',
@@ -110,7 +118,7 @@ export const ParameterSearchPanel: React.FC = () => {
                 initial_cash: Number(runForm.initialCash),
                 symbols: parseSymbols(runForm.symbols),
               },
-              parameter_grid: { max_positions: parsePositiveNumbers(batchPositions) },
+              parameter_grid,
               run_async: runBatchAsync,
             });
             setSelectedBatch(batch);
@@ -129,6 +137,12 @@ export const ParameterSearchPanel: React.FC = () => {
             最大持仓候选
             <input aria-label="最大持仓候选" className={`${SL_INPUT_CLASS} mt-1`} value={batchPositions} onChange={(event) => setBatchPositions(event.target.value)} />
           </label>
+          {strategyId === 'rotation' ? (
+            <label className="text-sm">
+              换仓频率候选
+              <input aria-label="换仓频率候选" className={`${SL_INPUT_CLASS} mt-1`} value={batchIntervals} onChange={(event) => setBatchIntervals(event.target.value)} placeholder="例如 1,3,5；留空不参与网格" />
+            </label>
+          ) : null}
           <label className="text-sm">
             开始日期
             <input aria-label="开始日期" className={`${SL_INPUT_CLASS} mt-1`} type="date" value={runForm.startDate} onChange={(event) => setRunForm({ ...runForm, startDate: event.target.value })} required />

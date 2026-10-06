@@ -12,7 +12,7 @@ const SYNC_RUN_POLL_INTERVAL_MS = 10_000;
 const SYNC_RUN_POLLING_STORAGE_KEY = 'dsa.data-sync-runs.polling-enabled';
 
 // 同步能力：cb_basic=基础数据 / cb_ohlc=行情 / cb_premium_history=补溢价率与剩余规模 / cb_factors=因子计算 / cb_scheduled=盘后调度链路 / portfolio_holdings=持仓股票与ETF日线
-type SyncKind = 'cb_basic' | 'cb_ohlc' | 'cb_premium_history' | 'cb_factors' | 'cb_scheduled' | 'portfolio_holdings';
+type SyncKind = 'cb_basic' | 'cb_ohlc' | 'cb_premium_history' | 'cb_factors' | 'cb_scheduled' | 'portfolio_holdings' | 'index_daily';
 
 const statusTag = (status: string) => {
   const map: Record<string, string> = { completed: 'success', running: 'processing', failed: 'error', cancelled: 'default' };
@@ -171,7 +171,7 @@ export const DataSyncPanel: React.FC = () => {
             include_delisted: includeDelisted,
             symbols: parseSymbols(syncSymbols),
           };
-          if (syncKind === 'cb_ohlc' || syncKind === 'portfolio_holdings') {
+          if (syncKind === 'cb_ohlc' || syncKind === 'portfolio_holdings' || syncKind === 'index_daily') {
             if (startDate) payload.start_date = startDate;
             if (endDate) payload.end_date = endDate;
           }
@@ -193,19 +193,20 @@ export const DataSyncPanel: React.FC = () => {
               <option value="cb_factors">可转债因子计算（cb_factors）</option>
               <option value="cb_scheduled">盘后调度同步（基础+行情+因子+持仓行情-cb_scheduled）</option>
               <option value="portfolio_holdings">持仓行情·A股/ETF/港股（portfolio_holdings）</option>
+              <option value="index_daily">指数日线·回测基准（index_daily，缺省沪深300）</option>
             </select>
           </label>
           <label className="text-sm">
-            {syncKind === 'portfolio_holdings' ? '持仓标的过滤' : '可转债代码'}
+            {syncKind === 'portfolio_holdings' ? '持仓标的过滤' : syncKind === 'index_daily' ? '指数代码（缺省 000300）' : '可转债代码'}
             <input
               aria-label="同步标的代码"
               className={`${SL_INPUT_CLASS} mt-1`}
               value={syncSymbols}
               onChange={(event) => setSyncSymbols(event.target.value)}
-              placeholder="可选，逗号分隔；留空同步全部持仓"
+              placeholder={syncKind === 'index_daily' ? '留空同步沪深300' : '可选，逗号分隔；留空同步全部持仓'}
             />
           </label>
-          {syncKind === 'cb_ohlc' || syncKind === 'portfolio_holdings' ? (
+          {syncKind === 'cb_ohlc' || syncKind === 'portfolio_holdings' || syncKind === 'index_daily' ? (
             <>
               <label className="text-sm">
                 起始日期

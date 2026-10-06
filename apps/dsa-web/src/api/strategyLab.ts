@@ -1,11 +1,64 @@
 import apiClient from './index';
 
+export type StrategyLabStrategyParamMeta = {
+  key: string;
+  label: string;
+  type: string;
+  default?: unknown;
+  min?: number;
+  max?: number;
+  options?: string[];
+};
+
+export type StrategyLabFactorMeta = {
+  factor: string;
+  label: string;
+  column: string;
+  transform: string;
+  default_direction: string;
+  description?: string | null;
+  unit?: string | null;
+};
+
+export type StrategyLabScorePreset = {
+  preset: string;
+  label: string;
+  factors: Array<{ factor: string; direction: string; weight: number }>;
+};
+
 export type StrategyLabStrategyItem = {
   strategy_id: string;
   name: string;
   instrument_types: string[];
   markets: string[];
   description?: string | null;
+  parameters?: StrategyLabStrategyParamMeta[];
+  factors?: StrategyLabFactorMeta[];
+  score_presets?: StrategyLabScorePreset[];
+};
+
+export type StrategyLabBenchmarkMetrics = {
+  mode?: string;
+  total_return_pct?: number | null;
+  annualized_return_pct?: number | null;
+  max_drawdown_pct?: number | null;
+  sharpe_ratio?: number | null;
+  sortino_ratio?: number | null;
+  calmar_ratio?: number | null;
+  period_count?: number | null;
+  profit_periods?: number | null;
+  loss_periods?: number | null;
+  relative_excess?: {
+    total_return_pct?: number | null;
+    annualized_return_pct?: number | null;
+    max_drawdown_pct?: number | null;
+    sharpe_ratio?: number | null;
+    sortino_ratio?: number | null;
+    calmar_ratio?: number | null;
+    period_count?: number | null;
+    profit_periods?: number | null;
+    loss_periods?: number | null;
+  };
 };
 
 export type StrategyLabMetric = {
@@ -13,9 +66,30 @@ export type StrategyLabMetric = {
   annualized_return_pct?: number | null;
   max_drawdown_pct?: number | null;
   sharpe_ratio?: number | null;
+  sortino_ratio?: number | null;
+  calmar_ratio?: number | null;
   win_rate_pct?: number | null;
   trade_count: number;
+  exposure_days?: number;
+  turnover_avg_pct?: number | null;
+  period_count?: number | null;
+  profit_periods?: number | null;
+  loss_periods?: number | null;
+  benchmark_metrics?: StrategyLabBenchmarkMetrics;
   diagnostics?: Record<string, unknown>;
+};
+
+export type StrategyLabEquityPoint = {
+  trade_date: string;
+  equity: number;
+  cash: number;
+  positions_value: number;
+  benchmark_equity?: number | null;
+  drawdown_pct?: number | null;
+  daily_return_pct?: number | null;
+  turnover_pct?: number | null;
+  holdings?: string[] | null;
+  holdings_count?: number | null;
 };
 
 export type StrategyLabRunItem = {
@@ -40,7 +114,31 @@ export type StrategyLabRunItem = {
   parameters?: Record<string, unknown>;
   symbols?: string[];
   metrics?: StrategyLabMetric | null;
-  equity_curve?: Array<{ trade_date: string; equity: number; cash: number; positions_value: number }>;
+  equity_curve?: StrategyLabEquityPoint[];
+};
+
+export type StrategyLabConfigItem = {
+  id: number;
+  config_uid: string;
+  name: string;
+  description?: string | null;
+  strategy_id: string;
+  market: string;
+  instrument_type: string;
+  parameters: Record<string, unknown>;
+  symbols: string[];
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
+export type StrategyLabConfigCreateRequest = {
+  name: string;
+  description?: string;
+  strategy_id: string;
+  market?: string;
+  instrument_type?: string;
+  parameters: Record<string, unknown>;
+  symbols?: string[];
 };
 
 export type StrategyLabTradeItem = {
@@ -194,8 +292,10 @@ export const strategyLabApi = {
     const { data } = await apiClient.get<{ items: StrategyLabStrategyItem[] }>('/api/v1/strategy-lab/strategies');
     return data.items;
   },
-  async listRuns() {
-    const { data } = await apiClient.get<{ items: StrategyLabRunItem[] }>('/api/v1/strategy-lab/runs');
+  async listRuns(params: { page?: number; limit?: number } = {}) {
+    const { data } = await apiClient.get<{ items: StrategyLabRunItem[]; total: number }>('/api/v1/strategy-lab/runs', {
+      params: { limit: 100, ...params },
+    });
     return data.items;
   },
   async getRun(runId: number) {
@@ -209,6 +309,25 @@ export const strategyLabApi = {
   async createRun(payload: StrategyLabRunRequest) {
     const { data } = await apiClient.post<StrategyLabRunItem>('/api/v1/strategy-lab/runs', payload);
     return data;
+  },
+  async listConfigs() {
+    const { data } = await apiClient.get<{ total: number; items: StrategyLabConfigItem[] }>('/api/v1/strategy-lab/configs');
+    return data.items;
+  },
+  async createConfig(payload: StrategyLabConfigCreateRequest) {
+    const { data } = await apiClient.post<StrategyLabConfigItem>('/api/v1/strategy-lab/configs', payload);
+    return data;
+  },
+  async updateConfig(configId: number, payload: Partial<StrategyLabConfigCreateRequest>) {
+    const { data } = await apiClient.put<StrategyLabConfigItem>(`/api/v1/strategy-lab/configs/${configId}`, payload);
+    return data;
+  },
+  async deleteConfig(configId: number) {
+    await apiClient.delete(`/api/v1/strategy-lab/configs/${configId}`);
+  },
+  getRunReportUrl(runId: number, format: 'md' | 'holdings-csv' | 'trades-csv') {
+    const baseUrl = apiClient.defaults.baseURL || '';
+    return `${baseUrl}/api/v1/strategy-lab/runs/${runId}/report?format=${format}`;
   },
   async listBatches() {
     const { data } = await apiClient.get<{ items: StrategyLabBatchItem[] }>('/api/v1/strategy-lab/batches');

@@ -19,6 +19,7 @@ from src.storage import (
     StrategyLabCbDailyFactor,
     StrategyLabCbEvent,
     StrategyLabCbTerms,
+    StrategyLabIndexDaily,
     StrategyLabSyncRun,
 )
 
@@ -1007,6 +1008,118 @@ class StrategyLabDataRepository:
                 }
                 for basic, factor in rows
                 if not normalized_symbols or basic.bond_code.lower() in normalized_symbols
+            ]
+
+    def load_cb_backtest_rows_v2(
+        self,
+        *,
+        market: str,
+        start_date: Any,
+        end_date: Any,
+        symbols: List[str],
+        include_delisted: bool = True,
+    ) -> List[Dict[str, Any]]:
+        """Rotation 引擎的增强数据装载：旧契约 + 主数据元信息。
+
+        在 :meth:`load_cb_backtest_rows` 的字段之上补充
+        ``list_date`` / ``maturity_date`` / ``status`` / ``last_trading_date``
+        （来自 ``cb_basic.terms_json``），供新债排除与到期临近排除使用。
+        旧方法保持不变——实盘 ``StrategyContextService`` 依赖其契约。
+        """
+        normalized_symbols = {str(symbol).strip().lower().split(".")[-1] for symbol in symbols if str(symbol).strip()}
+        with self.db.get_session() as session:
+            statement = (
+                select(StrategyLabCbBasic, StrategyLabCbDailyFactor)
+                .join(
+                    StrategyLabCbDailyFactor,
+                    StrategyLabCbDailyFactor.bond_code == StrategyLabCbBasic.bond_code,
+                )
+                .where(
+                    StrategyLabCbBasic.market == market,
+                    StrategyLabCbDailyFactor.trade_date >= start_date,
+                    StrategyLabCbDailyFactor.trade_date <= end_date,
+                    StrategyLabCbDailyFactor.close.is_not(None),
+                )
+                .order_by(StrategyLabCbBasic.bond_code.asc(), StrategyLabCbDailyFactor.trade_date.asc())
+            )
+            if not include_delisted:
+                statement = statement.where(
+                    or_(StrategyLabCbBasic.status.is_(None), StrategyLabCbBasic.status == "active")
+                )
+            rows = session.execute(statement).all()
+            last_trading_by_code: Dict[str, Optional[str]] = {}
+            for basic, _factor in rows:
+                if basic.bond_code in last_trading_by_code:
+                    continue
+                terms_data = json.loads(basic.terms_json) if basic.terms_json else {}
+                last_trading_by_code[basic.bond_code] = terms_data.get("last_trading_date") if isinstance(terms_data, dict) else None
+            return [
+                {
+                    "bond_code": basic.bond_code,
+                    "bond_name": basic.bond_name,
+                    "market": basic.market,
+                    "trade_date": factor.trade_date,
+                    "close": factor.close,
+                    "premium_rate": factor.premium_rate,
+                    "remaining_size": factor.remaining_size,
+                    "event_blocked": bool(factor.redeem_alert or factor.down_revise_alert or factor.put_alert),
+                    "list_date": basic.list_date,
+                    "maturity_date": basic.maturity_date,
+                    "status": basic.status,
+                    "last_trading_date": last_trading_by_code.get(basic.bond_code),
+                }
+                for basic, factor in rows
+                if not normalized_symbols or basic.bond_code.lower() in normalized_symbols
+            ]
+
+    def upsert_index_daily(self, rows: List[Dict[str, Any]]) -> int:
+        """按 (symbol, trade_date) upsert 指数日线（沿用 select-then-update 模式）。"""
+        if not rows:
+            return 0
+        upserted = 0
+        with self.db.get_session() as session:
+            for item in rows:
+                row = session.execute(
+                    select(StrategyLabIndexDaily).where(
+                        and_(
+                            StrategyLabIndexDaily.symbol == str(item["symbol"]),
+                            StrategyLabIndexDaily.trade_date == item["trade_date"],
+                        )
+                    )
+                ).scalar_one_or_none()
+                if row is None:
+                    row = StrategyLabIndexDaily(
+                        symbol=str(item["symbol"]),
+                        trade_date=item["trade_date"],
+                    )
+                    session.add(row)
+                row.close = float(item["close"])
+                row.source = str(item.get("source") or "akshare")
+                row.updated_at = datetime.now()
+                upserted += 1
+            session.commit()
+        return upserted
+
+    def load_index_daily(
+        self,
+        *,
+        symbol: str,
+        start_date: Any,
+        end_date: Any,
+    ) -> List[Dict[str, Any]]:
+        with self.db.get_session() as session:
+            rows = session.execute(
+                select(StrategyLabIndexDaily)
+                .where(
+                    StrategyLabIndexDaily.symbol == symbol,
+                    StrategyLabIndexDaily.trade_date >= start_date,
+                    StrategyLabIndexDaily.trade_date <= end_date,
+                )
+                .order_by(StrategyLabIndexDaily.trade_date.asc())
+            ).scalars().all()
+            return [
+                {"symbol": row.symbol, "trade_date": row.trade_date, "close": row.close, "source": row.source}
+                for row in rows
             ]
 
     def load_cb_premium_top_rows(

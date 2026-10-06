@@ -21,6 +21,9 @@ class StrategyLabStrategyItem(BaseModel):
     instrument_types: List[str] = Field(default_factory=list)
     markets: List[str] = Field(default_factory=list)
     description: Optional[str] = None
+    parameters: List[Dict[str, Any]] = Field(default_factory=list, description="策略参数元数据（rotation 含枚举选项）")
+    factors: List[Dict[str, Any]] = Field(default_factory=list, description="可用因子注册表元数据（rotation 提供）")
+    score_presets: List[Dict[str, Any]] = Field(default_factory=list, description="打分预设（rotation 提供）")
 
 
 class StrategyLabStrategyListResponse(BaseModel):
@@ -51,6 +54,12 @@ class StrategyLabMetricItem(BaseModel):
     trade_count: int = 0
     exposure_days: int = 0
     diagnostics: Dict[str, Any] = Field(default_factory=dict)
+    # rotation 引擎扩展指标（旧引擎为 None）
+    turnover_avg_pct: Optional[float] = None
+    period_count: Optional[int] = None
+    profit_periods: Optional[int] = None
+    loss_periods: Optional[int] = None
+    benchmark_metrics: Dict[str, Any] = Field(default_factory=dict)
 
 
 class StrategyLabEquityPointItem(BaseModel):
@@ -58,6 +67,12 @@ class StrategyLabEquityPointItem(BaseModel):
     equity: float
     cash: float
     positions_value: float
+    benchmark_equity: Optional[float] = None
+    drawdown_pct: Optional[float] = None
+    daily_return_pct: Optional[float] = None
+    turnover_pct: Optional[float] = None
+    holdings: Optional[List[str]] = None
+    holdings_count: Optional[int] = None
 
 
 class StrategyLabRunSummaryItem(BaseModel):
@@ -80,6 +95,9 @@ class StrategyLabRunSummaryItem(BaseModel):
     created_at: Optional[str] = None
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
+    # 列表摘要增强（additive）：紧凑指标与参数快照，详情接口仍返回完整 metrics
+    metrics: Optional[StrategyLabMetricItem] = None
+    parameters: Dict[str, Any] = Field(default_factory=dict)
 
 
 class StrategyLabRunItem(StrategyLabRunSummaryItem):
@@ -383,3 +401,46 @@ class StrategyLabBatchListResponse(BaseModel):
     limit: int
     total: int
     items: List[StrategyLabBatchSummaryItem] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# 回测配置预设（保存/加载）
+# ---------------------------------------------------------------------------
+
+class StrategyLabConfigCreateRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100, description="配置名称")
+    description: Optional[str] = Field(None, max_length=500, description="配置说明")
+    strategy_id: str = Field("rotation", description="策略 ID")
+    market: StrategyLabMarket = Field("cn", description="市场")
+    instrument_type: StrategyLabInstrumentType = Field("convertible_bond", description="品种类型")
+    parameters: Dict[str, Any] = Field(default_factory=dict, description="策略参数（含打分/排除因子表）")
+    symbols: List[str] = Field(default_factory=list, description="标的筛选")
+
+
+class StrategyLabConfigUpdateRequest(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=100)
+    description: Optional[str] = Field(None, max_length=500)
+    strategy_id: Optional[str] = None
+    market: Optional[StrategyLabMarket] = None
+    instrument_type: Optional[StrategyLabInstrumentType] = None
+    parameters: Optional[Dict[str, Any]] = None
+    symbols: Optional[List[str]] = None
+
+
+class StrategyLabConfigItem(BaseModel):
+    id: int
+    config_uid: str
+    name: str
+    description: Optional[str] = None
+    strategy_id: str
+    market: str
+    instrument_type: str
+    parameters: Dict[str, Any] = Field(default_factory=dict)
+    symbols: List[str] = Field(default_factory=list)
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class StrategyLabConfigListResponse(BaseModel):
+    total: int
+    items: List[StrategyLabConfigItem] = Field(default_factory=list)

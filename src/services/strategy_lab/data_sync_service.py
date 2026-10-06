@@ -1048,6 +1048,91 @@ class StrategyLabDataSyncService:
             self.repository.fail_sync_run(run_id, str(exc))
             raise
 
+    def sync_index_daily(
+        self,
+        *,
+        market: str = "cn",
+        symbols: Optional[List[str]] = None,
+        start_date: Optional[date] = None,
+        end_date: Optional[date] = None,
+        _run_id: Optional[int] = None,
+        _complete_on_success: bool = True,
+    ) -> Dict[str, Any]:
+        """同步指数日线到 ``strategy_lab_index_daily``（回测基准用）。
+
+        默认同步沪深300（000300）；``symbols`` 可传 ``["000300"]`` 等指数代码。
+        增量逻辑：缺省 start 时取库内该指数最新日期的次日。
+        主源 akshare（东财）失败或为空时降级腾讯 K 线（单次约 800 根上限，
+        覆盖约 3 年；更早区间需用主源或其他渠道）。
+        """
+        symbol = (symbols and str(symbols[0]).strip()) or "000300"
+        resolved_end = end_date or date.today()
+        if start_date is None:
+            existing = self.repository.load_index_daily(symbol=symbol, start_date=date(1990, 1, 1), end_date=resolved_end)
+            start_date = (existing[-1]["trade_date"] + timedelta(days=1)) if existing else resolved_end - timedelta(days=3650)
+
+        rows: List[Dict[str, Any]] = []
+        source = "akshare"
+        try:
+            rows = self._fetch_index_daily_akshare(symbol, start_date, resolved_end)
+        except Exception as exc:
+            logger.warning("akshare 指数日线同步失败（%s），降级腾讯行情: %s", symbol, exc)
+        if not rows:
+            rows = self._fetch_index_daily_tencent(symbol, start_date, resolved_end)
+            source = "tencent"
+
+        upserted = self.repository.upsert_index_daily(rows)
+        result = {
+            "status": "completed",
+            "symbol": symbol,
+            "source": source,
+            "rows_fetched": len(rows),
+            "rows_upserted": upserted,
+        }
+        if _run_id is not None and _complete_on_success:
+            self.repository.complete_sync_run(_run_id, result=result)
+        return result
+
+    @staticmethod
+    def _fetch_index_daily_akshare(symbol: str, start_date: date, end_date: date) -> List[Dict[str, Any]]:
+        import pandas as pd
+
+        import akshare as ak
+        from data_provider.akshare_fetcher import _akshare_call_with_timeout
+
+        df = _akshare_call_with_timeout(
+            ak.index_zh_a_hist,
+            symbol=symbol,
+            period="daily",
+            start_date=start_date.strftime("%Y%m%d"),
+            end_date=end_date.strftime("%Y%m%d"),
+            timeout=60,
+            call_name="strategy_lab_index_daily",
+        )
+        rows: List[Dict[str, Any]] = []
+        for record in df.to_dict(orient="records") if df is not None else []:
+            trade_date_raw = record.get("日期")
+            close_raw = record.get("收盘")
+            if trade_date_raw is None or close_raw is None:
+                continue
+            if isinstance(trade_date_raw, str):
+                trade_date = date.fromisoformat(trade_date_raw[:10])
+            else:
+                trade_date = trade_date_raw if isinstance(trade_date_raw, date) else pd.Timestamp(trade_date_raw).date()
+            rows.append({"symbol": symbol, "trade_date": trade_date, "close": float(close_raw), "source": "akshare"})
+        return rows
+
+    @staticmethod
+    def _fetch_index_daily_tencent(symbol: str, start_date: date, end_date: date) -> List[Dict[str, Any]]:
+        from src.services.strategy_lab.cb_providers import _fetch_tencent_kline
+
+        prefix = "sz" if symbol.startswith("399") else "sh"
+        frame = _fetch_tencent_kline(f"{prefix}{symbol}", start_date=start_date, end_date=end_date, timeout=30.0)
+        return [
+            {"symbol": symbol, "trade_date": record["date"], "close": float(record["close"]), "source": "tencent"}
+            for record in frame.to_dict(orient="records")
+        ]
+
     def start_data_sync(
         self,
         *,
@@ -1063,16 +1148,17 @@ class StrategyLabDataSyncService:
         ``sync_type``: ``cb_basic``（基础数据）/ ``cb_ohlc``（行情）/
         ``cb_premium_history``（补空字段）/ ``cb_factors``（因子计算，日期取
         ``end_date or start_date``，缺省今天）/ ``cb_scheduled``（手动触发
-        调度链路：基础 + 行情 + 因子 + 持仓股票/ETF 行情 + 盘后通知，
+        调度链路：基础 + 行情 + 因子 + 持仓股票/ETF行情 + 盘后通知，
         ``run_kind='after_close'``）/
         ``portfolio_holdings``（Portfolio 持仓中股票 / ETF 的日线行情）/
+        ``index_daily``（指数日线，基准用；``symbols`` 传指数代码，缺省 000300）/
         ``all``（先基础后行情）。
         后台任务复用 ``_PROVIDER_SYNC_LOCK`` 互斥，
         进度通过 ``list_sync_runs`` 轮询。
         """
         if sync_type not in (
             "cb_basic", "cb_ohlc", "cb_premium_history", "cb_factors", "cb_scheduled",
-            "portfolio_holdings", "all",
+            "portfolio_holdings", "index_daily", "all",
         ):
             raise ValueError(f"Unsupported sync_type: {sync_type}")
         if not _PROVIDER_SYNC_LOCK.acquire(blocking=False):
@@ -1158,6 +1244,15 @@ class StrategyLabDataSyncService:
                     )
                     if result["cb_factors"].get("status") == "cancelled":
                         return
+                if sync_type == "index_daily":
+                    result["index_daily"] = self.sync_index_daily(
+                        market=market,
+                        symbols=symbols,
+                        start_date=start_date,
+                        end_date=end_date,
+                        _run_id=run.id,
+                        _complete_on_success=True,
+                    )
                 if sync_type == "cb_scheduled":
                     # 手动触发调度链路；run 的 complete/cancel 由
                     # run_scheduled_sync 统一处理（共享 run.id）

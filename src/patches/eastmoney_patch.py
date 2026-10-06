@@ -13,7 +13,29 @@ logger = logging.getLogger(__name__)
 
 original_request = requests.Session.request
 
-ua = UserAgent()
+# UserAgent 惰性初始化：模块级构造会在部分 Python/fake-useragent 组合上
+# 因 importlib.resources 命名空间扫描死锁（且每次进程启动都要解析 2.6MB
+# 数据文件），推迟到真正命中东财域名请求时再构造。
+_ua = None
+_ua_lock = threading.Lock()
+_FALLBACK_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+
+
+class _FallbackUA:
+    random = _FALLBACK_UA
+
+
+def _get_ua():
+    global _ua
+    if _ua is None:
+        with _ua_lock:
+            if _ua is None:
+                try:
+                    _ua = UserAgent()
+                except Exception as e:
+                    logger.warning(f"初始化 UserAgent 失败，使用固定 UA 兜底: {e}")
+                    _ua = _FallbackUA()
+    return _ua
 
 
 class AuthCache:
@@ -164,7 +186,7 @@ def eastmoney_patch():
         if not is_target:
             return original_request(self, method, url, **kwargs)
         # 获取一个随机的 User-Agent
-        user_agent = ua.random
+        user_agent = _get_ua().random
         # 处理 Headers：确保不破坏业务代码传入的 headers
         headers = kwargs.get("headers", {})
         headers["User-Agent"] = user_agent

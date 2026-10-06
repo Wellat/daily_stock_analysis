@@ -10,7 +10,7 @@ from datetime import date
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 
 from api.deps import get_database_manager
 from api.v1.schemas.common import ErrorResponse
@@ -20,6 +20,10 @@ from api.v1.schemas.strategy_lab import (
     StrategyLabBatchCreateRequest,
     StrategyLabBatchItemResponse,
     StrategyLabBatchListResponse,
+    StrategyLabConfigCreateRequest,
+    StrategyLabConfigItem,
+    StrategyLabConfigListResponse,
+    StrategyLabConfigUpdateRequest,
     StrategyLabDataSyncRequest,
     StrategyLabDataSyncResponse,
     StrategyLabEventListResponse,
@@ -37,6 +41,7 @@ from api.v1.schemas.strategy_lab import (
     StrategyLabTradeListResponse,
 )
 from src.core.strategy_lab.models import StrategyLabRunConfig
+from src.repositories.strategy_lab.config_repo import StrategyLabConfigRepository, config_payload
 from src.services.strategy_lab.batch_service import (
     StrategyLabBatchService,
     add_batch_listener,
@@ -46,6 +51,11 @@ from src.services.strategy_lab.batch_service import (
 from src.services.strategy_lab.data_sync_service import StrategyLabDataSyncService
 from src.services.strategy_lab.event_study_service import StrategyLabEventStudyService
 from src.services.strategy_lab.premium_track_service import StrategyLabPremiumTrackService
+from src.services.strategy_lab.report_service import (
+    build_holdings_csv,
+    build_markdown_report,
+    build_trades_csv,
+)
 from src.services.strategy_lab.service import StrategyLabService
 from src.storage import DatabaseManager
 
@@ -634,3 +644,150 @@ def delete_batch(
     except Exception as exc:
         logger.error("Delete Strategy Lab batch failed: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail={"error": "internal_error", "message": "Delete batch failed"})
+
+
+# ---------------------------------------------------------------------------
+# 回测配置预设（保存 / 加载）
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/configs",
+    response_model=StrategyLabConfigListResponse,
+    responses={500: {"model": ErrorResponse}},
+    summary="List saved Strategy Lab backtest configs",
+)
+def list_configs(
+    limit: int = Query(100, ge=1, le=500),
+    db_manager: DatabaseManager = Depends(get_database_manager),
+) -> StrategyLabConfigListResponse:
+    try:
+        rows, total = StrategyLabConfigRepository(db_manager).list_configs(limit=limit)
+        return StrategyLabConfigListResponse(
+            total=total,
+            items=[StrategyLabConfigItem(**config_payload(row)) for row in rows],
+        )
+    except Exception as exc:
+        logger.error("List Strategy Lab configs failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail={"error": "internal_error", "message": "List configs failed"})
+
+
+@router.post(
+    "/configs",
+    response_model=StrategyLabConfigItem,
+    status_code=201,
+    responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
+    summary="Save a Strategy Lab backtest config preset",
+)
+def create_config(
+    request: StrategyLabConfigCreateRequest,
+    db_manager: DatabaseManager = Depends(get_database_manager),
+) -> StrategyLabConfigItem:
+    try:
+        row = StrategyLabConfigRepository(db_manager).create_config(
+            name=request.name.strip(),
+            description=request.description,
+            strategy_id=request.strategy_id,
+            market=request.market,
+            instrument_type=request.instrument_type,
+            parameters=request.parameters,
+            symbols=request.symbols,
+        )
+        return StrategyLabConfigItem(**config_payload(row))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail={"error": "invalid_params", "message": str(exc)})
+    except Exception as exc:
+        logger.error("Create Strategy Lab config failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail={"error": "internal_error", "message": "Create config failed"})
+
+
+@router.put(
+    "/configs/{config_id}",
+    response_model=StrategyLabConfigItem,
+    responses={404: {"model": ErrorResponse}, 400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
+    summary="Update a saved Strategy Lab backtest config",
+)
+def update_config(
+    config_id: int,
+    request: StrategyLabConfigUpdateRequest,
+    db_manager: DatabaseManager = Depends(get_database_manager),
+) -> StrategyLabConfigItem:
+    try:
+        updates = {key: value for key, value in request.model_dump().items() if value is not None}
+        row = StrategyLabConfigRepository(db_manager).update_config(config_id, updates)
+        if row is None:
+            raise HTTPException(status_code=404, detail={"error": "not_found", "message": "Strategy Lab config not found"})
+        return StrategyLabConfigItem(**config_payload(row))
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail={"error": "invalid_params", "message": str(exc)})
+    except Exception as exc:
+        logger.error("Update Strategy Lab config failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail={"error": "internal_error", "message": "Update config failed"})
+
+
+@router.delete(
+    "/configs/{config_id}",
+    responses={404: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
+    summary="Delete a saved Strategy Lab backtest config",
+)
+def delete_config(
+    config_id: int,
+    db_manager: DatabaseManager = Depends(get_database_manager),
+) -> dict[str, bool]:
+    try:
+        if not StrategyLabConfigRepository(db_manager).delete_config(config_id):
+            raise HTTPException(status_code=404, detail={"error": "not_found", "message": "Strategy Lab config not found"})
+        return {"deleted": True}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Delete Strategy Lab config failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail={"error": "internal_error", "message": "Delete config failed"})
+
+
+# ---------------------------------------------------------------------------
+# 回测报告导出
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/runs/{run_id}/report",
+    responses={404: {"model": ErrorResponse}, 400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
+    summary="Export a Strategy Lab run report (md / holdings-csv / trades-csv)",
+)
+def export_run_report(
+    run_id: int,
+    format: str = Query("md", pattern="^(md|holdings-csv|trades-csv)$"),
+    db_manager: DatabaseManager = Depends(get_database_manager),
+) -> Response:
+    try:
+        service = StrategyLabService(db_manager)
+        run = service.get_run(run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail={"error": "not_found", "message": "Strategy Lab run not found"})
+        if format == "md":
+            trades = service.list_trades(run_id)
+            content = build_markdown_report(run, trades)
+            media_type = "text/markdown; charset=utf-8"
+            filename = f"strategy-lab-run-{run_id}.md"
+        elif format == "holdings-csv":
+            content = build_holdings_csv(run)
+            media_type = "text/csv; charset=utf-8"
+            filename = f"strategy-lab-run-{run_id}-holdings.csv"
+        else:
+            trades = service.list_trades(run_id)
+            content = build_trades_csv(trades)
+            media_type = "text/csv; charset=utf-8"
+            filename = f"strategy-lab-run-{run_id}-trades.csv"
+        # UTF-8 BOM 让 Excel 直接打开中文 CSV 不乱码
+        prefix = "\ufeff" if format.endswith("csv") else ""
+        return Response(
+            content=prefix + content,
+            media_type=media_type,
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Export Strategy Lab run report failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail={"error": "internal_error", "message": "Export report failed"})

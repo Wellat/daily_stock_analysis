@@ -36,7 +36,7 @@ class FixtureDoubleLowEngine(StrategyLabEngine):
             self.name = name
 
     def run(self, config: StrategyLabRunConfig) -> StrategyLabRunResult:
-        if config.strategy_id not in {"double-low", "low-premium"}:
+        if config.strategy_id not in {"double-low", "low-premium", "rotation"}:
             raise ValueError(f"Unsupported strategy_id: {config.strategy_id}")
         if config.instrument_type != "convertible_bond":
             raise ValueError("Phase 1 double-low fixture supports convertible_bond only")

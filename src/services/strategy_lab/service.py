@@ -57,6 +57,8 @@ class StrategyLabService:
         """Prefer synchronized domain data while retaining fixture-only developer samples."""
         if config.instrument_type != "convertible_bond":
             return FixtureDoubleLowEngine()
+        if config.strategy_id == "rotation":
+            return self._resolve_rotation_engine(config)
         rows = self.data_repository.load_cb_backtest_rows(
             market=config.market,
             start_date=config.start_date,
@@ -98,6 +100,33 @@ class StrategyLabService:
             return MovingAverageCrossoverEngine(dataset)
         return FixtureDoubleLowEngine(dataset, name="database_double_low_v1")
 
+    def _resolve_rotation_engine(self, config: StrategyLabRunConfig) -> Any:
+        """rotation 策略：backtrader 引擎 + v2 数据行 + 可选指数基准。
+
+        无已同步数据时回退 fixture 引擎（保持与旧策略一致的样本数据警示语义）。
+        """
+        from src.core.strategy_lab.backtest import RotationBacktestEngine
+
+        rows = self.data_repository.load_cb_backtest_rows_v2(
+            market=config.market,
+            start_date=config.start_date,
+            end_date=config.end_date,
+            symbols=config.symbols,
+        )
+        if not rows:
+            # 保持与旧策略一致的样本数据回退与警示语义（engine_name 含 fixture）
+            return FixtureDoubleLowEngine(name="fixture_rotation_v1")
+        benchmark_rows = None
+        requested = (config.benchmark_symbol or "").strip().lower()
+        if requested in {"000300", "hs300", "csi300", "sh000300", "1.000300"}:
+            index_rows = self.data_repository.load_index_daily(
+                symbol="000300",
+                start_date=config.start_date,
+                end_date=config.end_date,
+            )
+            benchmark_rows = [(row["trade_date"], float(row["close"])) for row in index_rows]
+        return RotationBacktestEngine(rows, benchmark_rows=benchmark_rows)
+
     def get_run(self, run_id: int) -> Optional[Dict[str, Any]]:
         row = self.repository.get_run_with_metric(run_id)
         if row is None:
@@ -107,11 +136,19 @@ class StrategyLabService:
     def list_runs(self, *, page: int, limit: int) -> Dict[str, Any]:
         offset = (page - 1) * limit
         rows, total = self.repository.list_runs(limit=limit, offset=offset)
+        metrics_by_run = self.repository.list_run_metrics([row.id for row in rows])
         return {
             "total": total,
             "page": page,
             "limit": limit,
-            "items": [self._run_summary_payload(row) for row in rows],
+            "items": [
+                self._run_summary_payload(
+                    row,
+                    metric=metrics_by_run.get(row.id),
+                    with_parameters=True,
+                )
+                for row in rows
+            ],
         }
 
     def list_trades(self, run_id: int) -> List[Dict[str, Any]]:
@@ -135,16 +172,21 @@ class StrategyLabService:
         raise ValueError(f"Unsupported strategy_id: {strategy_id}")
 
     def _run_payload(self, run: StrategyLabRun, metric: Optional[StrategyLabRunMetric]) -> Dict[str, Any]:
-        payload = self._run_summary_payload(run)
-        payload["parameters"] = json_dict(run.parameters_json)
+        payload = self._run_summary_payload(run, with_parameters=True)
         payload["symbols"] = json_list(run.symbols_json)
         payload["equity_curve"] = json_list(run.equity_curve_json)
+        # 详情用完整指标（diagnostics / benchmark_metrics / 盈亏周期），覆盖摘要紧凑版
         payload["metrics"] = self._metric_payload(metric)
         return payload
 
-    @staticmethod
-    def _run_summary_payload(run: StrategyLabRun) -> Dict[str, Any]:
-        return {
+    def _run_summary_payload(
+        self,
+        run: StrategyLabRun,
+        *,
+        metric: Optional[StrategyLabRunMetric] = None,
+        with_parameters: bool = False,
+    ) -> Dict[str, Any]:
+        payload = {
             "id": run.id,
             "run_uid": run.run_uid,
             "strategy_id": run.strategy_id,
@@ -165,6 +207,26 @@ class StrategyLabService:
             "started_at": run.started_at.isoformat() if run.started_at else None,
             "completed_at": run.completed_at.isoformat() if run.completed_at else None,
         }
+        # 列表摘要带紧凑指标（不含 diagnostics，避免整页膨胀）；详情走 _metric_payload
+        if metric is not None:
+            payload["metrics"] = self._metric_summary_payload(metric)
+        if with_parameters:
+            payload["parameters"] = json_dict(run.parameters_json)
+        return payload
+
+    @staticmethod
+    def _metric_summary_payload(metric: StrategyLabRunMetric) -> Dict[str, Any]:
+        return {
+            "total_return_pct": metric.total_return_pct,
+            "annualized_return_pct": metric.annualized_return_pct,
+            "max_drawdown_pct": metric.max_drawdown_pct,
+            "sharpe_ratio": metric.sharpe_ratio,
+            "sortino_ratio": metric.sortino_ratio,
+            "calmar_ratio": metric.calmar_ratio,
+            "win_rate_pct": metric.win_rate_pct,
+            "trade_count": metric.trade_count,
+            "turnover_avg_pct": metric.turnover_avg_pct,
+        }
 
     @staticmethod
     def _metric_payload(metric: Optional[StrategyLabRunMetric]) -> Optional[Dict[str, Any]]:
@@ -181,6 +243,12 @@ class StrategyLabService:
             "trade_count": metric.trade_count,
             "exposure_days": metric.exposure_days,
             "diagnostics": json_dict(metric.diagnostics_json),
+            # rotation 引擎扩展指标
+            "turnover_avg_pct": metric.turnover_avg_pct,
+            "period_count": metric.period_count,
+            "profit_periods": metric.profit_periods,
+            "loss_periods": metric.loss_periods,
+            "benchmark_metrics": json_dict(metric.benchmark_metrics_json),
         }
 
     @staticmethod

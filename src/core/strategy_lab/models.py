@@ -58,6 +58,12 @@ class StrategyLabMetric:
     trade_count: int
     exposure_days: int
     diagnostics: Dict[str, Any] = field(default_factory=dict)
+    # rotation 引擎扩展指标（旧引擎保持缺省）
+    turnover_avg_pct: Optional[float] = None
+    period_count: Optional[int] = None
+    profit_periods: Optional[int] = None
+    loss_periods: Optional[int] = None
+    benchmark_metrics: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -82,6 +88,13 @@ class StrategyLabEquityPoint:
     equity: float
     cash: float
     positions_value: float
+    # rotation 引擎扩展字段（旧引擎保持缺省）
+    benchmark_equity: Optional[float] = None
+    drawdown_pct: Optional[float] = None
+    daily_return_pct: Optional[float] = None
+    turnover_pct: Optional[float] = None
+    holdings: Optional[List[str]] = None
+    holdings_count: Optional[int] = None
 
 
 @dataclass(frozen=True)

@@ -771,6 +771,12 @@ class StrategyLabRunMetric(Base):
     trade_count = Column(Integer, nullable=False, default=0)
     exposure_days = Column(Integer, nullable=False, default=0)
     diagnostics_json = Column(Text)
+    # rotation 引擎扩展指标（旧引擎保持 NULL）
+    turnover_avg_pct = Column(Float)
+    period_count = Column(Integer)
+    profit_periods = Column(Integer)
+    loss_periods = Column(Integer)
+    benchmark_metrics_json = Column(Text)
     created_at = Column(DateTime, default=datetime.now, index=True)
 
 
@@ -947,6 +953,41 @@ class StrategyLabBatchItem(Base):
     error_message = Column(Text)
     created_at = Column(DateTime, default=datetime.now, index=True)
     completed_at = Column(DateTime, index=True)
+
+
+class StrategyLabIndexDaily(Base):
+    """Index daily close for Strategy Lab benchmarks (e.g. CSI 300)."""
+
+    __tablename__ = 'strategy_lab_index_daily'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    symbol = Column(String(32), nullable=False, index=True)
+    trade_date = Column(Date, nullable=False, index=True)
+    close = Column(Float, nullable=False)
+    source = Column(String(32), nullable=False, default='akshare', index=True)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, index=True)
+
+    __table_args__ = (
+        UniqueConstraint('symbol', 'trade_date', name='uix_strategy_lab_index_daily'),
+    )
+
+
+class StrategyLabStrategyConfig(Base):
+    """Saved Strategy Lab backtest configuration preset (research-side only)."""
+
+    __tablename__ = 'strategy_lab_strategy_configs'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    config_uid = Column(String(64), nullable=False, unique=True, index=True)
+    name = Column(String(100), nullable=False)
+    description = Column(String(500))
+    strategy_id = Column(String(64), nullable=False, index=True)
+    market = Column(String(16), nullable=False, default='cn', index=True)
+    instrument_type = Column(String(32), nullable=False, default='convertible_bond', index=True)
+    parameters_json = Column(Text)
+    symbols_json = Column(Text)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, index=True)
 
 
 class TradingOrder(Base):
@@ -1865,6 +1906,12 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             (StrategyLabSyncRun.__tablename__, "quality_status", "VARCHAR(16) DEFAULT 'unknown'"),
             (StrategyLabSyncRun.__tablename__, "notification_status", "VARCHAR(16) DEFAULT 'pending'"),
             (PortfolioTrade.__tablename__, "symbol_name", "VARCHAR(64)"),
+            # rotation 引擎扩展指标（可空，旧引擎不受影响）
+            (StrategyLabRunMetric.__tablename__, "turnover_avg_pct", "FLOAT"),
+            (StrategyLabRunMetric.__tablename__, "period_count", "INTEGER"),
+            (StrategyLabRunMetric.__tablename__, "profit_periods", "INTEGER"),
+            (StrategyLabRunMetric.__tablename__, "loss_periods", "INTEGER"),
+            (StrategyLabRunMetric.__tablename__, "benchmark_metrics_json", "TEXT"),
         ]
         for table_name, column_name, ddl in migrations:
             if not inspector.has_table(table_name):

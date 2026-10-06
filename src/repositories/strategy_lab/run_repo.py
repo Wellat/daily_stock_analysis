@@ -104,6 +104,13 @@ class StrategyLabRepository:
                         "equity": point.equity,
                         "cash": point.cash,
                         "positions_value": point.positions_value,
+                        # rotation 引擎扩展字段（旧引擎为 None 时省略，节省载荷）
+                        **({"benchmark_equity": point.benchmark_equity} if point.benchmark_equity is not None else {}),
+                        **({"drawdown_pct": point.drawdown_pct} if point.drawdown_pct is not None else {}),
+                        **({"daily_return_pct": point.daily_return_pct} if point.daily_return_pct is not None else {}),
+                        **({"turnover_pct": point.turnover_pct} if point.turnover_pct is not None else {}),
+                        **({"holdings": point.holdings} if point.holdings is not None else {}),
+                        **({"holdings_count": point.holdings_count} if point.holdings_count is not None else {}),
                     }
                     for point in result.equity_curve
                 ],
@@ -123,6 +130,15 @@ class StrategyLabRepository:
                 win_rate_pct=result.metrics.win_rate_pct,
                 trade_count=result.metrics.trade_count,
                 exposure_days=result.metrics.exposure_days,
+                turnover_avg_pct=result.metrics.turnover_avg_pct,
+                period_count=result.metrics.period_count,
+                profit_periods=result.metrics.profit_periods,
+                loss_periods=result.metrics.loss_periods,
+                benchmark_metrics_json=(
+                    json.dumps(result.metrics.benchmark_metrics, ensure_ascii=False, sort_keys=True)
+                    if result.metrics.benchmark_metrics
+                    else None
+                ),
                 diagnostics_json=json.dumps(result.metrics.diagnostics, ensure_ascii=False, sort_keys=True),
             )
             session.add(metric)
@@ -174,6 +190,20 @@ class StrategyLabRepository:
             for row in rows:
                 session.expunge(row)
             return list(rows), len(total)
+
+    def list_run_metrics(self, run_ids: List[int]) -> Dict[int, StrategyLabRunMetric]:
+        """批量取一页 run 的指标行（列表摘要用）。"""
+        if not run_ids:
+            return {}
+        with self.db.get_session() as session:
+            metric_rows = session.execute(
+                select(StrategyLabRunMetric).where(StrategyLabRunMetric.run_id.in_(run_ids))
+            ).scalars().all()
+            result: Dict[int, StrategyLabRunMetric] = {}
+            for metric in metric_rows:
+                session.expunge(metric)
+                result[metric.run_id] = metric
+            return result
 
     def list_trades(self, run_id: int) -> List[StrategyLabTrade]:
         with self.db.get_session() as session:

@@ -439,3 +439,55 @@ cd apps/dsa-desktop && npm install && npm run build
 ### 收益口径
 
 `StrategyLabRun.metrics.total_return_pct` 是策略引擎按历史价格、费用和参数计算的模拟收益；它不写入 Portfolio。`PortfolioService` 的 trades/positions/snapshots 是纸面或实盘账户收益的唯一计算来源。两者可通过 run/signal/account/trade ID 关联，但不能把策略回测收益直接当成实盘收益。
+
+## 14. 轮动回测重构（2026-10，对标禄得网）
+
+在 Phase 1-6 的基础上，重写了策略实验室的可转债回测能力：引入 backtrader 引擎、通用因子框架、策略配置保存/加载与报告导出。旧 3 个策略（double-low / low-premium / ma-crossover）与历史 run 保持可用、可查看。
+
+### 14.1 引擎：`rotation`（backtrader adapter）
+
+- 代码位置：`src/core/strategy_lab/backtest/`（params / feeds / strategy / analyzers / engine 五件套），实现现有 `StrategyLabEngine` 契约，`engine_name=cb_rotation_v1`。
+- 数据接口：`load_cb_backtest_rows_v2`（旧 loader 契约不变，实盘 `StrategyContextService` 不受影响），在旧字段上追加 `list_date` / `maturity_date` / `status` / `last_trading_date`。
+- 执行语义：换仓日按横截面因子过滤 → 打分排序 → 目标持仓（数量区间 + 等金额权重 + 单标的仓位上限）→ 与现持仓差集，退出者收盘卖出、新进者收盘买入（`broker.set_coc(True)`）；`rebalance_weights=true` 时保留持仓也调回目标权重；单边佣金、整手取整（sizing 预留 `(1+commission)` 现金余量防拒单）；停牌日因子与价格前值填充。
+- 换仓节奏：`rebalance_unit` ∈ trading_day / week / month（周/月取区间内首个交易日），`rebalance_interval` 为步长。
+- 排除条件：风险事件（强赎/下修/回售 alert）、新债（按主数据 `list_date` 的自然日数）、临近最后交易日（`terms_json.last_trading_date`）、指定代码、通用排除因子表（见下）。
+
+### 14.2 因子框架：`src/core/strategy_lab/factors.py`
+
+- 品种无关的横截面因子注册表：`FactorSpec`（factor_id / label / column / transform / default_direction），简单因子从单列取值，**组合因子**声明 `columns` 依赖并由 `compute` 从整行派生（metadata 中 `kind=composite`）；首批注册 price、premium_rate、remaining_size、三个百分位变体与组合因子 **double_low**（转债价格 + 转股溢价率×100%，即价格+溢价率，与「双低」预设等价、可直接用于打分/排除/百分位）。
+- 横截面变换：raw / percentile / zscore / minmax；缺失策略 skip / neutral。
+- 打分 = `[{factor, direction, weight}]` 加权合成（分数越小越优先）；排除 = `[{factor, op, value}]` 比较原始值（缺失视为不通过）。
+- 预设 = 命名的因子权重配置（double_low / low_premium / weighted_double_low / triple_low），无独立代码分支。
+- 因子元数据经 `GET /strategies`（rotation 条目的 `factors` / `score_presets` / `parameters`）暴露给前端动态渲染。
+
+### 14.3 指标与口径
+
+- 指标集（对齐禄得网 12 列）：总收益率、累计资产、年化、最大回撤、夏普、索提诺（下行半标准差）、卡玛、日均换手（单日 = 成交额/2/前日总资产）、交易周期数、盈利/亏损周期；基准序列同口径整套 + 相对超额（算术差）。
+- **口径一致性**：汇总表、走势图（双轴：累计收益率 + 回撤率）、回报分布（年/月/周）、逐日持仓全部从同一条 equity/benchmark 曲线派生（`strategy_lab_run_metrics.benchmark_metrics_json` + equity 曲线扩展字段），不会出现不同区块数字对不上的问题。
+- 胜率：FIFO 配对的多头回合（盈利卖出事件 / 总卖出事件）。
+
+### 14.4 基准
+
+- 默认「标的池等权」：从同一批数据行直接计算，零新增数据依赖。
+- 沪深300：`sync_type=index_daily` 同步指数日线到新表 `strategy_lab_index_daily`（`symbols` 传指数代码，缺省 000300），`benchmark_symbol=000300` 时启用。行情数据-数据同步页已提供「指数日线·回测基准」入口；主源 akshare（东财）失败或为空时自动降级腾讯 K 线（单次约 800 根 ≈ 3 年，更早区间等腾讯扩容或网络恢复后用主源回补）。
+- 已知边界：基准窗口超出已同步指数范围时，缺口段基准为水平线（按初始资金归一）；同步结果 `source` 字段标注实际数据来源。
+- 指定转债代码作为基准同样支持（区间首日归一）。
+
+### 14.5 API 与存储（全部 additive）
+
+- 新端点：`GET/POST /strategy-lab/configs`、`PUT/DELETE /strategy-lab/configs/{id}`（回测配置预设 CRUD，与实盘 `live_strategy_configs` 完全隔离）；`GET /runs/{run_id}/report?format=md|holdings-csv|trades-csv`（Markdown 报告 / 逐日持仓 CSV / 成交 CSV，CSV 带 BOM 便于 Excel 打开中文）。
+- 新表：`strategy_lab_strategy_configs`、`strategy_lab_index_daily`；`strategy_lab_run_metrics` 增可空列（turnover_avg_pct / period_count / profit_periods / loss_periods / benchmark_metrics_json），存量库自动补列。
+- equity 曲线每点扩展 optional 字段：benchmark_equity / drawdown_pct / daily_return_pct / turnover_pct / holdings / holdings_count（旧引擎 run 保持旧形状）。
+
+### 14.6 Web 端（策略研究 Tab 重写）
+
+- 配置区：策略选择（rotation 置顶默认）、区间/单日、初始资金、单边手续费(‰)、基准选择（标的池等权/沪深300/指定转债）、标的筛选；rotation 展开轮动参数表单（换仓节奏、持有数量区间、仓位上限、**打分因子表**（预设一键填充 + 因子/方向/权重动态行）、**排除因子表**（因子/比较符/值）、排除开关组、再平衡开关）。
+- 配置预设：保存当前配置（命名）/ 加载 / 删除（`strategy_lab_strategy_configs`）。「导入实盘配置」入口按重构决策移除，策略实验室前端与实盘前端从此零耦合。
+- 结果区：三行汇总对比表（当前策略/基准/相对超额 × 12 指标，负绿正红）、双轴走势图（累计收益/基准/超额 + 回撤面积 + 平均回撤线，线性/对数切换）、回报分布（年/月/周分组柱状图）、逐日持仓明细、成交明细、导出报告（md / 持仓 CSV / 成交 CSV）。
+- 参数搜索：新增「换仓频率候选」网格参数（rotation 时生效，与最大持仓候选做笛卡尔积）。
+
+### 14.7 数据边界（如实告知）
+
+- 历史转股溢价率 2013 年起才有且早期稀疏（约 26 万 / 79.6 万行）：引擎按缺失策略处理（默认 skip），建议回测区间从 2021 年之后开始；diagnostics 提供 `premium_coverage_pct` 供排查。
+- 退市转债主数据基本未同步（opencli 仅 25 只 delisted）：长区间回测存在幸存者偏差，数据补齐为后续独立工作。
+- backtrader 锁定 `1.9.78.123`，只用核心回测能力（不使用其 plotting，无 matplotlib 依赖）。

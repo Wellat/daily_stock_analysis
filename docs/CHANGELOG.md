@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [改进] 策略实验室「运行记录」列表改版为分页表格（默认 5 条/页，可切 5/10/20，显示总数）：新增回测区间、总收益率、基准收益、最大回撤、夏普、参数摘要（预设·持仓数·换仓频率）、创建时间与状态等关键列，负值绿色正值红色，点击行查看详情并高亮选中；`GET /runs` 列表项新增紧凑 `metrics` 与 `parameters` 字段（不含 diagnostics，详情接口仍返回完整指标，纯追加）。
+- [新功能] 因子框架支持组合因子并新增「双低」因子：`FactorSpec` 支持 `columns` 数据依赖 + `compute` 派生取值（metadata 标注 `kind=composite`，可用于打分、排除规则与百分位变换）；内置 `double_low = 转债价格 + 转股溢价率×100%`（本库溢价率按百分数存储，即价格+溢价率，与双低预设完全等价，已用逐笔一致的回测等价性测试锁定）；溢价率缺失时组合因子整值缺失（遵循 skip/neutral 策略）。
+- [新功能] 策略实验室重构可转债回测（对标禄得网）：新增 backtrader 轮动引擎 `rotation`（按交易日/周/月 N 周期换仓、等金额权重、持有数量区间、单标的仓位上限、收盘成交、单边佣金、整手取整、换仓日再平衡开关），配套通用横截面因子框架（打分因子表 factor/方向/权重、排除因子表 factor/比较符/值、percentile/zscore/minmax 变换、双低/低溢价/加权双低/三低预设）；指标扩展为 12 列（索提诺/卡玛/日均换手/交易周期/盈亏周期/累计资产）并新增基准对比（标的池等权默认 / 沪深300 指数日线新表 / 指定转债）与相对超额行；结果页新增三行汇总对比表、双轴走势图（累计收益+回撤、线性/对数）、年/月/周回报分布、逐日持仓明细与导出报告（Markdown/持仓 CSV/成交 CSV）；全部结果从同一 equity/benchmark 曲线派生，口径一致。
+- [新功能] 策略实验室新增回测配置保存/加载：`strategy_lab_strategy_configs` 表 + `GET/POST /api/v1/strategy-lab/configs`、`PUT/DELETE /configs/{id}`，Web 端可命名保存当前参数组合并复用；run 创建时仍全量快照参数保证自包含可复现。
+- [新功能] 数据同步新增指数日线（`sync_type=index_daily`，`symbols` 传指数代码、缺省 000300，数据同步页新增「指数日线·回测基准」入口）落 `strategy_lab_index_daily` 新表，供回测基准使用；主源 akshare 失败时自动降级腾讯 K 线（约 800 根上限）；`GET /runs/{run_id}/report?format=md|holdings-csv|trades-csv` 导出回测报告。
+- [改进] 策略实验室移除「导入实盘配置」入口（重构决策：研究域与实盘域解耦，前端不再依赖 liveStrategy API）；旧 3 个策略（double-low/low-premium/ma-crossover）与历史 run 保持可用，equity 曲线与指标扩展字段全部为可选追加，旧客户端无感。
+- [修复] `eastmoney_patch` 的 UserAgent 改为惰性初始化：此前模块导入即构造 `UserAgent()`，在 Python 3.13 + fake-useragent 2.2.0 组合上因 importlib.resources 命名空间扫描死锁，拖挂所有引用 data_provider 的进程与测试（本地复现 `import src.services.strategy_lab.service` 无限挂起）；现仅在实际命中东财域名请求时构造，失败降级固定 UA。
 - [新功能] 实盘-交易记录新增「取消」按钮：`pending` / `submitted` 状态订单可在 Web 端手动取消回终态（`POST /api/v1/trading/orders/{id}/cancel` 放开 `submitted`）；用于 QMT 认领后挂单未成交、又不会有终态回调的滞留单兜底（如 2026-09-28 111015 卖出单卡在 submitted、成交价/量一直为空）。该操作仅改写系统记录，不撤销 QMT 侧委托，确认弹窗与文档均已注明。
 - [改进] 可转债列表详情改为行内展开：点击行在该行下方直接展开详情（再点收起，同一时间仅展开一行），替代原「列表底部详情区」的脱节交互；表格支持点击表头排序（转股溢价率 / 双低 / 最后交易日，默认溢价率升序，取消排序回到默认），`GET /instruments` 新增 `sort_by`/`sort_order` 参数（服务端全集排序后分页，排序值缺失的排最后）；最后交易日缺失时用到期时间兜底展示（弱色区分）并作为排序兜底键。
 - [改进] 行情数据-可转债列表改版为信息表格（服务端分页 50 只/页，active 默认溢价率升序）：列表新增双低、强赎/下修/回售计数（已公告强赎红色标记）、剩余规模、剩余年限、到期时间、最后交易日、评级等列；点击行在表格下方展开详情（原有两张趋势图与事件表保留，详情补充条款计数、评级、转股价值等字段）；`GET /instruments` 列表项新增 terms 扁平化字段（纯追加，旧客户端无感）。
