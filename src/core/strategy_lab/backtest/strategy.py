@@ -26,6 +26,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 import backtrader as bt
 
+from src.core.strategies.sizing import price_size_ratio
 from src.core.strategy_lab import factors as F
 from src.core.strategy_lab.backtest.params import RotationParams
 
@@ -284,10 +285,15 @@ class CbRotationStrategy(bt.Strategy):
         target_symbols = {symbol for symbol, _ in ranked[:target_count]}
 
         equity = self.broker.getvalue()
-        per_target = equity / target_count if target_count else 0.0
-        per_target = min(per_target, equity * self.cfg.max_position_pct / 100.0)
+        base_target = equity / target_count if target_count else 0.0
+        target_cap = equity * self.cfg.max_position_pct / 100.0
         lot = self.cfg.lot_size
         skip = skip_symbols or set()
+
+        def _per_target(close: float) -> float:
+            """单标的买入金额：等额基准 × 价格分档比例，再被单标的仓位上限封顶。"""
+            ratio = price_size_ratio(close, self.cfg.price_tier_bounds, self.cfg.price_tier_ratios)
+            return min(base_target * ratio, target_cap)
 
         # 先卖后买：同一根 bar 内先释放现金（coc 下按提交顺序撮合）
         for data, position in list(self.positions.items()):
@@ -305,7 +311,7 @@ class CbRotationStrategy(bt.Strategy):
                 continue
             if symbol in target_symbols:
                 # 再平衡：调回目标权重（预留佣金余量，避免满仓被拒单）
-                target_qty = math.floor(per_target / self._sizing_divisor(close) / lot) * lot
+                target_qty = math.floor(_per_target(close) / self._sizing_divisor(close) / lot) * lot
                 delta = target_qty - size
                 if delta > 0:
                     self._submit(data, "buy", delta, "rebalance_up")
@@ -323,7 +329,7 @@ class CbRotationStrategy(bt.Strategy):
             close = data.close[0]
             if _nan(close) or close <= 0:
                 continue
-            quantity = math.floor(per_target / self._sizing_divisor(close) / lot) * lot
+            quantity = math.floor(_per_target(close) / self._sizing_divisor(close) / lot) * lot
             if quantity >= lot:
                 self._submit(data, "buy", quantity, "rotation_entry")
 

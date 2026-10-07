@@ -1,5 +1,6 @@
 from .base import StrategyBase, StrategyDecision
 from .context import MarketContext
+from .sizing import price_size_ratio, price_tiers_from_scalars
 
 def _is_st_stock(stock_name) -> bool:
     """正股名称含 ST（覆盖 ST/*ST/S*ST 等风险警示形态）即视为 ST 正股。"""
@@ -20,6 +21,14 @@ class LowPremiumStrategy(StrategyBase):
         {"key":"exclude_st","label":"排除正股ST","type":"boolean","default":False},
         {"key":"account_capital","label":"账户基准资金（0=不限）","type":"number","default":0,"min":0},
         {"key":"max_position_pct","label":"单只最大权重%（0=不限）","type":"number","default":0,"min":0,"max":100},
+        {"key":"price_tier1_max","label":"价格一档上限（0=关闭分档）","type":"number","default":165,"min":0},
+        {"key":"price_tier2_max","label":"价格二档上限","type":"number","default":185,"min":0},
+        {"key":"price_tier3_max","label":"价格三档上限","type":"number","default":220,"min":0},
+        {"key":"price_tier4_max","label":"价格四档上限","type":"number","default":250,"min":0},
+        {"key":"price_tier2_pct","label":"二档仓位比例%","type":"number","default":80,"min":1,"max":100},
+        {"key":"price_tier3_pct","label":"三档仓位比例%","type":"number","default":60,"min":1,"max":100},
+        {"key":"price_tier4_pct","label":"四档仓位比例%","type":"number","default":40,"min":1,"max":100},
+        {"key":"price_tier5_pct","label":"五档仓位比例%（超四档上限）","type":"number","default":20,"min":1,"max":100},
     )
     def evaluate(self, context: MarketContext, *, mode="rebalance", parameters=None):
         self.validate_context(context); p=self.parameters(parameters)
@@ -53,25 +62,32 @@ class LowPremiumStrategy(StrategyBase):
         cap_amount=0.0
         if float(p["account_capital"])>0 and float(p["max_position_pct"])>0:
             cap_amount=float(p["account_capital"])*float(p["max_position_pct"])/100.0
+        # 价格分档（与回测共用 sizing 语义）：先按档位比例缩放额度，再被权重上限封顶。
+        tier_bounds,tier_ratios=price_tiers_from_scalars(
+            tier1_max=p["price_tier1_max"],tier2_max=p["price_tier2_max"],
+            tier3_max=p["price_tier3_max"],tier4_max=p["price_tier4_max"],
+            tier2_pct=p["price_tier2_pct"],tier3_pct=p["price_tier3_pct"],
+            tier4_pct=p["price_tier4_pct"],tier5_pct=p["price_tier5_pct"])
         out=[]
         for rank,(premium,i,close,f,_) in enumerate(sorted(candidates,key=lambda x:x[0])[:p["max_positions"]],1):
+            ratio=price_size_ratio(close,tier_bounds,tier_ratios)
             # Quantity conversion is an execution concern.  Emit the portfolio
             # intent (target amount or fixed lots) and let ExecutionPlanner apply
             # prices, lot-size and account-risk constraints consistently in
             # live/backtest.
             if fixed_qty>0:
-                qty=int(fixed_qty/lot)*lot
+                qty=int(fixed_qty*ratio/lot)*lot
                 if cap_amount>0: qty=min(qty,int(cap_amount/close/lot)*lot)
                 if qty<=0: continue
                 out.append(StrategyDecision("buy",i.symbol,i.name,suggested_quantity=qty,reason="lowest_premium",
                 decision_data={"premium_rate":premium,"close":close,"remaining_size":f.remaining_size,"rank":rank,
                 "filter_results":{"premium_limit":True,"event_blocked":False},"sizing":"fixed_quantity",
-                "position_cap_amount":round(cap_amount,2) if cap_amount>0 else None}))
+                "price_ratio":ratio,"position_cap_amount":round(cap_amount,2) if cap_amount>0 else None}))
             else:
-                amount=float(p["per_position_cash"])
+                amount=float(p["per_position_cash"])*ratio
                 if cap_amount>0: amount=min(amount,cap_amount)
                 out.append(StrategyDecision("buy",i.symbol,i.name,target_amount=amount,reason="lowest_premium",
                 decision_data={"premium_rate":premium,"close":close,"remaining_size":f.remaining_size,"rank":rank,
                 "filter_results":{"premium_limit":True,"event_blocked":False},
-                "position_cap_amount":round(cap_amount,2) if cap_amount>0 else None}))
+                "price_ratio":ratio,"position_cap_amount":round(cap_amount,2) if cap_amount>0 else None}))
         return out

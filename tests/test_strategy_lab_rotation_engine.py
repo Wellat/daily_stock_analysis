@@ -378,6 +378,31 @@ class TestExecutionAccounting:
         buy = next(t for t in result.trades if t.side == "buy")
         assert buy.amount <= 100000 * 0.5 + 1e-6
 
+    def test_price_tiers_scale_entry_amount(self):
+        """默认四档分档缩放新开仓金额：100 全额、190→60%、260→20%（等额基准=权益/3）。"""
+        prices = {"AAA": [100.0] * 8, "BBB": [190.0] * 8, "CCC": [260.0] * 8}
+        rows = make_rows(prices)
+        config = make_config({"max_positions": 3, "commission": 0.0})
+        result = RotationBacktestEngine(rows).run(config)
+        amounts = {t.symbol: t.amount for t in result.trades if t.side == "buy"}
+
+        def expected(price, ratio):
+            target = 100000 / 3 * ratio
+            return int(target / price / 10) * 10 * price
+
+        assert amounts["AAA"] == pytest.approx(expected(100.0, 1.0))
+        assert amounts["BBB"] == pytest.approx(expected(190.0, 0.6))
+        assert amounts["CCC"] == pytest.approx(expected(260.0, 0.2))
+
+    def test_price_tiers_disabled_by_zero_tier1(self):
+        """一档上限填 0 关闭分档：高价债也按全额等额基准买入。"""
+        prices = {"CCC": [260.0] * 8}
+        rows = make_rows(prices)
+        config = make_config({"max_positions": 1, "commission": 0.0, "price_tier1_max": 0})
+        result = RotationBacktestEngine(rows).run(config)
+        buy = next(t for t in result.trades if t.side == "buy")
+        assert buy.amount == pytest.approx(int(100000 / 260.0 / 10) * 10 * 260.0)
+
 
 class TestBenchmarksAndMetrics:
     def test_equal_weight_benchmark_return(self):

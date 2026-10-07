@@ -20,6 +20,14 @@ export type RotationFormState = {
   rebalanceWeights: boolean;
   commissionPermille: string;
   lotSize: string;
+  priceTier1Max: string;
+  priceTier2Max: string;
+  priceTier3Max: string;
+  priceTier4Max: string;
+  priceTier2Pct: string;
+  priceTier3Pct: string;
+  priceTier4Pct: string;
+  priceTier5Pct: string;
 };
 
 export const DEFAULT_ROTATION_FORM: RotationFormState = {
@@ -42,6 +50,14 @@ export const DEFAULT_ROTATION_FORM: RotationFormState = {
   rebalanceWeights: false,
   commissionPermille: '0.2',
   lotSize: '10',
+  priceTier1Max: '165',
+  priceTier2Max: '185',
+  priceTier3Max: '220',
+  priceTier4Max: '250',
+  priceTier2Pct: '80',
+  priceTier3Pct: '60',
+  priceTier4Pct: '40',
+  priceTier5Pct: '20',
 };
 
 const num = (value: string, fallback: number): number => {
@@ -73,6 +89,15 @@ export function buildRotationParameters(form: RotationFormState, extra: Record<s
     // ‰ → 小数（0.2‰ = 0.0002）
     commission: num(form.commissionPermille, 0.2) / 1000,
     lot_size: Math.max(1, Math.round(num(form.lotSize, 10))),
+    // 价格分档仓位（与实盘策略同键）：一档比例固定 100%，一档上限 0=关闭
+    price_tier1_max: Math.max(0, num(form.priceTier1Max, 165)),
+    price_tier2_max: Math.max(0, num(form.priceTier2Max, 185)),
+    price_tier3_max: Math.max(0, num(form.priceTier3Max, 220)),
+    price_tier4_max: Math.max(0, num(form.priceTier4Max, 250)),
+    price_tier2_pct: Math.min(100, Math.max(1, num(form.priceTier2Pct, 80))),
+    price_tier3_pct: Math.min(100, Math.max(1, num(form.priceTier3Pct, 60))),
+    price_tier4_pct: Math.min(100, Math.max(1, num(form.priceTier4Pct, 40))),
+    price_tier5_pct: Math.min(100, Math.max(1, num(form.priceTier5Pct, 20))),
     ...extra,
   };
   const exclusionFactors = form.exclusionFactors
@@ -117,5 +142,13 @@ export function applyRotationParameters(parameters: Record<string, unknown> | un
   if (typeof read('rebalance_weights') === 'boolean') form.rebalanceWeights = read('rebalance_weights') as boolean;
   if (read('commission') != null) form.commissionPermille = String(Number(read('commission')) * 1000);
   if (read('lot_size') != null) form.lotSize = String(read('lot_size'));
+  if (read('price_tier1_max') != null) form.priceTier1Max = String(read('price_tier1_max'));
+  if (read('price_tier2_max') != null) form.priceTier2Max = String(read('price_tier2_max'));
+  if (read('price_tier3_max') != null) form.priceTier3Max = String(read('price_tier3_max'));
+  if (read('price_tier4_max') != null) form.priceTier4Max = String(read('price_tier4_max'));
+  if (read('price_tier2_pct') != null) form.priceTier2Pct = String(read('price_tier2_pct'));
+  if (read('price_tier3_pct') != null) form.priceTier3Pct = String(read('price_tier3_pct'));
+  if (read('price_tier4_pct') != null) form.priceTier4Pct = String(read('price_tier4_pct'));
+  if (read('price_tier5_pct') != null) form.priceTier5Pct = String(read('price_tier5_pct'));
   return form;
 }

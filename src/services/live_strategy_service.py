@@ -274,8 +274,15 @@ class LiveStrategyService:
         # ---- 排订单：决策转执行计划（手数取整、风控检查）----
         # planner 的单只/单批硬顶对齐策略意图：入选数量与单只金额本身已是
         # 策略约束（max_positions、per_position_cash、权重上限），保留截断
-        # 兜底但不允许默认硬顶（5 只、1 万元/只）悄悄吃掉更大的目标持仓。
+        # 兜底但不允许默认硬顶（5 只、1 万元/只、5 万元/批）悄悄吃掉更大的
+        # 目标持仓。单批买入预算以 account_capital 为准（QMT 链路无资金数据
+        # 的近似闸门，存量持仓/实际现金由 QMT 侧最终兜底），未配置时退默认。
+        buy_budget = self.planner.MAX_BUY_AMOUNT
+        account_capital = float(params.get("account_capital") or 0)
+        if account_capital > 0:
+            buy_budget = max(buy_budget, account_capital)
         plan = self.planner.plan(decisions, context, lot_size=int(params.get("lot_size", 10)),
+            cash=buy_budget,
             max_buy_symbols=max(int(params.get("max_positions") or 5), 1),
             max_buy_amount_each_symbol=max(self.planner.MAX_BUY_AMOUNT_EACH_SYMBOL, self._intended_max_buy_amount(decisions, context)))
         logger.info("[LiveStrategy] plan: orders=[%s] skipped=[%s] risk_checks=%s",

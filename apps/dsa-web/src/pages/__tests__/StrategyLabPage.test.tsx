@@ -92,6 +92,8 @@ describe('StrategyLabPage', () => {
     await screen.findByRole('button', { name: '开始回测' });
     fireEvent.change(screen.getByLabelText('换仓频率'), { target: { value: '5' } });
     fireEvent.change(screen.getByLabelText('最大持有数量'), { target: { value: '20' } });
+    fireEvent.change(screen.getByLabelText('价格一档上限'), { target: { value: '160' } });
+    fireEvent.change(screen.getByLabelText('价格五档仓位比例'), { target: { value: '25' } });
     fireEvent.click(screen.getByRole('button', { name: '开始回测' }));
     await waitFor(() => expect(api.createRun).toHaveBeenCalledWith(expect.objectContaining({
       strategy_id: 'rotation',
@@ -100,6 +102,14 @@ describe('StrategyLabPage', () => {
         rebalance_unit: 'trading_day',
         rebalance_interval: 5,
         max_positions: 20,
+        price_tier1_max: 160,
+        price_tier2_max: 185,
+        price_tier3_max: 220,
+        price_tier4_max: 250,
+        price_tier2_pct: 80,
+        price_tier3_pct: 60,
+        price_tier4_pct: 40,
+        price_tier5_pct: 25,
         score_preset: 'double_low',
         score_factors: [
           { factor: 'price', direction: 'asc', weight: 1 },
@@ -147,6 +157,8 @@ describe('StrategyLabPage', () => {
           rebalance_unit: 'month', rebalance_interval: 1, max_positions: 10,
           score_preset: 'triple_low',
           score_factors: [{ factor: 'premium_rate', direction: 'asc', weight: 2 }],
+          price_tier1_max: 0, price_tier2_max: 185, price_tier3_max: 220, price_tier4_max: 250,
+          price_tier2_pct: 80, price_tier3_pct: 60, price_tier4_pct: 40, price_tier5_pct: 20,
         },
         symbols: ['113001'],
       },
@@ -161,6 +173,8 @@ describe('StrategyLabPage', () => {
 
     await waitFor(() => expect((screen.getByLabelText('换仓频率') as HTMLInputElement).value).toBe('1'));
     expect(screen.getByLabelText('最大持有数量')).toHaveValue(10);
+    expect((screen.getByLabelText('价格一档上限') as HTMLInputElement).value).toBe('0');
+    expect((screen.getByLabelText('价格五档仓位比例') as HTMLInputElement).value).toBe('20');
     expect(screen.getByLabelText('标的筛选')).toHaveValue('113001');
     expect(screen.getByText('转股溢价率')).toBeInTheDocument();
   }, 15000);

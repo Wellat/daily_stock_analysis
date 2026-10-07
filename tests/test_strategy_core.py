@@ -96,3 +96,46 @@ def test_low_premium_caps_fixed_quantity_by_position_weight():
         "account_capital": 5000, "max_position_pct": 10,
     })
     assert decisions == []
+
+
+def test_low_premium_scales_amount_by_price_tiers():
+    """默认四档价格分档：≤165 全额、(185,220] 60%、>250 20%。"""
+    c = context([("A", "A", 100, 1), ("B", "B", 190, 2), ("C", "C", 260, 3)])
+    decisions = LowPremiumStrategy().evaluate(c, parameters={"max_positions": 3, "per_position_cash": 10000})
+    assert {d.symbol: d.target_amount for d in decisions} == {"A": 10000, "B": 6000, "C": 2000}
+    assert {d.symbol: d.decision_data["price_ratio"] for d in decisions} == {"A": 1.0, "B": 0.6, "C": 0.2}
+
+
+def test_low_premium_price_tier_scales_before_weight_cap():
+    """先按价格分档缩放，再被单只权重上限封顶。"""
+    c = context([("B", "B", 190, 2)])
+    # 9000×0.6=5400 > cap 5000 → 封顶生效
+    decisions = LowPremiumStrategy().evaluate(c, parameters={
+        "max_positions": 1, "per_position_cash": 9000,
+        "account_capital": 50000, "max_position_pct": 10,
+    })
+    assert decisions[0].target_amount == 5000
+    # 8000×0.6=4800 < cap 5000 → 分档结果不被封顶
+    decisions = LowPremiumStrategy().evaluate(c, parameters={
+        "max_positions": 1, "per_position_cash": 8000,
+        "account_capital": 50000, "max_position_pct": 10,
+    })
+    assert decisions[0].target_amount == 4800
+
+
+def test_low_premium_price_tiers_disabled_by_zero_tier1():
+    """一档上限填 0 关闭分档，高价债也按全额目标资金。"""
+    c = context([("A", "A", 260, 3)])
+    decisions = LowPremiumStrategy().evaluate(c, parameters={
+        "max_positions": 1, "per_position_cash": 9000, "price_tier1_max": 0,
+    })
+    assert decisions[0].target_amount == 9000
+
+
+def test_low_premium_fixed_quantity_scaled_by_price_tiers():
+    """固定张数路径同样按分档比例缩放（整手取整）。"""
+    c = context([("B", "B", 190, 2)])
+    decisions = LowPremiumStrategy().evaluate(c, parameters={
+        "max_positions": 1, "per_position_quantity": 100, "lot_size": 10,
+    })
+    assert decisions[0].suggested_quantity == 60

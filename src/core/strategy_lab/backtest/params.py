@@ -10,8 +10,9 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Set
+from typing import Any, Dict, List, Set, Tuple
 
+from src.core.strategies.sizing import price_tiers_from_scalars
 from src.core.strategy_lab.factors import (
     DIRECTION_ASC,
     ExclusionRule,
@@ -45,6 +46,9 @@ class RotationParams:
     rebalance_weights: bool = False
     commission: float = 0.0002
     lot_size: int = 10
+    # 价格分档仓位（默认 165/185/220/250 四档，比例 100/80/60/40/20；空 bounds 表示关闭）
+    price_tier_bounds: Tuple[float, ...] = (165.0, 185.0, 220.0, 250.0)
+    price_tier_ratios: Tuple[float, ...] = (1.0, 0.8, 0.6, 0.4, 0.2)
 
     @classmethod
     def from_parameters(cls, parameters: Dict[str, Any]) -> "RotationParams":
@@ -74,6 +78,19 @@ class RotationParams:
         if score_missing not in ("skip", "neutral"):
             raise ValueError(f"Unsupported score_missing: {score_missing}")
 
+        # 价格分档：8 个固定档标量（与实盘策略参数同键），tier1<=0 关闭；
+        # 非法组合（上界非递增、比例越界）在此 fail-fast，不进引擎。
+        price_tier_bounds, price_tier_ratios = price_tiers_from_scalars(
+            tier1_max=_float("price_tier1_max", 165.0),
+            tier2_max=_float("price_tier2_max", 185.0),
+            tier3_max=_float("price_tier3_max", 220.0),
+            tier4_max=_float("price_tier4_max", 250.0),
+            tier2_pct=_float("price_tier2_pct", 80.0),
+            tier3_pct=_float("price_tier3_pct", 60.0),
+            tier4_pct=_float("price_tier4_pct", 40.0),
+            tier5_pct=_float("price_tier5_pct", 20.0),
+        )
+
         params = cls(
             rebalance_unit=rebalance_unit,
             rebalance_interval=max(1, _int("rebalance_interval", 1, minimum=1)),
@@ -95,6 +112,8 @@ class RotationParams:
             rebalance_weights=bool(parameters.get("rebalance_weights", False)),
             commission=_float("commission", 0.0002),
             lot_size=max(1, _int("lot_size", 10, minimum=1)),
+            price_tier_bounds=price_tier_bounds,
+            price_tier_ratios=price_tier_ratios,
         )
         if params.min_positions > params.max_positions:
             raise ValueError("min_positions cannot exceed max_positions")
@@ -140,4 +159,6 @@ class RotationParams:
             "rebalance_weights": self.rebalance_weights,
             "commission": self.commission,
             "lot_size": self.lot_size,
+            "price_tier_bounds": list(self.price_tier_bounds),
+            "price_tier_ratios": list(self.price_tier_ratios),
         }

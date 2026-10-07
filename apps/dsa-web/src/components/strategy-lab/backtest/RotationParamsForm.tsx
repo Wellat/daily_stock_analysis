@@ -394,6 +394,107 @@ export const RotationParamsForm: React.FC<Props> = ({ value, onChange, factors, 
           placeholder="逗号分隔转债代码，留空不排除"
         />
       </label>
+      <div>
+        <div className="mb-1 flex items-center gap-2 text-sm">
+          <span>价格分档仓位</span>
+          <Tag className="m-0" color="blue">先分档缩放，再被单标的仓位上限封顶</Tag>
+          <span className="text-xs text-secondary-text">一档比例固定 100%；一档上限填 0 关闭分档</span>
+        </div>
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <label className="text-sm">
+            一档价格上限
+            <input
+              aria-label="价格一档上限"
+              className={`${SL_INPUT_CLASS} mt-1`}
+              type="number"
+              min="0"
+              value={value.priceTier1Max}
+              onChange={(event) => patch({ priceTier1Max: event.target.value })}
+            />
+          </label>
+          <label className="text-sm">
+            二档价格上限
+            <input
+              aria-label="价格二档上限"
+              className={`${SL_INPUT_CLASS} mt-1`}
+              type="number"
+              min="0"
+              value={value.priceTier2Max}
+              onChange={(event) => patch({ priceTier2Max: event.target.value })}
+            />
+          </label>
+          <label className="text-sm">
+            三档价格上限
+            <input
+              aria-label="价格三档上限"
+              className={`${SL_INPUT_CLASS} mt-1`}
+              type="number"
+              min="0"
+              value={value.priceTier3Max}
+              onChange={(event) => patch({ priceTier3Max: event.target.value })}
+            />
+          </label>
+          <label className="text-sm">
+            四档价格上限
+            <input
+              aria-label="价格四档上限"
+              className={`${SL_INPUT_CLASS} mt-1`}
+              type="number"
+              min="0"
+              value={value.priceTier4Max}
+              onChange={(event) => patch({ priceTier4Max: event.target.value })}
+            />
+          </label>
+          <label className="text-sm">
+            二档仓位比例(%)
+            <input
+              aria-label="价格二档仓位比例"
+              className={`${SL_INPUT_CLASS} mt-1`}
+              type="number"
+              min="1"
+              max="100"
+              value={value.priceTier2Pct}
+              onChange={(event) => patch({ priceTier2Pct: event.target.value })}
+            />
+          </label>
+          <label className="text-sm">
+            三档仓位比例(%)
+            <input
+              aria-label="价格三档仓位比例"
+              className={`${SL_INPUT_CLASS} mt-1`}
+              type="number"
+              min="1"
+              max="100"
+              value={value.priceTier3Pct}
+              onChange={(event) => patch({ priceTier3Pct: event.target.value })}
+            />
+          </label>
+          <label className="text-sm">
+            四档仓位比例(%)
+            <input
+              aria-label="价格四档仓位比例"
+              className={`${SL_INPUT_CLASS} mt-1`}
+              type="number"
+              min="1"
+              max="100"
+              value={value.priceTier4Pct}
+              onChange={(event) => patch({ priceTier4Pct: event.target.value })}
+            />
+          </label>
+          <label className="text-sm">
+            五档仓位比例(%)（超四档上限）
+            <input
+              aria-label="价格五档仓位比例"
+              className={`${SL_INPUT_CLASS} mt-1`}
+              type="number"
+              min="1"
+              max="100"
+              value={value.priceTier5Pct}
+              onChange={(event) => patch({ priceTier5Pct: event.target.value })}
+            />
+          </label>
+        </div>
+      </div>
     </div>
   );
 };
