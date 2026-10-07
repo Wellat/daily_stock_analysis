@@ -447,10 +447,11 @@ cd apps/dsa-desktop && npm install && npm run build
 ### 14.1 引擎：`rotation`（backtrader adapter）
 
 - 代码位置：`src/core/strategy_lab/backtest/`（params / feeds / strategy / analyzers / engine 五件套），实现现有 `StrategyLabEngine` 契约，`engine_name=cb_rotation_v1`。
-- 数据接口：`load_cb_backtest_rows_v2`（旧 loader 契约不变，实盘 `StrategyContextService` 不受影响），在旧字段上追加 `list_date` / `maturity_date` / `status` / `last_trading_date`。
+- 数据接口：`load_cb_backtest_rows_v2`（旧 loader 契约不变，实盘 `StrategyContextService` 不受影响），在旧字段上追加 `list_date` / `maturity_date` / `status` / `last_trading_date` / `delist_date`。
 - 执行语义：换仓日按横截面因子过滤 → 打分排序 → 目标持仓（数量区间 + 等金额权重 + 单标的仓位上限）→ 与现持仓差集，退出者收盘卖出、新进者收盘买入（`broker.set_coc(True)`）；`rebalance_weights=true` 时保留持仓也调回目标权重；单边佣金、整手取整（sizing 预留 `(1+commission)` 现金余量防拒单）；停牌日因子与价格前值填充。
 - 换仓节奏：`rebalance_unit` ∈ trading_day / week / month（周/月取区间内首个交易日），`rebalance_interval` 为步长。
 - 排除条件：风险事件（强赎/下修/回售 alert）、新债（按主数据 `list_date` 的自然日数）、临近最后交易日（`terms_json.last_trading_date`）、指定代码、通用排除因子表（见下）。
+- 终局强平（每日先于换仓执行）：终止交易日前最后一个交易日（T-1）收盘对持有仓强制平仓（reason=`t_minus_1_exit`，对齐实盘「最后交易日的 T-1 日提前平仓」），终止日按公告 `last_trading_date` > `min(到期日, 摘牌日-1自然日)` 推导、终止日在回测区间外不强平；行情断更（最后真实 bar 之后）的持仓按最后可得收盘价兜底强平（reason=`delisted_exit`）。T-1 起该标的不再新开仓；断更后的前向填充 bar 为幽灵报价，不参与打分与买入，避免已到期/摘牌转债被冻结价永久持仓并霸榜。强平释放的现金等到下一个排定换仓日再部署。
 
 ### 14.2 因子框架：`src/core/strategy_lab/factors.py`
 

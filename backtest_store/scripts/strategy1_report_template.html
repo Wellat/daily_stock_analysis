@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>策略1 交易盈亏归因 · 低溢价率·无过滤 · 2026Q1-Q3</title>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+<style>
+  :root{
+    --bg:#eef1f7; --card:#ffffff; --ink:#0f172a; --sub:#64748b; --line:#e2e8f0;
+    --good:#059669; --bad:#dc2626; --accent:#1e3a8a;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    line-height:1.55;padding:28px 18px 60px}
+  .wrap{max-width:1180px;margin:0 auto}
+  header.hero{background:linear-gradient(135deg,#0f172a 0%,#1e3a8a 60%,#312e81 100%);
+    border-radius:20px;padding:32px 38px;color:#fff;box-shadow:0 10px 30px rgba(15,23,42,.18)}
+  .hero h1{font-size:25px;font-weight:700;letter-spacing:.5px}
+  .hero p{color:#c7d2fe;margin-top:8px;font-size:14px}
+  .chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:16px}
+  .chip{background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.22);
+    padding:4px 12px;border-radius:999px;font-size:12.5px;color:#e0e7ff}
+  .chip b{color:#fff;font-weight:600}
+  section{margin-top:22px}
+  .card{background:var(--card);border-radius:16px;padding:22px 24px;
+    box-shadow:0 1px 3px rgba(15,23,42,.06),0 8px 24px rgba(15,23,42,.05)}
+  h2{font-size:17px;font-weight:700;margin-bottom:4px}
+  .desc{font-size:12.5px;color:var(--sub);margin-bottom:14px}
+  .kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(168px,1fr));gap:14px}
+  .kpi{background:var(--card);border-radius:16px;padding:16px 18px 13px;
+    box-shadow:0 1px 3px rgba(15,23,42,.06),0 8px 24px rgba(15,23,42,.05)}
+  .kpi .lab{font-size:12.5px;color:var(--sub)}
+  .kpi .val{font-size:26px;font-weight:700;margin-top:2px;font-variant-numeric:tabular-nums}
+  .kpi .sub{font-size:11.5px;color:var(--sub);margin-top:2px}
+  .up{color:var(--good)} .down{color:var(--bad)}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+  @media (max-width:900px){.grid2{grid-template-columns:1fr}}
+  .chart{width:100%;height:340px}
+  /* 分桶条 */
+  .brow{display:grid;grid-template-columns:120px 52px 1fr 150px;gap:10px;align-items:center;
+    padding:7px 0;border-bottom:1px dashed var(--line);font-size:13px}
+  .brow:last-child{border-bottom:none}
+  .brow .k{font-weight:600}
+  .brow .n{color:var(--sub);font-variant-numeric:tabular-nums}
+  .track{background:#f1f5f9;border-radius:6px;height:20px;position:relative;overflow:hidden}
+  .fill{position:absolute;left:0;top:0;bottom:0;border-radius:6px;transition:width .6s}
+  .fill.w{background:linear-gradient(90deg,#34d399,#059669)}
+  .fill.wr{background:linear-gradient(90deg,#93c5fd,#3b82f6)}
+  .brow .v{text-align:right;font-variant-numeric:tabular-nums;font-weight:600}
+  .brow .v small{color:var(--sub);font-weight:400}
+  table{width:100%;border-collapse:collapse;font-size:12.5px}
+  th{background:#f8fafc;text-align:left;padding:8px 10px;border-bottom:2px solid var(--line);
+    color:#334155;white-space:nowrap}
+  td{padding:7px 10px;border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums;white-space:nowrap}
+  tr:hover td{background:#f8fafc}
+  .tag{display:inline-block;padding:1px 8px;border-radius:999px;font-size:11.5px}
+  .tag.z{background:#fef2f2;color:#b91c1c;border:1px solid #fecaca}
+  .tag.ok{background:#ecfdf5;color:#047857;border:1px solid #a7f3d0}
+  .notice{border-left:4px solid;padding:12px 16px;border-radius:10px;font-size:13px;margin-top:14px}
+  .notice.amber{background:#fffbeb;border-color:#f59e0b;color:#78350f}
+  .notice.blue{background:#eff6ff;border-color:#3b82f6;color:#1e3a8a}
+  .concl{display:grid;gap:10px}
+  .concl .item{background:#f8fafc;border:1px solid var(--line);border-radius:12px;padding:13px 16px;font-size:13.5px}
+  .concl .item b{color:var(--accent)}
+  footer{margin-top:26px;text-align:center;color:var(--sub);font-size:12px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="hero">
+    <h1>策略1 交易盈亏归因：低溢价率 · 无过滤 · 每10个交易日换仓</h1>
+    <p>全市场可转债（不排强赎、不排评级），转股溢价率小值优先，持有 1~10 只等金额，2026-01-05 ~ 2026-09-30</p>
+    <div class="chips" id="heroChips"></div>
+  </header>
+
+  <section><div class="kpi-grid" id="kpis"></div></section>
+
+  <section class="grid2">
+    <div class="card">
+      <h2>单笔交易收益率分布</h2>
+      <div class="desc">已平仓交易按区间计数；横轴为持有期收益率（入场成本价 → 卖出结算价）</div>
+      <div id="histChart" class="chart"></div>
+    </div>
+    <div class="card">
+      <h2>入场溢价率 × 交易收益</h2>
+      <div class="desc">每点一笔交易；纵轴收益率，横轴为入场当日收盘转股溢价率（%）</div>
+      <div id="scatterChart" class="chart"></div>
+    </div>
+  </section>
+
+  <section class="grid2">
+    <div class="card">
+      <h2>按入场溢价率分档</h2>
+      <div class="desc">条形=胜率（蓝），数值=平均收益率（绿/红）与笔数</div>
+      <div id="b_prem"></div>
+    </div>
+    <div class="card">
+      <h2>按入场价格分档</h2>
+      <div class="desc">价格档近似股性强度：高价=深度平价，低价=偏债性</div>
+      <div id="b_price"></div>
+    </div>
+    <div class="card">
+      <h2>按入场时强赎状态</h2>
+      <div class="desc">入场当日 is_call 字段归类：强赎相关（已公告/提示/实施/已满足）vs 计数中 vs 未到转股期</div>
+      <div id="b_call"></div>
+    </div>
+    <div class="card">
+      <h2>按持有期 Z 阶段暴露 &amp; 持有天数</h2>
+      <div class="desc">上：持有期内是否出现 Z 前缀（停止交易）；下：连续持有天数分档</div>
+      <div id="b_z"></div>
+      <div style="height:10px"></div>
+      <div id="b_hold"></div>
+    </div>
+  </section>
+
+  <section>
+    <div class="card">
+      <h2>按入场月份（市场阶段）分档</h2>
+      <div class="desc">1-2月上涨段、3-4月急跌段、5月后修复段的入场 cohort 表现</div>
+      <div class="grid2" style="align-items:start">
+        <div id="b_month"></div>
+        <div id="monthChart" class="chart" style="height:300px"></div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="card">
+      <h2>盈利交易 vs 亏损交易：特征对照</h2>
+      <div class="desc">左列为该组交易的平均值 / 占比；用于回答「亏损标的有啥共性」</div>
+      <table id="featTable"></table>
+    </div>
+  </section>
+
+  <section>
+    <div class="card">
+      <h2>TOP 10 盈利交易</h2>
+      <table id="tWin"></table>
+    </div>
+  </section>
+
+  <section>
+    <div class="card">
+      <h2>TOP 10 亏损交易</h2>
+      <table id="tLose"></table>
+    </div>
+  </section>
+
+  <section>
+    <div class="card">
+      <h2>重复入选且累计亏损的标的</h2>
+      <div class="desc">策略多次买入同一标的并反复亏损——因子在该标的上的信号失真或情绪化重复暴露</div>
+      <table id="tRepeat"></table>
+    </div>
+  </section>
+
+  <section>
+    <div class="card">
+      <h2>主要结论</h2>
+      <div class="concl" id="concl"></div>
+      <div class="notice amber"><b>口径与局限：</b>
+        交易由逐日持仓快照重建：一段连续持仓记为一笔，加仓时成本被均价化（近似）；
+        卖出价取卖出日（volume=0 残留行）的 last_price，Z 阶段标的该价为停止交易前的冻结价——
+        即回测对强赎停止交易标的按冻结价清算的乐观假设会原样传导到本分析；
+        金额盈亏 =（卖出结算价 − 持仓均价）× 数量；期末未平仓交易不计入统计；
+        入场溢价率来自无过滤截面，入场强赎状态由「含强赎排除截面缺席推断」（无过滤截面同样缺席才视为数据缺口）。
+        「Z天」列：持有期内标的简称带 Z 前缀（已进入停止交易阶段）的天数。
+      </div>
+    </div>
+  </section>
+
+  <footer>策略1 交易盈亏归因 · 数据：禄得网回测 01a11055-416f-7e21-99f9-3a3f3f393bf2 · 生成：analyze_strategy1_trades.py · 2026-10-06</footer>
+</div>
+
+<script>
+const D = __DATA__;
+const fmtP = x => (x>=0?'+':'') + (x*100).toFixed(1) + '%';
+const fmtN = x => (x>=0?'+':'') + Math.round(x).toLocaleString() + ' 元';
+const cls = x => x>=0?'up':'down';
+
+// Hero chips
+const ov = D.overall;
+document.getElementById('heroChips').innerHTML = [
+  `已平仓 <b>${D.meta.total}</b> 笔（未平仓 ${D.meta.opened} 笔）`,
+  `胜率 <b>${(ov.all.win_rate*100).toFixed(1)}%</b>`,
+  `平均收益 <b>${fmtP(ov.all.avg_ret)}</b>`,
+  `盈亏比 <b>${ov.all.payoff?ov.all.payoff.toFixed(2):'-'}</b>`,
+  `已实现盈亏 <b>${fmtN(ov.all.yuan)}</b>`,
+].map(s=>`<div class="chip">${s}</div>`).join('');
+
+// KPIs
+const zk = D.z_buckets, zShare = zk.length? (zk.find(b=>b.key==='有Z')?.n||0)/ov.all.n : 0;
+const kpis = [
+  ['胜率 / 笔数', `${(ov.all.win_rate*100).toFixed(1)}%`, `${D.meta.total} 笔已平仓`, ''],
+  ['盈利交易均值', fmtP(ov.win.avg_ret), `共 ${ov.win.n} 笔`, 'up'],
+  ['亏损交易均值', fmtP(ov.lose.avg_ret), `共 ${ov.lose.n} 笔`, 'down'],
+  ['盈亏比', ov.all.payoff?ov.all.payoff.toFixed(2):'-', '平均盈利 ÷ 平均亏损', ''],
+  ['已实现总盈亏', fmtN(ov.all.yuan), '各笔 profit_loss 合计', ov.all.yuan>=0?'up':'down'],
+  ['Z阶段暴露占比', (zShare*100).toFixed(0)+'%', '持有中出现Z前缀的交易', 'down'],
+];
+document.getElementById('kpis').innerHTML = kpis.map(k=>
+  `<div class="kpi"><div class="lab">${k[0]}</div><div class="val ${k[3]}">${k[1]}</div><div class="sub">${k[2]}</div></div>`).join('');
+
+// 桶渲染（CSS 条形）
+function renderBucket(el, arr){
+  document.getElementById(el).innerHTML = arr.map(b=>{
+    const wr = b.win_rate*100, ar = b.avg_ret*100;
+    const scale = Math.min(100, Math.max(4, Math.abs(ar)*6+8));
+    return `<div class="brow">
+      <div class="k">${b.key}</div><div class="n">${b.n}笔</div>
+      <div class="track"><div class="fill wr" style="width:${Math.max(3,wr)}%"></div>
+        <div class="fill w" style="width:${scale}%;opacity:.35"></div></div>
+      <div class="v ${cls(ar)}">${ar>=0?'+':''}${ar.toFixed(1)}% <small>胜率${wr.toFixed(0)}%</small></div>
+    </div>`;}).join('');
+}
+renderBucket('b_prem', D.prem_buckets);
+renderBucket('b_price', D.price_buckets);
+renderBucket('b_call', D.call_buckets);
+renderBucket('b_z', D.z_buckets);
+renderBucket('b_hold', D.hold_buckets);
+renderBucket('b_month', D.month_buckets);
+
+// ECharts（CDN 不可用时静默降级，表格仍可读）
+if (typeof echarts !== 'undefined'){
+  const hist = echarts.init(document.getElementById('histChart'));
+  hist.setOption({
+    tooltip:{trigger:'axis'},
+    grid:{left:50,right:16,top:24,bottom:60},
+    xAxis:{type:'category',data:D.hist.labels,axisLabel:{rotate:45,fontSize:10}},
+    yAxis:{type:'value',name:'笔数'},
+    series:[{type:'bar',data:D.hist.counts,
+      itemStyle:{color:p=>p.dataIndex>=6?'#059669':'#dc2626'}}]
+  });
+  const sc = echarts.init(document.getElementById('scatterChart'));
+  sc.setOption({
+    tooltip:{formatter:p=>`${p.data[2]}<br/>入场溢价率 ${p.data[0]}%<br/>收益 ${p.data[1]}%<br/>金额 ${p.data[3]}元`},
+    grid:{left:50,right:20,top:24,bottom:44},
+    xAxis:{name:'入场溢价率%',nameLocation:'middle',nameGap:28,type:'value'},
+    yAxis:{name:'收益率%',type:'value'},
+    series:[{type:'scatter',symbolSize:d=>Math.max(6,Math.min(26,Math.abs(d[3])/900)),
+      data:D.scatter.filter(d=>d[0]!==null),itemStyle:{color:p=>p.data[1]>=0?'#059669aa':'#dc2626aa'}}]
+  });
+  const mc = echarts.init(document.getElementById('monthChart'));
+  mc.setOption({
+    tooltip:{trigger:'axis'},
+    grid:{left:60,right:60,top:30,bottom:30},
+    xAxis:{type:'category',data:D.month_yuan.map(m=>m[0])},
+    yAxis:[{type:'value',name:'金额盈亏(元)'},{type:'value',name:'平均收益%',position:'right'}],
+    series:[{type:'bar',name:'当月入场交易合计金额盈亏',data:D.month_yuan.map(m=>m[1]),
+      itemStyle:{color:p=>p.value>=0?'#059669':'#dc2626'}}]
+  });
+  window.addEventListener('resize',()=>{hist.resize();sc.resize();mc.resize();});
+}
+
+// 特征对照表
+const fr = D.feat_rows.map(r=>{
+  const f=v=>v===null||v===undefined?'-':v.toFixed(1);
+  const diff = (r.win!==null&&r.lose!==null)?(r.win-r.lose).toFixed(1):'-';
+  return `<tr><td>${r.label}</td><td class="up">${f(r.win)}</td><td class="down">${f(r.lose)}</td><td>${diff}</td></tr>`;
+}).join('');
+const rr = D.ratio_rows.map(r=>
+  `<tr><td>${r.label}</td><td class="up">${r.win.toFixed(1)}</td><td class="down">${r.lose.toFixed(1)}</td>
+   <td>${(r.win-r.lose).toFixed(1)}</td></tr>`).join('');
+document.getElementById('featTable').innerHTML =
+  `<tr><th>维度</th><th>盈利交易</th><th>亏损交易</th><th>差值(盈-亏)</th></tr>${fr}${rr}`;
+
+// 明细表
+function tradeTable(el, rows){
+  document.getElementById(el).innerHTML = `<tr><th>代码</th><th>名称</th><th>入场</th><th>出场</th>
+    <th>收益</th><th>金额</th><th>入场溢价</th><th>入场价</th><th>强赎状态@入场</th><th>持有</th><th>Z天</th></tr>` +
+    rows.map(t=>`<tr><td>${t.code}</td><td>${t.name}</td><td>${t.entry}</td><td>${t.exit}</td>
+      <td class="${cls(t.ret)}">${t.ret>=0?'+':''}${t.ret}%</td><td class="${cls(t.yuan)}">${fmtN(t.yuan)}</td>
+      <td>${t.prem===null?'-':t.prem+'%'}</td><td>${t.price}</td>
+      <td>${/排除推断|已满足|公告(?!不强赎)/.test(String(t.is_call))?`<span class="tag z">${t.is_call}</span>`:t.is_call}</td>
+      <td>${t.hold}天</td><td>${t.z>0?`<span class="tag z">${t.z}天</span>`:'-'}</td></tr>`).join('');
+}
+tradeTable('tWin', D.top_win);
+tradeTable('tLose', D.top_lose);
+document.getElementById('tRepeat').innerHTML =
+  `<tr><th>代码</th><th>名称</th><th>次数</th><th>平均收益率</th><th>累计金额盈亏</th><th>各笔明细（入场月 收益率(金额·本金)）</th></tr>` +
+  D.repeat_losers.map(r=>`<tr><td>${r.code}</td><td>${r.name}</td><td>${r.n} 次</td>
+    <td class="${cls(r.ret_avg)}">${r.ret_avg}%</td><td class="${cls(r.yuan)}">${fmtN(r.yuan)}</td>
+    <td style="white-space:normal;font-size:11.5px;color:#475569">${r.detail}</td></tr>`).join('');
+
+// 结论（由数据自动生成要点）
+(function(){
+  const pb = D.prem_buckets, cb = D.call_buckets, zb = D.z_buckets, mb = D.month_buckets;
+  const worst = [...pb].sort((a,b)=>a.avg_ret-b.avg_ret)[0];
+  const best = [...pb].sort((a,b)=>b.avg_ret-a.avg_ret)[0];
+  const callBad = cb.find(b=>b.key==='强赎相关'), callOk = cb.find(b=>b.key==='计数中'),
+        callNear = cb.find(b=>b.key==='临近触发');
+  const zYes = zb.find(b=>b.key==='有Z'), zNo = zb.find(b=>b.key==='无Z');
+  const mWorst = [...mb].sort((a,b)=>a.avg_ret-b.avg_ret)[0];
+  const bigLoss = D.top_lose[0];
+  const items = [];
+  if (worst && best) items.push(`<b>入场溢价率维度：</b>表现最差档位「${worst.key}」（${worst.n}笔，平均 ${fmtP(worst.avg_ret)}），最好档位「${best.key}」（${best.n}笔，平均 ${fmtP(best.avg_ret)}）。亏损交易集中反映了"溢价率最低=离强赎最近"的双刃剑属性。`);
+  if (callBad && callOk) items.push(`<b>强赎状态维度：</b>以强赎相关状态入场的 ${callBad.n} 笔平均 ${fmtP(callBad.avg_ret)}，计数中状态入场的 ${callOk.n} 笔平均 ${fmtP(callOk.avg_ret)}——差距 ${((callOk.avg_ret-callBad.avg_ret)*100).toFixed(1)} 个百分点。`);
+  if (callNear) items.push(`<b>临近触发风险：</b>计数已到门槛差 2 天以内的「临近触发」入场共 ${callNear.n} 笔，平均 ${fmtP(callNear.avg_ret)}，胜率 ${(callNear.win_rate*100).toFixed(0)}%。`);
+  if (zYes && zNo) items.push(`<b>Z 阶段暴露：</b>持有期出现过停止交易的 ${zYes.n} 笔平均 ${fmtP(zYes.avg_ret)}，未出现的 ${zNo.n} 笔平均 ${fmtP(zNo.avg_ret)}。Z 暴露交易的损失多以冻结价形式落定。`);
+  if (mWorst) items.push(`<b>入场时点：</b>最差的入场月份是 ${mWorst.key}（${mWorst.n}笔，平均 ${fmtP(mWorst.avg_ret)}），急跌段的入场 cohort 明显更差。`);
+  if (bigLoss) items.push(`<b>最大单笔亏损：</b>${bigLoss.name}（${bigLoss.entry} 入场），${bigLoss.ret}% / ${fmtN(bigLoss.yuan)}，入场强赎状态「${bigLoss.is_call}」。`);
+  const fw = D.feat_rows.map(r=>r.win===null||r.win===undefined?'-':r.win.toFixed(1));
+  const fl = D.feat_rows.map(r=>r.lose===null||r.lose===undefined?'-':r.lose.toFixed(1));
+  items.push(`<b>对照总览：</b>盈利交易平均持有 ${fw[2]} 天 vs 亏损 ${fl[2]} 天；盈利组入场溢价率均值 ${fw[0]}% vs 亏损组 ${fl[0]}%；盈利组入场价均值 ${fw[1]} 元 vs 亏损组 ${fl[1]} 元。`);
+  document.getElementById('concl').innerHTML = items.map(i=>`<div class="item">${i}</div>`).join('');
+})();
+</script>
+</body>
+</html>

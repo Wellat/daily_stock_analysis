@@ -15,11 +15,14 @@ DATES = [
 ]
 
 
-def make_rows(prices, premiums=None, *, remaining=5.0, blocked=None, last_trading=None, list_dates=None):
+def make_rows(prices, premiums=None, *, remaining=5.0, blocked=None, last_trading=None, list_dates=None,
+              maturity=None, delist=None):
     premiums = premiums or {sym: [10.0] * len(DATES) for sym in prices}
     blocked = blocked or {}
     last_trading = last_trading or {}
     list_dates = list_dates or {}
+    maturity = maturity or {}
+    delist = delist or {}
     rows = []
     for symbol, closes in prices.items():
         for index, trade_date in enumerate(DATES):
@@ -33,6 +36,8 @@ def make_rows(prices, premiums=None, *, remaining=5.0, blocked=None, last_tradin
                 "event_blocked": blocked.get(symbol, [False] * len(DATES))[index],
                 "last_trading_date": last_trading.get(symbol),
                 "list_date": list_dates.get(symbol, date(2020, 1, 1)),
+                "maturity_date": maturity.get(symbol),
+                "delist_date": delist.get(symbol),
             })
     return rows
 
@@ -235,6 +240,91 @@ class TestFilters:
         rows = make_rows(STEADY_PRICES)
         config = make_config({"max_positions": 1, "excluded_symbols": ["AAA"]})
         result = RotationBacktestEngine(rows).run(config)
+        assert result.equity_curve[-1].holdings == ["BBB"]
+
+
+class TestTerminalLifecycle:
+    """终局语义：T-1 强平、幽灵 bar 不可买、行情断更兜底平仓。"""
+
+    def test_t_minus_1_forced_exit_on_maturity(self):
+        # AAA 到期日 09-04 → T-1（09-03）收盘强平；当日换仓买入次优的 BBB
+        rows = make_rows(
+            STEADY_PRICES,
+            premiums={"AAA": [5.0] * 8, "BBB": [10.0] * 8, "CCC": [15.0] * 8},
+            maturity={"AAA": date(2026, 9, 4)},
+        )
+        result = RotationBacktestEngine(rows).run(make_config({"max_positions": 1}))
+        sells = [(t.trade_date, t.symbol, t.reason) for t in result.trades if t.side == "sell"]
+        assert sells == [(date(2026, 9, 3), "AAA", "t_minus_1_exit")]
+        buys = [(t.trade_date, t.symbol) for t in result.trades if t.side == "buy"]
+        assert buys == [(DATES[0], "AAA"), (date(2026, 9, 3), "BBB")]
+        assert result.equity_curve[-1].holdings == ["BBB"]
+
+    def test_last_trading_date_takes_precedence_over_delist(self):
+        # 公告 last_trading_date=09-08 优先于 delist/maturity 近似
+        # （否则按 delist-1=09-04 推导会在 09-03 就强平）
+        rows = make_rows(
+            STEADY_PRICES,
+            premiums={"AAA": [5.0] * 8, "BBB": [10.0] * 8, "CCC": [15.0] * 8},
+            last_trading={"AAA": date(2026, 9, 8)},
+            delist={"AAA": date(2026, 9, 5)},
+            maturity={"AAA": date(2027, 1, 1)},
+        )
+        result = RotationBacktestEngine(rows).run(make_config({"max_positions": 1}))
+        sells = [(t.trade_date, t.symbol) for t in result.trades if t.side == "sell"]
+        assert sells == [(date(2026, 9, 7), "AAA")]
+        assert result.equity_curve[-1].holdings == ["BBB"]
+
+    def test_data_gap_position_liquidated_and_ghost_bars_not_buyable(self):
+        # AAA 只在前 3 个交易日有行情且无终止信息：09-04 断更 → 按最后收盘价强平，
+        # 且断更后的幽灵填充 bar 不参与打分与买入
+        rows = make_rows(STEADY_PRICES, premiums={
+            "AAA": [5.0] * 8, "BBB": [10.0] * 8, "CCC": [15.0] * 8,
+        })
+        rows = [row for row in rows if row["bond_code"] != "AAA"]
+        for trade_date in DATES[:3]:
+            rows.append({
+                "bond_code": "AAA", "bond_name": "BOND-AAA", "trade_date": trade_date,
+                "close": 100.0, "premium_rate": 5.0, "remaining_size": 5.0,
+                "event_blocked": False, "last_trading_date": None,
+                "list_date": date(2020, 1, 1), "maturity_date": None, "delist_date": None,
+            })
+        result = RotationBacktestEngine(rows).run(make_config({"max_positions": 1}))
+        sells = [(t.trade_date, t.symbol, t.reason, t.price) for t in result.trades if t.side == "sell"]
+        # 卖出价 = 最后真实收盘价（幽灵 bar 的填充值）
+        assert sells == [(DATES[3], "AAA", "delisted_exit", 100.0)]
+        buys = [(t.trade_date, t.symbol) for t in result.trades if t.side == "buy"]
+        assert buys == [(DATES[0], "AAA"), (DATES[3], "BBB")]
+        assert result.equity_curve[-1].holdings == ["BBB"]
+
+    def test_terminal_beyond_window_no_forced_exit(self):
+        # 终止交易日在区间之外：区间内不强平，持仓保留到回测结束
+        rows = make_rows(
+            STEADY_PRICES,
+            premiums={"AAA": [5.0] * 8, "BBB": [10.0] * 8, "CCC": [15.0] * 8},
+            last_trading={"AAA": date(2026, 9, 15)},
+        )
+        result = RotationBacktestEngine(rows).run(make_config({"max_positions": 1}))
+        assert [t for t in result.trades if t.side == "sell"] == []
+        assert result.equity_curve[-1].holdings == ["AAA"]
+
+    def test_entry_blocked_from_t_minus_1(self):
+        # AAA 09-07 起有行情、09-08 到期：09-07（T-1）起禁止新开仓，
+        # 即使溢价率最低也不能买入
+        rows = make_rows(STEADY_PRICES, premiums={
+            "AAA": [5.0] * 8, "BBB": [10.0] * 8, "CCC": [15.0] * 8,
+        })
+        rows = [row for row in rows if row["bond_code"] != "AAA"]
+        for trade_date in DATES[4:]:
+            rows.append({
+                "bond_code": "AAA", "bond_name": "BOND-AAA", "trade_date": trade_date,
+                "close": 90.0, "premium_rate": 1.0, "remaining_size": 5.0,
+                "event_blocked": False, "last_trading_date": None,
+                "list_date": date(2020, 1, 1), "maturity_date": date(2026, 9, 8),
+                "delist_date": None,
+            })
+        result = RotationBacktestEngine(rows).run(make_config({"max_positions": 1}))
+        assert [t for t in result.trades if t.symbol == "AAA"] == []
         assert result.equity_curve[-1].holdings == ["BBB"]
 
 

@@ -393,7 +393,7 @@ class OpencliConvertibleBondProvider:
                     "bond_code": code,
                     "trade_date": trade_date,
                     "premium_rate": _parse_float(_first_value(record, "premium_rt", "premiumRate", "转股溢价率")),
-                    "remaining_size": _parse_float(_first_value(record, "remain_size", "remainSize", "剩余规模")),
+                    "remaining_size": _parse_float(_first_value(record, "remain_size", "remainSize", "remainingSize", "剩余规模")),
                 }
             )
         return rows

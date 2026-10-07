@@ -450,7 +450,10 @@ class StrategyLabDataRepository:
         """
         with self.db.get_session() as session:
             statement = select(StrategyLabCbBasic.bond_code).where(StrategyLabCbBasic.market == market)
-            if status:
+            if status == "active":
+                # 与 list_cb_instruments 等查询一致：兼容历史中文值「正常」
+                statement = statement.where(StrategyLabCbBasic.status.in_(("active", "正常")))
+            elif status:
                 statement = statement.where(StrategyLabCbBasic.status == status)
             return list(
                 session.execute(statement.order_by(StrategyLabCbBasic.bond_code.asc())).scalars().all()
@@ -1024,8 +1027,9 @@ class StrategyLabDataRepository:
         """Rotation 引擎的增强数据装载：旧契约 + 主数据元信息。
 
         在 :meth:`load_cb_backtest_rows` 的字段之上补充
-        ``list_date`` / ``maturity_date`` / ``status`` / ``last_trading_date``
-        （来自 ``cb_basic.terms_json``），供新债排除与到期临近排除使用。
+        ``list_date`` / ``maturity_date`` / ``status`` / ``last_trading_date`` /
+        ``delist_date``（后两者来自 ``cb_basic.terms_json``），
+        供新债排除、到期临近排除与终止交易强平使用。
         旧方法保持不变——实盘 ``StrategyContextService`` 依赖其契约。
         """
         normalized_symbols = {str(symbol).strip().lower().split(".")[-1] for symbol in symbols if str(symbol).strip()}
@@ -1050,11 +1054,15 @@ class StrategyLabDataRepository:
                 )
             rows = session.execute(statement).all()
             last_trading_by_code: Dict[str, Optional[str]] = {}
+            delist_by_code: Dict[str, Optional[str]] = {}
             for basic, _factor in rows:
                 if basic.bond_code in last_trading_by_code:
                     continue
                 terms_data = json.loads(basic.terms_json) if basic.terms_json else {}
-                last_trading_by_code[basic.bond_code] = terms_data.get("last_trading_date") if isinstance(terms_data, dict) else None
+                if not isinstance(terms_data, dict):
+                    terms_data = {}
+                last_trading_by_code[basic.bond_code] = terms_data.get("last_trading_date")
+                delist_by_code[basic.bond_code] = terms_data.get("delist_date")
             return [
                 {
                     "bond_code": basic.bond_code,
@@ -1069,6 +1077,7 @@ class StrategyLabDataRepository:
                     "maturity_date": basic.maturity_date,
                     "status": basic.status,
                     "last_trading_date": last_trading_by_code.get(basic.bond_code),
+                    "delist_date": delist_by_code.get(basic.bond_code),
                 }
                 for basic, factor in rows
                 if not normalized_symbols or basic.bond_code.lower() in normalized_symbols

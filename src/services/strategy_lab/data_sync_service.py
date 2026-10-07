@@ -331,6 +331,9 @@ class StrategyLabDataSyncService:
                 "bonds_failed": [],
             }
             if not codes:
+                empty_message = self._empty_symbols_message(symbols)
+                if empty_message:
+                    result["message"] = empty_message
                 self._raise_if_cancel_requested(run_id)
                 if _complete_on_success:
                     self.repository.complete_sync_run(run_id, result=result)
@@ -480,6 +483,9 @@ class StrategyLabDataSyncService:
                 "bonds_failed": [],
             }
             if not codes:
+                empty_message = self._empty_symbols_message(symbols)
+                if empty_message:
+                    result["message"] = empty_message
                 self._raise_if_cancel_requested(run_id)
                 if _complete_on_success:
                     self.repository.complete_sync_run(run_id, result=result)
@@ -590,6 +596,9 @@ class StrategyLabDataSyncService:
                 "bonds_failed": [],
             }
             if not codes:
+                empty_message = self._empty_symbols_message(symbols)
+                if empty_message:
+                    result["message"] = empty_message
                 self._raise_if_cancel_requested(run_id)
                 if _complete_on_success:
                     self.repository.complete_sync_run(run_id, result=result)
@@ -700,6 +709,9 @@ class StrategyLabDataSyncService:
                 "stocks_failed": [],
             }
             if not codes:
+                empty_message = self._empty_symbols_message(symbols)
+                if empty_message:
+                    result["message"] = empty_message
                 self._raise_if_cancel_requested(run_id)
                 if _complete_on_success:
                     self.repository.complete_sync_run(run_id, result=result)
@@ -831,6 +843,9 @@ class StrategyLabDataSyncService:
                 "holdings_failed": [],
             }
             if not codes:
+                empty_message = self._empty_symbols_message(symbols)
+                if empty_message:
+                    result["message"] = empty_message
                 self._raise_if_cancel_requested(run_id)
                 if _complete_on_success:
                     self.repository.complete_sync_run(run_id, result=result)
@@ -1283,6 +1298,17 @@ class StrategyLabDataSyncService:
     def _raise_if_cancel_requested(self, run_id: int) -> None:
         if self.repository.is_sync_run_cancel_requested(run_id):
             raise _DataSyncCancelled()
+
+    @staticmethod
+    def _empty_symbols_message(symbols: Optional[List[str]]) -> Optional[str]:
+        """传入 symbols 但过滤后无可同步标的时的说明文案；未传 symbols 返回 None。
+
+        全量（未传 symbols）空列表不额外提示，payload 中的 bonds_total 已可观察；
+        传了 symbols 的空跑若不留说明，run 会以全零计数"成功"结束，难以察觉。
+        """
+        if not symbols:
+            return None
+        return "symbols 过滤后无可同步标的：请确认代码存在于同步范围（转债退市券需 include_delisted=true）"
 
     def _ohlc_start_date(
         self, code: str, explicit_start: Optional[date], *,

@@ -417,6 +417,7 @@ def test_opencli_provider_fetches_premium_history(monkeypatch: pytest.MonkeyPatc
             "rows": [
                 {"date": "2026-08-12", "premium_rt": "22.15%", "remain_size": "72.068"},
                 {"tradeDate": "2026/08/13", "premiumRate": "21.8", "remainSize": 71.5},
+                {"date": "2026/08/14", "premiumRate": "20.9", "remainingSize": 70.8},
                 {"date": "-", "premium_rt": "0", "remain_size": "0"},
             ]
         }
@@ -443,6 +444,12 @@ def test_opencli_provider_fetches_premium_history(monkeypatch: pytest.MonkeyPatc
             "trade_date": date(2026, 8, 13),
             "premium_rate": 21.8,
             "remaining_size": 71.5,
+        },
+        {
+            "bond_code": "110081",
+            "trade_date": date(2026, 8, 14),
+            "premium_rate": 20.9,
+            "remaining_size": 70.8,
         },
     ]
 
@@ -653,6 +660,31 @@ def test_sync_cb_premium_history_with_delisted_includes_active_and_delisted(
     assert result["bonds_total"] == 2
     assert seen_codes == ["110081", "113000"]
     assert result["cb_factor_rows_patched"] == 2
+
+
+def test_sync_cb_premium_history_symbols_mismatch_leaves_message(
+    db_manager: DatabaseManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """传入 symbols 过滤后无可同步标的时，result 带 message 而非全零静默成功。"""
+    import src.services.strategy_lab.data_sync_service as dss
+
+    class _PremiumHistoryProvider:
+        name = "opencli"
+
+        def fetch_premium_history(self, bond_code):  # pragma: no cover - 不应被调用
+            raise AssertionError(f"unexpected fetch for {bond_code}")
+
+    monkeypatch.setattr(dss, "OpencliConvertibleBondProvider", lambda **kwargs: _PremiumHistoryProvider())
+    service = StrategyLabDataSyncService(db_manager)
+    result = service.sync_cb_premium_history(market="cn", symbols=["999999"])
+
+    assert result["bonds_total"] == 0
+    assert "include_delisted" in result["message"]
+    assert result["cb_factor_rows_patched"] == 0
+
+    # 未传 symbols 时不加 message（全量空列表由 bonds_total 自行可观察）
+    result_all = service.sync_cb_premium_history(market="cn")
+    assert "message" not in result_all
 
 
 def test_upsert_cb_basic_serializes_non_json_terms(db_manager: DatabaseManager) -> None:

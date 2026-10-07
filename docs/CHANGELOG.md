@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [修复] 可转债补数同步（`cb_premium_history`）解析 opencli `remainingSize` 字段：上游字段名不在解析器候选（`remain_size`/`remainSize`/`剩余规模`）内被静默丢弃，剩余规模历史回填始终为空；溢价率解析不受影响。
+- [改进] 数据同步（cb_basic/cb_ohlc/cb_premium_history/cb_stock_ohlc/portfolio_holdings）传入 `symbols` 过滤后无可同步标的时，sync run result 写入 `message` 说明（如退市券需 `include_delisted=true`），避免全零计数静默"成功"空跑。
+- [修复] 可转债基础表状态归位：按 `terms_json.delist_date` 将 732 只 akshare 来源 `status=NULL` 的退市转债归位为 `delisted`（无 `delist_date` 的 6 只保持 NULL）；此前这批券不在 active 也不在 delisted 过滤集合内，行情数据页状态筛选不可见、同步链路默认不可遍历。
+- [修复] 策略实验室 rotation 回测新增到期/摘牌终局处理：终止交易日前一交易日（T-1）收盘强制平仓持有标的（对齐实盘「T-1 提前平仓」规则；终止日按公告 `last_trading_date` > `min(到期日, 摘牌日-1自然日)` 推导），行情断更的持仓按最后可得收盘价兜底强平（`delisted_exit`）；T-1 起该标的不再新开仓、断更后的前向填充 bar 不参与打分与买入（v2 loader 行新增 `delist_date` 字段，纯追加）。修复已到期/摘牌转债被按冻结价永久持仓、因子冻结霸榜导致净值曲线后段完全走平的问题（此前低溢价回测 2026-06-24 起 70 个交易日净值/持仓/换手全零）。
 - [新功能] 实盘低溢价/双低策略新增三个参数：`exclude_st`（排除正股 ST，按 `strategy_lab_cb_basic.stock_name` 含 ST/*ST 判定，候选不入选）、`account_capital` + `max_position_pct`（单只最大权重上限，新建仓金额封顶于资金基准×权重%，任一为 0 不启用；只约束新开仓，存量持仓漂移不修剪）。
 - [改进] 实盘「排除风险事件」开关语义收敛为同时控制买入候选排除与持仓事件退出：此前 event_check 模式对带强赎/下修/回售提醒的持仓无条件清仓，不受开关控制；关闭开关后买卖两侧均不响应风险事件提醒（最后交易日强退在服务层，不受影响）。
 - [修复] 实盘策略配置保存增加参数键白名单校验并归一布尔值：未知参数键（含键名形态漂移，如驼峰 `excludeEventBlocked`）直接拒绝保存，不再静默绕过默认值合并失效；布尔参数兼容 0/1 与 "true"/"false" 提交形态。此前实盘库中 `excludeEventBlocked: 0` 为死键，实际仍按默认 True 排除风险事件。

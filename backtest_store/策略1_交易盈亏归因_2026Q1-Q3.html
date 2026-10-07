@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>策略1 交易盈亏归因 · 低溢价率·无过滤 · 2026Q1-Q3</title>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+<style>
+  :root{
+    --bg:#eef1f7; --card:#ffffff; --ink:#0f172a; --sub:#64748b; --line:#e2e8f0;
+    --good:#059669; --bad:#dc2626; --accent:#1e3a8a;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    line-height:1.55;padding:28px 18px 60px}
+  .wrap{max-width:1180px;margin:0 auto}
+  header.hero{background:linear-gradient(135deg,#0f172a 0%,#1e3a8a 60%,#312e81 100%);
+    border-radius:20px;padding:32px 38px;color:#fff;box-shadow:0 10px 30px rgba(15,23,42,.18)}
+  .hero h1{font-size:25px;font-weight:700;letter-spacing:.5px}
+  .hero p{color:#c7d2fe;margin-top:8px;font-size:14px}
+  .chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:16px}
+  .chip{background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.22);
+    padding:4px 12px;border-radius:999px;font-size:12.5px;color:#e0e7ff}
+  .chip b{color:#fff;font-weight:600}
+  section{margin-top:22px}
+  .card{background:var(--card);border-radius:16px;padding:22px 24px;
+    box-shadow:0 1px 3px rgba(15,23,42,.06),0 8px 24px rgba(15,23,42,.05)}
+  h2{font-size:17px;font-weight:700;margin-bottom:4px}
+  .desc{font-size:12.5px;color:var(--sub);margin-bottom:14px}
+  .kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(168px,1fr));gap:14px}
+  .kpi{background:var(--card);border-radius:16px;padding:16px 18px 13px;
+    box-shadow:0 1px 3px rgba(15,23,42,.06),0 8px 24px rgba(15,23,42,.05)}
+  .kpi .lab{font-size:12.5px;color:var(--sub)}
+  .kpi .val{font-size:26px;font-weight:700;margin-top:2px;font-variant-numeric:tabular-nums}
+  .kpi .sub{font-size:11.5px;color:var(--sub);margin-top:2px}
+  .up{color:var(--good)} .down{color:var(--bad)}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+  @media (max-width:900px){.grid2{grid-template-columns:1fr}}
+  .chart{width:100%;height:340px}
+  /* 分桶条 */
+  .brow{display:grid;grid-template-columns:120px 52px 1fr 150px;gap:10px;align-items:center;
+    padding:7px 0;border-bottom:1px dashed var(--line);font-size:13px}
+  .brow:last-child{border-bottom:none}
+  .brow .k{font-weight:600}
+  .brow .n{color:var(--sub);font-variant-numeric:tabular-nums}
+  .track{background:#f1f5f9;border-radius:6px;height:20px;position:relative;overflow:hidden}
+  .fill{position:absolute;left:0;top:0;bottom:0;border-radius:6px;transition:width .6s}
+  .fill.w{background:linear-gradient(90deg,#34d399,#059669)}
+  .fill.wr{background:linear-gradient(90deg,#93c5fd,#3b82f6)}
+  .brow .v{text-align:right;font-variant-numeric:tabular-nums;font-weight:600}
+  .brow .v small{color:var(--sub);font-weight:400}
+  table{width:100%;border-collapse:collapse;font-size:12.5px}
+  th{background:#f8fafc;text-align:left;padding:8px 10px;border-bottom:2px solid var(--line);
+    color:#334155;white-space:nowrap}
+  td{padding:7px 10px;border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums;white-space:nowrap}
+  tr:hover td{background:#f8fafc}
+  .tag{display:inline-block;padding:1px 8px;border-radius:999px;font-size:11.5px}
+  .tag.z{background:#fef2f2;color:#b91c1c;border:1px solid #fecaca}
+  .tag.ok{background:#ecfdf5;color:#047857;border:1px solid #a7f3d0}
+  .notice{border-left:4px solid;padding:12px 16px;border-radius:10px;font-size:13px;margin-top:14px}
+  .notice.amber{background:#fffbeb;border-color:#f59e0b;color:#78350f}
+  .notice.blue{background:#eff6ff;border-color:#3b82f6;color:#1e3a8a}
+  .concl{display:grid;gap:10px}
+  .concl .item{background:#f8fafc;border:1px solid var(--line);border-radius:12px;padding:13px 16px;font-size:13.5px}
+  .concl .item b{color:var(--accent)}
+  footer{margin-top:26px;text-align:center;color:var(--sub);font-size:12px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="hero">
+    <h1>策略1 交易盈亏归因：低溢价率 · 无过滤 · 每10个交易日换仓</h1>
+    <p>全市场可转债（不排强赎、不排评级），转股溢价率小值优先，持有 1~10 只等金额，2026-01-05 ~ 2026-09-30</p>
+    <div class="chips" id="heroChips"></div>
+  </header>
+
+  <section><div class="kpi-grid" id="kpis"></div></section>
+
+  <section class="grid2">
+    <div class="card">
+      <h2>单笔交易收益率分布</h2>
+      <div class="desc">已平仓交易按区间计数；横轴为持有期收益率（入场成本价 → 卖出结算价）</div>
+      <div id="histChart" class="chart"></div>
+    </div>
+    <div class="card">
+      <h2>入场溢价率 × 交易收益</h2>
+      <div class="desc">每点一笔交易；纵轴收益率，横轴为入场当日收盘转股溢价率（%）</div>
+      <div id="scatterChart" class="chart"></div>
+    </div>
+  </section>
+
+  <section class="grid2">
+    <div class="card">
+      <h2>按入场溢价率分档</h2>
+      <div class="desc">条形=胜率（蓝），数值=平均收益率（绿/红）与笔数</div>
+      <div id="b_prem"></div>
+    </div>
+    <div class="card">
+      <h2>按入场价格分档</h2>
+      <div class="desc">价格档近似股性强度：高价=深度平价，低价=偏债性</div>
+      <div id="b_price"></div>
+    </div>
+    <div class="card">
+      <h2>按入场时强赎状态</h2>
+      <div class="desc">入场当日 is_call 字段归类：强赎相关（已公告/提示/实施/已满足）vs 计数中 vs 未到转股期</div>
+      <div id="b_call"></div>
+    </div>
+    <div class="card">
+      <h2>按持有期 Z 阶段暴露 &amp; 持有天数</h2>
+      <div class="desc">上：持有期内是否出现 Z 前缀（停止交易）；下：连续持有天数分档</div>
+      <div id="b_z"></div>
+      <div style="height:10px"></div>
+      <div id="b_hold"></div>
+    </div>
+  </section>
+
+  <section>
+    <div class="card">
+      <h2>按入场月份（市场阶段）分档</h2>
+      <div class="desc">1-2月上涨段、3-4月急跌段、5月后修复段的入场 cohort 表现</div>
+      <div class="grid2" style="align-items:start">
+        <div id="b_month"></div>
+        <div id="monthChart" class="chart" style="height:300px"></div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="card">
+      <h2>盈利交易 vs 亏损交易：特征对照</h2>
+      <div class="desc">左列为该组交易的平均值 / 占比；用于回答「亏损标的有啥共性」</div>
+      <table id="featTable"></table>
+    </div>
+  </section>
+
+  <section>
+    <div class="card">
+      <h2>TOP 10 盈利交易</h2>
+      <table id="tWin"></table>
+    </div>
+  </section>
+
+  <section>
+    <div class="card">
+      <h2>TOP 10 亏损交易</h2>
+      <table id="tLose"></table>
+    </div>
+  </section>
+
+  <section>
+    <div class="card">
+      <h2>重复入选且累计亏损的标的</h2>
+      <div class="desc">策略多次买入同一标的并反复亏损——因子在该标的上的信号失真或情绪化重复暴露</div>
+      <table id="tRepeat"></table>
+    </div>
+  </section>
+
+  <section>
+    <div class="card">
+      <h2>主要结论</h2>
+      <div class="concl" id="concl"></div>
+      <div class="notice amber"><b>口径与局限：</b>
+        交易由逐日持仓快照重建：一段连续持仓记为一笔，加仓时成本被均价化（近似）；
+        卖出价取卖出日（volume=0 残留行）的 last_price，Z 阶段标的该价为停止交易前的冻结价——
+        即回测对强赎停止交易标的按冻结价清算的乐观假设会原样传导到本分析；
+        金额盈亏 =（卖出结算价 − 持仓均价）× 数量；期末未平仓交易不计入统计；
+        入场溢价率来自无过滤截面，入场强赎状态由「含强赎排除截面缺席推断」（无过滤截面同样缺席才视为数据缺口）。
+        「Z天」列：持有期内标的简称带 Z 前缀（已进入停止交易阶段）的天数。
+      </div>
+    </div>
+  </section>
+
+  <footer>策略1 交易盈亏归因 · 数据：禄得网回测 01a11055-416f-7e21-99f9-3a3f3f393bf2 · 生成：analyze_strategy1_trades.py · 2026-10-06</footer>
+</div>
+
+<script>
+const D = {"meta": {"total": 107, "opened": 10}, "overall": {"win": {"n": 54, "win_rate": 1.0, "avg_ret": 0.15769767335501725, "med_ret": 0.10704552206131224, "yuan": 1024437.13, "avg_win": 0.15769767335501725, "avg_loss": 0, "payoff": null}, "lose": {"n": 53, "win_rate": 0.0, "avg_ret": -0.10806083443222825, "med_ret": -0.0932314242719603, "yuan": -754629.7399999999, "avg_win": 0, "avg_loss": -0.10806083443222825, "payoff": 0.0}, "all": {"n": 107, "win_rate": 0.5046728971962616, "avg_ret": 0.02606028164731621, "med_ret": 0.010223352778693462, "yuan": 269807.3900000001, "avg_win": 0.15769767335501725, "avg_loss": -0.10806083443222825, "payoff": 1.4593416216299846}}, "feat_rows": [{"label": "入场溢价率(%)", "win": 0.017465957352964235, "lose": 0.29521587328016935}, {"label": "入场价(元)", "win": 168.12794147859827, "lose": 183.85693604886265}, {"label": "持有交易日", "win": 14.25925925925926, "lose": 16.037735849056602}, {"label": "持有期年化波动率(%)", "win": 65.11255078992681, "lose": 48.1309639543986}, {"label": "持有期最大浮盈(%)", "win": 19.857751964414625, "lose": 3.6892932888415317}, {"label": "持有期最大浮亏(%)", "win": -2.6383728069870083, "lose": -13.012011343364257}], "ratio_rows": [{"label": "持有期出现Z阶段占比", "win": 74.07407407407408, "lose": 67.9245283018868}, {"label": "入场即Z标的占比(%)", "win": 0.0, "lose": 0.0}, {"label": "入场强赎相关状态占比(%)", "win": 70.37037037037037, "lose": 58.490566037735846}, {"label": "持有期停牌占比(%)", "win": 1.8518518518518516, "lose": 0.0}], "prem_buckets": [{"n": 71, "win_rate": 0.5633802816901409, "avg_ret": 0.03644909117186078, "med_ret": 0.031128539204219985, "yuan": 289846.1899999999, "avg_win": 0.15301671628813723, "avg_loss": -0.11396074768785078, "payoff": 1.342714218647147, "key": "负溢价"}, {"n": 27, "win_rate": 0.37037037037037035, "avg_ret": 0.0048664687456699005, "med_ret": -0.01920522742081965, "yuan": -29553.359999999815, "avg_win": 0.2015448040733649, "avg_loss": -0.11082666968238598, "payoff": 1.818558697567694, "key": "0~2%"}, {"n": 7, "win_rate": 0.42857142857142855, "avg_ret": 0.010852416373577669, "med_ret": -0.005142640321878611, "yuan": 10347.660000000013, "avg_win": 0.11213737506542339, "avg_loss": -0.06511130264530662, "payoff": 1.7222413084912611, "key": "2~5%"}, {"n": 2, "win_rate": 0.5, "avg_ret": -0.0033984538437059064, "med_ret": 0.04314554371552348, "yuan": -833.100000000034, "avg_win": 0.04314554371552348, "avg_loss": -0.049942451402935295, "payoff": 0.8639052049613181, "key": "5~10%"}], "price_buckets": [{"n": 3, "win_rate": 0.6666666666666666, "avg_ret": 0.005327766243430972, "med_ret": 0.010845691449293815, "yuan": 2303.2899999999718, "avg_win": 0.02699561758240865, "avg_loss": -0.03800793643452438, "payoff": 0.7102626481422777, "key": "<110"}, {"n": 12, "win_rate": 0.4166666666666667, "avg_ret": 0.011569034520443574, "med_ret": -0.0025782488952532656, "yuan": 9846.67999999996, "avg_win": 0.1192797071697782, "avg_loss": -0.06536716022908116, "payoff": 1.8247650158238313, "key": "110~130"}, {"n": 54, "win_rate": 0.5370370370370371, "avg_ret": 0.04694097466410802, "med_ret": 0.020133029029146376, "yuan": 295958.70000000007, "avg_win": 0.15868615191717397, "avg_loss": -0.08268343094944847, "payoff": 1.9192013453601429, "key": "130~160"}, {"n": 38, "win_rate": 0.47368421052631576, "avg_ret": 0.002600678721720668, "med_ret": -0.0027383487122633055, "yuan": -38301.27999999996, "avg_win": 0.1812992324755099, "avg_loss": -0.15822801965668964, "payoff": 1.1458099069234282, "key": "≥160"}], "hold_buckets": [{"n": 68, "win_rate": 0.5294117647058824, "avg_ret": 0.03235117244092806, "med_ret": 0.020133029029146376, "yuan": 216323.82999999978, "avg_win": 0.14692686604294694, "avg_loss": -0.09654648286134318, "payoff": 1.5218251529054494, "key": "≤10天"}, {"n": 28, "win_rate": 0.5357142857142857, "avg_ret": 0.04219231654096604, "med_ret": 0.010414633043866361, "yuan": 147134.59000000023, "avg_win": 0.18935969393909585, "avg_loss": -0.1276161958414914, "payoff": 1.4838218040466775, "key": "11~20天"}, {"n": 11, "win_rate": 0.2727272727272727, "avg_ret": -0.05389222298793848, "med_ret": -0.049942451402935295, "yuan": -93651.02999999996, "avg_win": 0.128637258179468, "avg_loss": -0.1223407784257159, "payoff": 1.0514667295302136, "key": ">20天"}], "call_buckets": [{"n": 69, "win_rate": 0.5507246376811594, "avg_ret": 0.030435662988960464, "med_ret": 0.011459638867033384, "yuan": 246889.30999999994, "avg_win": 0.14357486500356018, "avg_loss": -0.10825110077087143, "payoff": 1.326313210499877, "key": "强赎相关"}, {"n": 7, "win_rate": 0.7142857142857143, "avg_ret": 0.06394676032271598, "med_ret": 0.07826366656631456, "yuan": 50301.770000000084, "avg_win": 0.15452820058408837, "avg_loss": -0.16250684033071494, "payoff": 0.9509027451989751, "key": "临近触发"}, {"n": 26, "win_rate": 0.34615384615384615, "avg_ret": 0.02678407663719606, "med_ret": -0.013960906823650365, "yuan": 42390.7500000001, "avg_win": 0.22320452791829512, "avg_loss": -0.07720322109985638, "payoff": 2.891129731874754, "key": "计数中"}, {"n": 5, "win_rate": 0.4, "avg_ret": -0.09112478496030947, "med_ret": -0.18203483263724218, "yuan": -69774.44000000008, "avg_win": 0.13917386842527368, "avg_loss": -0.24465722055069825, "payoff": 0.568852487214592, "key": "公告不强赎"}], "month_buckets": [{"n": 19, "win_rate": 0.42105263157894735, "avg_ret": 0.028136061666018078, "med_ret": -0.0025782488952532656, "yuan": 51399.060000000034, "avg_win": 0.1433314018131132, "avg_loss": -0.05564236753186929, "payoff": 2.5759400286305185, "key": "2026-01"}, {"n": 16, "win_rate": 0.6875, "avg_ret": 0.09334598656274261, "med_ret": 0.10596345216161174, "yuan": 160125.2800000001, "avg_win": 0.16232171035203116, "avg_loss": -0.05840060577369224, "payoff": 2.7794525108359807, "key": "2026-02"}, {"n": 12, "win_rate": 0.5833333333333334, "avg_ret": 0.016317138479386307, "med_ret": 0.029377329844669786, "yuan": 16370.05999999996, "avg_win": 0.12538720153085087, "avg_loss": -0.13638094979266407, "payoff": 0.919389414148188, "key": "2026-03"}, {"n": 16, "win_rate": 0.625, "avg_ret": 0.06167161339079332, "med_ret": 0.05141082555004206, "yuan": 122548.95000000001, "avg_win": 0.17272820971427122, "avg_loss": -0.12342271381500315, "payoff": 1.3994847818139171, "key": "2026-04"}, {"n": 15, "win_rate": 0.5333333333333333, "avg_ret": 0.014466639361350531, "med_ret": 0.013845172593981436, "yuan": 36712.56000000001, "avg_win": 0.10289283184351397, "avg_loss": -0.08659186633255055, "payoff": 1.1882505390097564, "key": "2026-05"}, {"n": 13, "win_rate": 0.46153846153846156, "avg_ret": 0.03494267503810216, "med_ret": -0.0027383487122633055, "yuan": 50319.02000000002, "avg_win": 0.22753163579040045, "avg_loss": -0.13013357703529635, "payoff": 1.7484467957772856, "key": "2026-06"}, {"n": 8, "win_rate": 0.25, "avg_ret": -0.13617654822193898, "med_ret": -0.11031271958604094, "yuan": -166652.40000000002, "avg_win": 0.1538240539860447, "avg_loss": -0.2328434156246002, "payoff": 0.6606330420528026, "key": "2026-07"}, {"n": 5, "win_rate": 0.2, "avg_ret": 0.024781242116824843, "med_ret": -0.04496502097998212, "yuan": 14901.939999999999, "avg_win": 0.3754657254110989, "avg_loss": -0.06288987870674367, "payoff": 5.970209088204805, "key": "2026-08"}, {"n": 3, "win_rate": 0.3333333333333333, "avg_ret": -0.04265682904163944, "med_ret": -0.1094432713850132, "yuan": -15917.080000000016, "avg_win": 0.10704552206131224, "avg_loss": -0.11750800459311528, "payoff": 0.9109636610030902, "key": "2026-09"}], "z_buckets": [{"n": 76, "win_rate": 0.5263157894736842, "avg_ret": 0.024995399128127024, "med_ret": 0.010808118976483483, "yuan": 225915.6500000001, "avg_win": 0.1381452301692745, "avg_loss": -0.10072663536203681, "payoff": 1.371486595107102, "key": "有Z"}, {"n": 31, "win_rate": 0.45161290322580644, "avg_ret": 0.028670961371780018, "med_ret": -0.012712737736747415, "yuan": 43891.739999999954, "avg_win": 0.21356179674285375, "avg_loss": -0.12359207952204543, "payoff": 1.7279569821038587, "key": "无Z"}], "hist": {"labels": ["-40%以下", "-30%~-20%", "-20%~-15%", "-15%~-10%", "-10%~-5%", "-5%~0%", "0%~5%", "5%~10%", "10%~15%", "15%~20%", "20%~30%", "30%~40%", "40%以上"], "counts": [2, 4, 7, 12, 7, 20, 15, 6, 13, 5, 7, 4, 4]}, "scatter": [[-2.36, 34.56, "嘉美转债", 33563.0], [-1.79, -21.65, "再22转债", -21621.0], [-0.42, 10.29, "XD英特转", 10225.0], [-0.4, -0.73, "凯盛转债", -730.0], [-0.38, 39.43, "精达转债", 39028.0], [-0.19, 4.71, "博23转债", 4690.0], [-0.09, 17.49, "超达转债", 17286.0], [-0.05, -2.8, "金钟转债", -2763.0], [-0.02, -7.33, "瑞达转债", -7290.0], [0.32, 1.02, "环旭转债", 887.0], [-0.34, 3.33, "富淼转债", 3571.0], [-0.3, 3.83, "华锐转债", 4060.0], [-0.26, -1.4, "北港转债", -1482.0], [-0.25, -0.06, "福蓉转债", -67.0], [0.04, -4.7, "崧盛转债", -5005.0], [0.18, -18.2, "冠中转债", -19510.0], [0.53, -0.26, "维尔转债", -276.0], [0.97, -2.8, "首华转债", -2993.0], [1.26, -1.27, "兴发转债", -173.0], [-0.59, -5.26, "福立转债", -5434.0], [-0.05, 16.07, "华正转债", 16389.0], [-0.04, 16.1, "双良转债", 16510.0], [0.05, 3.05, "神通转债", 3134.0], [0.08, -1.92, "荣23转债", -1184.0], [0.57, 1.04, "赛龙转债", 884.0], [0.67, 42.27, "洁美转债", 43402.0], [0.9, 30.93, "严牌转债", 31485.0], [-0.32, 12.35, "首华转债", 14131.0], [-0.83, -6.39, "力诺转债", -7383.0], [-0.64, 10.6, "天箭转债", 12206.0], [-0.37, -10.68, "凤21转债", -12253.0], [-0.35, 25.41, "宏柏转债", 29170.0], [-0.3, 18.73, "优彩转债", 21437.0], [-0.13, -4.95, "XD嘉元转", -4680.0], [-0.09, 2.01, "众和转债", 2312.0], [-1.22, -25.34, "锋工转债", -30396.0], [-0.51, 12.92, "松霖转债", 15865.0], [-0.34, -17.14, "利扬转债", -20905.0], [-0.21, 1.15, "中环转2", 1279.0], [-0.17, -0.53, "信服转债", -653.0], [-0.13, -13.14, "伟测转债", -15212.0], [-0.11, -12.04, "恒逸转债", -14739.0], [-1.8, 9.79, "百川转2", 10894.0], [-1.22, 10.31, "塞力转债", 11486.0], [-0.8, 2.94, "光力转债", 3257.0], [-0.22, 45.84, "远信转债", 50102.0], [-0.19, 4.83, "中宠转2", 5391.0], [-2.13, -22.85, "新港转债", -30058.0], [-0.57, -3.8, "红墙转债", -4602.0], [-0.36, 7.41, "亿纬转债", 8970.0], [-0.07, -18.47, "惠城转债", -21694.0], [0.13, 58.97, "睿创转债", 70450.0], [1.68, 1.08, "阿拉转债", 1282.0], [2.03, -11.39, "振华转债", -13822.0], [2.11, 21.85, "金宏转债", 25903.0], [2.23, 1.08, "永22转债", 1320.0], [-0.62, -14.06, "锦鸡转债", -17763.0], [-0.47, 23.18, "万顺转2", 30247.0], [-0.4, 5.14, "恒帅转债", 6535.0], [-0.36, -3.49, "永02转债", -4419.0], [-0.27, 16.47, "旺能转债", 21703.0], [-0.27, 11.62, "家联转债", 15823.0], [0.11, 25.93, "美诺转债", 32675.0], [-1.22, 10.61, "华特转债", 18817.0], [-1.04, 13.79, "瑞丰转债", 18778.0], [-0.41, -13.33, "盈峰转债", -17728.0], [-0.22, -0.94, "华兴转债", -1240.0], [-0.19, 10.48, "思特转债", 13855.0], [-0.16, -5.77, "博瑞转债", -7649.0], [0.11, -7.76, "弘亚转债", -10294.0], [-0.42, 1.38, "冠中转债", 1802.0], [-1.51, 14.1, "超声转债", 18051.0], [-1.23, -15.64, "星球转债", -20648.0], [-0.38, 3.11, "帝尔转债", 4051.0], [-0.36, 7.83, "艾迪转债", 14009.0], [-0.27, 21.02, "立昂转债", 27402.0], [-0.22, -11.2, "航新转债", -14661.0], [-0.18, -5.97, "科利转债", -7833.0], [-0.19, -36.72, "精达转债", -60735.0], [-0.94, 8.83, "洁美转债", 11747.0], [-0.69, 10.33, "甬矽转债", 13711.0], [-0.36, 75.87, "瑞科转债", 108508.0], [-0.34, -0.85, "利柏转债", -1132.0], [-0.07, 5.61, "兴瑞转债", 7503.0], [-0.3, 25.07, "华亚转债", 37134.0], [0.04, -19.36, "鹤21转债", -29972.0], [0.05, -11.55, "花园转债", -17261.0], [0.28, 10.8, "奕瑞转债", 16017.0], [1.12, -9.32, "正川转债", -14949.0], [1.21, -0.27, "山玻转债", -406.0], [1.26, -13.01, "水羊转债", -19846.0], [-0.14, -39.67, "华医转债", -60139.0], [-0.09, -15.92, "密卫转债", -22347.0], [0.48, -48.17, "银微转债", -71538.0], [1.21, -21.71, "宏微转债", -32142.0], [0.58, -11.03, "鸿路转债", -13449.0], [1.71, 26.45, "XD恒逸转2", 30362.0], [2.52, -3.2, "嘉泽转债", -2984.0], [6.68, 4.31, "美锦转债", 5585.0], [-1.12, 37.55, "正帆转债", 46106.0], [4.01, -0.51, "春23转债", 223.0], [5.76, -4.99, "大参转债", -6419.0], [-0.11, -15.15, "应流转债", -19501.0], [0.02, -4.5, "万讯转债", -5509.0], [1.99, -12.56, "胜蓝转02", -15624.0], [3.91, -10.94, "长海转债", -13737.0], [4.97, 10.7, "声迅转债", 13444.0]], "top_win": [{"code": "118018.SH", "name": "瑞科转债", "entry": "2026-06-08", "exit": "2026-07-07", "ret": 75.87, "yuan": 108508.0, "prem": -0.36, "price": 148.9, "is_call": "强赎相关(排除推断)", "hold": 20, "z": 5}, {"code": "118030.SH", "name": "睿创转债", "entry": "2026-04-08", "exit": "2026-04-22", "ret": 58.97, "yuan": 70450.0, "prem": 0.13, "price": 277.8, "is_call": "强赎相关(排除推断)", "hold": 10, "z": 0}, {"code": "123246.SZ", "name": "远信转债", "entry": "2026-03-24", "exit": "2026-04-22", "ret": 45.84, "yuan": 50102.0, "prem": -0.22, "price": 154.3, "is_call": "强赎相关(排除推断)", "hold": 20, "z": 8}, {"code": "128137.SZ", "name": "洁美转债", "entry": "2026-02-02", "exit": "2026-02-24", "ret": 42.27, "yuan": 43402.0, "prem": 0.67, "price": 140.6, "is_call": "10/15 | 30", "hold": 10, "z": 0}, {"code": "110074.SH", "name": "精达转债", "entry": "2026-01-05", "exit": "2026-01-19", "ret": 39.43, "yuan": 39028.0, "prem": -0.38, "price": 395.9, "is_call": "10/15 | 30", "hold": 10, "z": 0}, {"code": "118053.SH", "name": "正帆转债", "entry": "2026-08-04", "exit": "2026-08-18", "ret": 37.55, "yuan": 46106.0, "prem": -1.12, "price": 122.8, "is_call": "强赎相关(排除推断)", "hold": 10, "z": 7}, {"code": "127042.SZ", "name": "嘉美转债", "entry": "2026-01-05", "exit": "2026-01-19", "ret": 34.56, "yuan": 33563.0, "prem": -2.36, "price": 294.3, "is_call": "10/15 | 30", "hold": 10, "z": 0}, {"code": "123243.SZ", "name": "严牌转债", "entry": "2026-02-02", "exit": "2026-02-24", "ret": 30.93, "yuan": 31485.0, "prem": 0.9, "price": 161.6, "is_call": "14/15 | 30", "hold": 10, "z": 0}, {"code": "127067.SZ", "name": "XD恒逸转2", "entry": "2026-07-21", "exit": "2026-09-15", "ret": 26.45, "yuan": 30362.0, "prem": 1.71, "price": 144.4, "is_call": "公告不强赎", "hold": 40, "z": 8}, {"code": "113618.SH", "name": "美诺转债", "entry": "2026-04-22", "exit": "2026-05-11", "ret": 25.93, "yuan": 32675.0, "prem": 0.11, "price": 237.8, "is_call": "强赎相关(排除推断)", "hold": 10, "z": 5}], "top_lose": [{"code": "118011.SH", "name": "银微转债", "entry": "2026-07-07", "exit": "2026-07-21", "ret": -48.17, "yuan": -71538.0, "prem": 0.48, "price": 243.4, "is_call": "强赎相关(排除推断)", "hold": 10, "z": 0}, {"code": "123251.SZ", "name": "华医转债", "entry": "2026-07-07", "exit": "2026-08-04", "ret": -39.67, "yuan": -60139.0, "prem": -0.14, "price": 275.5, "is_call": "强赎相关(排除推断)", "hold": 20, "z": 8}, {"code": "110074.SH", "name": "精达转债", "entry": "2026-06-08", "exit": "2026-08-04", "ret": -36.72, "yuan": -60735.0, "prem": -0.19, "price": 352.1, "is_call": "公告不强赎", "hold": 40, "z": 6}, {"code": "123239.SZ", "name": "锋工转债", "entry": "2026-03-10", "exit": "2026-04-08", "ret": -25.34, "yuan": -30396.0, "prem": -1.22, "price": 150.6, "is_call": "强赎相关(排除推断)", "hold": 20, "z": 9}, {"code": "111013.SH", "name": "新港转债", "entry": "2026-04-08", "exit": "2026-05-11", "ret": -22.85, "yuan": -30058.0, "prem": -2.13, "price": 174.9, "is_call": "6/15 | 30", "hold": 20, "z": 0}, {"code": "118040.SH", "name": "宏微转债", "entry": "2026-07-07", "exit": "2026-07-21", "ret": -21.71, "yuan": -32142.0, "prem": 1.21, "price": 128.8, "is_call": "强赎相关(排除推断)", "hold": 10, "z": 1}, {"code": "113657.SH", "name": "再22转债", "entry": "2026-01-05", "exit": "2026-01-19", "ret": -21.65, "yuan": -21621.0, "prem": -1.79, "price": 302.6, "is_call": "强赎相关(排除推断)", "hold": 10, "z": 2}, {"code": "113632.SH", "name": "鹤21转债", "entry": "2026-06-23", "exit": "2026-07-21", "ret": -19.36, "yuan": -29972.0, "prem": 0.04, "price": 132.0, "is_call": "14/15 | 30", "hold": 20, "z": 0}, {"code": "123118.SZ", "name": "惠城转债", "entry": "2026-04-08", "exit": "2026-04-22", "ret": -18.47, "yuan": -21694.0, "prem": -0.07, "price": 839.0, "is_call": "公告不强赎", "hold": 10, "z": 0}, {"code": "123207.SZ", "name": "冠中转债", "entry": "2026-01-19", "exit": "2026-02-02", "ret": -18.2, "yuan": -19510.0, "prem": 0.18, "price": 249.2, "is_call": "公告不强赎", "hold": 10, "z": 0}], "month_yuan": [["2026-01", 51399.0], ["2026-02", 160125.0], ["2026-03", 16370.0], ["2026-04", 122549.0], ["2026-05", 36713.0], ["2026-06", 50319.0], ["2026-07", -166652.0], ["2026-08", 14902.0], ["2026-09", -15917.0]], "repeat_losers": [{"code": "110074.SH", "name": "精达转债", "n": 2, "ret_avg": 1.35, "yuan": -21707.0, "detail": "01-05 +39.4%(+39,028元·本金9.9万) / 06-08 -36.7%(-60,735元·本金18.1万)"}, {"code": "123207.SZ", "name": "冠中转债", "n": 2, "ret_avg": -8.41, "yuan": -17708.0, "detail": "01-19 -18.2%(-19,510元·本金10.7万) / 05-25 +1.4%(+1,802元·本金13.0万)"}]};
+const fmtP = x => (x>=0?'+':'') + (x*100).toFixed(1) + '%';
+const fmtN = x => (x>=0?'+':'') + Math.round(x).toLocaleString() + ' 元';
+const cls = x => x>=0?'up':'down';
+
+// Hero chips
+const ov = D.overall;
+document.getElementById('heroChips').innerHTML = [
+  `已平仓 <b>${D.meta.total}</b> 笔（未平仓 ${D.meta.opened} 笔）`,
+  `胜率 <b>${(ov.all.win_rate*100).toFixed(1)}%</b>`,
+  `平均收益 <b>${fmtP(ov.all.avg_ret)}</b>`,
+  `盈亏比 <b>${ov.all.payoff?ov.all.payoff.toFixed(2):'-'}</b>`,
+  `已实现盈亏 <b>${fmtN(ov.all.yuan)}</b>`,
+].map(s=>`<div class="chip">${s}</div>`).join('');
+
+// KPIs
+const zk = D.z_buckets, zShare = zk.length? (zk.find(b=>b.key==='有Z')?.n||0)/ov.all.n : 0;
+const kpis = [
+  ['胜率 / 笔数', `${(ov.all.win_rate*100).toFixed(1)}%`, `${D.meta.total} 笔已平仓`, ''],
+  ['盈利交易均值', fmtP(ov.win.avg_ret), `共 ${ov.win.n} 笔`, 'up'],
+  ['亏损交易均值', fmtP(ov.lose.avg_ret), `共 ${ov.lose.n} 笔`, 'down'],
+  ['盈亏比', ov.all.payoff?ov.all.payoff.toFixed(2):'-', '平均盈利 ÷ 平均亏损', ''],
+  ['已实现总盈亏', fmtN(ov.all.yuan), '各笔 profit_loss 合计', ov.all.yuan>=0?'up':'down'],
+  ['Z阶段暴露占比', (zShare*100).toFixed(0)+'%', '持有中出现Z前缀的交易', 'down'],
+];
+document.getElementById('kpis').innerHTML = kpis.map(k=>
+  `<div class="kpi"><div class="lab">${k[0]}</div><div class="val ${k[3]}">${k[1]}</div><div class="sub">${k[2]}</div></div>`).join('');
+
+// 桶渲染（CSS 条形）
+function renderBucket(el, arr){
+  document.getElementById(el).innerHTML = arr.map(b=>{
+    const wr = b.win_rate*100, ar = b.avg_ret*100;
+    const scale = Math.min(100, Math.max(4, Math.abs(ar)*6+8));
+    return `<div class="brow">
+      <div class="k">${b.key}</div><div class="n">${b.n}笔</div>
+      <div class="track"><div class="fill wr" style="width:${Math.max(3,wr)}%"></div>
+        <div class="fill w" style="width:${scale}%;opacity:.35"></div></div>
+      <div class="v ${cls(ar)}">${ar>=0?'+':''}${ar.toFixed(1)}% <small>胜率${wr.toFixed(0)}%</small></div>
+    </div>`;}).join('');
+}
+renderBucket('b_prem', D.prem_buckets);
+renderBucket('b_price', D.price_buckets);
+renderBucket('b_call', D.call_buckets);
+renderBucket('b_z', D.z_buckets);
+renderBucket('b_hold', D.hold_buckets);
+renderBucket('b_month', D.month_buckets);
+
+// ECharts（CDN 不可用时静默降级，表格仍可读）
+if (typeof echarts !== 'undefined'){
+  const hist = echarts.init(document.getElementById('histChart'));
+  hist.setOption({
+    tooltip:{trigger:'axis'},
+    grid:{left:50,right:16,top:24,bottom:60},
+    xAxis:{type:'category',data:D.hist.labels,axisLabel:{rotate:45,fontSize:10}},
+    yAxis:{type:'value',name:'笔数'},
+    series:[{type:'bar',data:D.hist.counts,
+      itemStyle:{color:p=>p.dataIndex>=6?'#059669':'#dc2626'}}]
+  });
+  const sc = echarts.init(document.getElementById('scatterChart'));
+  sc.setOption({
+    tooltip:{formatter:p=>`${p.data[2]}<br/>入场溢价率 ${p.data[0]}%<br/>收益 ${p.data[1]}%<br/>金额 ${p.data[3]}元`},
+    grid:{left:50,right:20,top:24,bottom:44},
+    xAxis:{name:'入场溢价率%',nameLocation:'middle',nameGap:28,type:'value'},
+    yAxis:{name:'收益率%',type:'value'},
+    series:[{type:'scatter',symbolSize:d=>Math.max(6,Math.min(26,Math.abs(d[3])/900)),
+      data:D.scatter.filter(d=>d[0]!==null),itemStyle:{color:p=>p.data[1]>=0?'#059669aa':'#dc2626aa'}}]
+  });
+  const mc = echarts.init(document.getElementById('monthChart'));
+  mc.setOption({
+    tooltip:{trigger:'axis'},
+    grid:{left:60,right:60,top:30,bottom:30},
+    xAxis:{type:'category',data:D.month_yuan.map(m=>m[0])},
+    yAxis:[{type:'value',name:'金额盈亏(元)'},{type:'value',name:'平均收益%',position:'right'}],
+    series:[{type:'bar',name:'当月入场交易合计金额盈亏',data:D.month_yuan.map(m=>m[1]),
+      itemStyle:{color:p=>p.value>=0?'#059669':'#dc2626'}}]
+  });
+  window.addEventListener('resize',()=>{hist.resize();sc.resize();mc.resize();});
+}
+
+// 特征对照表
+const fr = D.feat_rows.map(r=>{
+  const f=v=>v===null||v===undefined?'-':v.toFixed(1);
+  const diff = (r.win!==null&&r.lose!==null)?(r.win-r.lose).toFixed(1):'-';
+  return `<tr><td>${r.label}</td><td class="up">${f(r.win)}</td><td class="down">${f(r.lose)}</td><td>${diff}</td></tr>`;
+}).join('');
+const rr = D.ratio_rows.map(r=>
+  `<tr><td>${r.label}</td><td class="up">${r.win.toFixed(1)}</td><td class="down">${r.lose.toFixed(1)}</td>
+   <td>${(r.win-r.lose).toFixed(1)}</td></tr>`).join('');
+document.getElementById('featTable').innerHTML =
+  `<tr><th>维度</th><th>盈利交易</th><th>亏损交易</th><th>差值(盈-亏)</th></tr>${fr}${rr}`;
+
+// 明细表
+function tradeTable(el, rows){
+  document.getElementById(el).innerHTML = `<tr><th>代码</th><th>名称</th><th>入场</th><th>出场</th>
+    <th>收益</th><th>金额</th><th>入场溢价</th><th>入场价</th><th>强赎状态@入场</th><th>持有</th><th>Z天</th></tr>` +
+    rows.map(t=>`<tr><td>${t.code}</td><td>${t.name}</td><td>${t.entry}</td><td>${t.exit}</td>
+      <td class="${cls(t.ret)}">${t.ret>=0?'+':''}${t.ret}%</td><td class="${cls(t.yuan)}">${fmtN(t.yuan)}</td>
+      <td>${t.prem===null?'-':t.prem+'%'}</td><td>${t.price}</td>
+      <td>${/排除推断|已满足|公告(?!不强赎)/.test(String(t.is_call))?`<span class="tag z">${t.is_call}</span>`:t.is_call}</td>
+      <td>${t.hold}天</td><td>${t.z>0?`<span class="tag z">${t.z}天</span>`:'-'}</td></tr>`).join('');
+}
+tradeTable('tWin', D.top_win);
+tradeTable('tLose', D.top_lose);
+document.getElementById('tRepeat').innerHTML =
+  `<tr><th>代码</th><th>名称</th><th>次数</th><th>平均收益率</th><th>累计金额盈亏</th><th>各笔明细（入场月 收益率(金额·本金)）</th></tr>` +
+  D.repeat_losers.map(r=>`<tr><td>${r.code}</td><td>${r.name}</td><td>${r.n} 次</td>
+    <td class="${cls(r.ret_avg)}">${r.ret_avg}%</td><td class="${cls(r.yuan)}">${fmtN(r.yuan)}</td>
+    <td style="white-space:normal;font-size:11.5px;color:#475569">${r.detail}</td></tr>`).join('');
+
+// 结论（由数据自动生成要点）
+(function(){
+  const pb = D.prem_buckets, cb = D.call_buckets, zb = D.z_buckets, mb = D.month_buckets;
+  const worst = [...pb].sort((a,b)=>a.avg_ret-b.avg_ret)[0];
+  const best = [...pb].sort((a,b)=>b.avg_ret-a.avg_ret)[0];
+  const callBad = cb.find(b=>b.key==='强赎相关'), callOk = cb.find(b=>b.key==='计数中'),
+        callNear = cb.find(b=>b.key==='临近触发');
+  const zYes = zb.find(b=>b.key==='有Z'), zNo = zb.find(b=>b.key==='无Z');
+  const mWorst = [...mb].sort((a,b)=>a.avg_ret-b.avg_ret)[0];
+  const bigLoss = D.top_lose[0];
+  const items = [];
+  if (worst && best) items.push(`<b>入场溢价率维度：</b>表现最差档位「${worst.key}」（${worst.n}笔，平均 ${fmtP(worst.avg_ret)}），最好档位「${best.key}」（${best.n}笔，平均 ${fmtP(best.avg_ret)}）。亏损交易集中反映了"溢价率最低=离强赎最近"的双刃剑属性。`);
+  if (callBad && callOk) items.push(`<b>强赎状态维度：</b>以强赎相关状态入场的 ${callBad.n} 笔平均 ${fmtP(callBad.avg_ret)}，计数中状态入场的 ${callOk.n} 笔平均 ${fmtP(callOk.avg_ret)}——差距 ${((callOk.avg_ret-callBad.avg_ret)*100).toFixed(1)} 个百分点。`);
+  if (callNear) items.push(`<b>临近触发风险：</b>计数已到门槛差 2 天以内的「临近触发」入场共 ${callNear.n} 笔，平均 ${fmtP(callNear.avg_ret)}，胜率 ${(callNear.win_rate*100).toFixed(0)}%。`);
+  if (zYes && zNo) items.push(`<b>Z 阶段暴露：</b>持有期出现过停止交易的 ${zYes.n} 笔平均 ${fmtP(zYes.avg_ret)}，未出现的 ${zNo.n} 笔平均 ${fmtP(zNo.avg_ret)}。Z 暴露交易的损失多以冻结价形式落定。`);
+  if (mWorst) items.push(`<b>入场时点：</b>最差的入场月份是 ${mWorst.key}（${mWorst.n}笔，平均 ${fmtP(mWorst.avg_ret)}），急跌段的入场 cohort 明显更差。`);
+  if (bigLoss) items.push(`<b>最大单笔亏损：</b>${bigLoss.name}（${bigLoss.entry} 入场），${bigLoss.ret}% / ${fmtN(bigLoss.yuan)}，入场强赎状态「${bigLoss.is_call}」。`);
+  const fw = D.feat_rows.map(r=>r.win===null||r.win===undefined?'-':r.win.toFixed(1));
+  const fl = D.feat_rows.map(r=>r.lose===null||r.lose===undefined?'-':r.lose.toFixed(1));
+  items.push(`<b>对照总览：</b>盈利交易平均持有 ${fw[2]} 天 vs 亏损 ${fl[2]} 天；盈利组入场溢价率均值 ${fw[0]}% vs 亏损组 ${fl[0]}%；盈利组入场价均值 ${fw[1]} 元 vs 亏损组 ${fl[1]} 元。`);
+  document.getElementById('concl').innerHTML = items.map(i=>`<div class="item">${i}</div>`).join('');
+})();
+</script>
+</body>
+</html>

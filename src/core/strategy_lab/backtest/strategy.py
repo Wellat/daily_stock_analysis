@@ -7,6 +7,12 @@
 - ``rebalance_weights`` 为真时保留持仓也调回目标权重（再平衡换手来源）；
 - 每个交易日收盘后记录权益/持仓快照（在下一根 bar 补记，保证含当日成交）。
 
+终局语义（到期/摘牌）：
+- 终止交易日前最后一个交易日（T-1）收盘对持有仓强制平仓（对齐实盘
+  「最后交易日的 T-1 日提前平仓」），此后该标的不再新开仓；
+- 行情断更（最后真实 bar 之后）的持仓按最后可得收盘价兜底强平；
+  断更后的填充 bar 为幽灵报价，不参与打分与买入。
+
 所有候选过滤与打分都经由 :mod:`src.core.strategy_lab.factors` 通用框架，
 本类不感知具体因子。
 """
@@ -16,7 +22,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import backtrader as bt
 
@@ -34,6 +40,10 @@ class InstrumentMeta:
     first_bar_date: Optional[date] = None
     last_trading_date: Optional[date] = None
     list_date: Optional[date] = None
+    # 区间内最后一天有真实行情的日期；之后的 bar 为前向填充的幽灵 bar
+    final_data_date: Optional[date] = None
+    # 终止交易日前最后一个交易日（T-1）：持有仓在此日强制平仓，此后禁止新开仓
+    terminal_exit_date: Optional[date] = None
 
 
 @dataclass
@@ -100,9 +110,10 @@ class CbRotationStrategy(bt.Strategy):
         current_date = self.datas[0].datetime.date(0)
         self._snapshot_previous_day()
         self._bar_count += 1
+        force_sold = self._apply_forced_exits(current_date)
         if self._is_rebalance_day(current_date):
             self.rebalance_dates.append(current_date)
-            self._rebalance(current_date)
+            self._rebalance(current_date, skip_symbols=force_sold)
         self._last_seen_date = current_date
 
     def stop(self):
@@ -208,6 +219,12 @@ class CbRotationStrategy(bt.Strategy):
                     and 0 <= (meta.last_trading_date - current_date).days <= self.cfg.exclude_last_trading_days
                 ):
                     continue
+                # 终局排除：T-1 起买入即强平，不再新开仓；行情断更后的填充 bar
+                # 是幽灵报价（冻结在最后真实收盘价），禁止按其买入
+                if meta.terminal_exit_date is not None and current_date >= meta.terminal_exit_date:
+                    continue
+                if meta.final_data_date is not None and current_date > meta.final_data_date:
+                    continue
             premium = data.premium_rate[0]
             remaining_size = data.remaining_size[0]
             rows.append(
@@ -220,7 +237,41 @@ class CbRotationStrategy(bt.Strategy):
             )
         return rows
 
-    def _rebalance(self, current_date: date) -> None:
+    # ------------------------------------------------------------------
+    # 终局强平（每个交易日执行，先于换仓）
+    # ------------------------------------------------------------------
+
+    def _apply_forced_exits(self, current_date: date) -> Set[str]:
+        """到期/摘牌终局处理，返回当日已强平的标的集合。
+
+        - ``terminal_exit_date``：终止交易日前最后一个交易日（T-1）收盘平仓，
+          对齐实盘「最后交易日的 T-1 日提前平仓」规则，卖出价为真实收盘价；
+        - ``final_data_date`` 之后：行情已断更（到期/摘牌未公告终止日、停牌），
+          按最后可得收盘价强平兜底——否则持仓会以冻结价永久滞留、因子冻结霸榜。
+        强平释放的现金等到下一个排定换仓日再重新部署，与实盘节奏一致。
+        """
+        sold: Set[str] = set()
+        for data, position in list(self.positions.items()):
+            size = getattr(position, "size", 0) or 0
+            if size == 0:
+                continue
+            meta = self.metas.get(data._name)
+            if meta is None:
+                continue
+            if meta.terminal_exit_date is not None and current_date >= meta.terminal_exit_date:
+                reason = "t_minus_1_exit"
+            elif meta.final_data_date is not None and current_date > meta.final_data_date:
+                reason = "delisted_exit"
+            else:
+                continue
+            close = data.close[0]
+            if _nan(close) or close <= 0:
+                continue
+            self._submit(data, "sell", size, reason)
+            sold.add(data._name)
+        return sold
+
+    def _rebalance(self, current_date: date, skip_symbols: Optional[Set[str]] = None) -> None:
         candidates = self._candidate_rows(current_date)
         eligible = [row for row in candidates if F.passes_exclusions(row, self.cfg.exclusion_rules)]
         scores = F.compose_scores(
@@ -236,6 +287,7 @@ class CbRotationStrategy(bt.Strategy):
         per_target = equity / target_count if target_count else 0.0
         per_target = min(per_target, equity * self.cfg.max_position_pct / 100.0)
         lot = self.cfg.lot_size
+        skip = skip_symbols or set()
 
         # 先卖后买：同一根 bar 内先释放现金（coc 下按提交顺序撮合）
         for data, position in list(self.positions.items()):
@@ -243,6 +295,8 @@ class CbRotationStrategy(bt.Strategy):
             if size == 0:
                 continue
             symbol = data._name
+            if symbol in skip:
+                continue  # 本 bar 已由终局强平提交卖单，避免重复下单
             if symbol in target_symbols and not self.cfg.rebalance_weights:
                 continue
             close = data.close[0]

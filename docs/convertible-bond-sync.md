@@ -8,7 +8,7 @@
 |---|---|---|---|
 | 基础数据同步 | 本机 opencli（`cb-list` + `cb-detail`） | `strategy_lab_cb_basic` / `strategy_lab_cb_terms` / `strategy_lab_cb_events` | 默认先拉列表，再对每只转债逐个填充详情；传入 `symbols` 时直接按目标代码拉详情，跳过列表抓取 |
 | 行情同步（OHLC） | 东财优先，腾讯兜底 | `stock_daily`（`instrument_type='convertible_bond'`）+ `strategy_lab_cb_daily_factors.close` 回填 | 支持选择起始日期，非每次全量 |
-| 补数同步（溢价率/剩余规模） | 本机 opencli（`cb-premium-history`） | `stock_daily`（仅补 `premium_rate` / `remaining_size` 空值） | 按“可转债代码 + 日期”匹配已有日线记录，不新建行、不覆盖已有非空值 |
+| 补数同步（溢价率/剩余规模） | 本机 opencli（`cb-premium-history`） | `strategy_lab_cb_daily_factors`（仅补 `premium_rate` / `remaining_size` 空值） | 按“可转债代码 + 日期”匹配已有因子记录，不新建行、不覆盖已有非空值 |
 | 正股行情同步（OHLC） | 腾讯日K | `stock_daily`（`instrument_type='stock'`） | 独立同步方法 `sync_cb_stock_ohlc`，仅同步**在市转债**对应正股（去重），不回填转债因子表 |
 | 因子计算（正股价/溢价率/剩余规模） | 正股当日日K + 本地表计算 | `strategy_lab_cb_daily_factors`（`stock_close` / `premium_rate` / `remaining_size`） | 独立方法 `sync_cb_factors`，仅活跃转债；字段按可得性定向更新，缺失项不覆盖；可经 API / 数据同步页面触发 |
 | 盘后调度链路（手动触发） | 组合：盘后=基础+行情+因子，盘中=行情+因子，外加邮件通知 | 同各子能力 | `sync_type="cb_scheduled"`（手动）或定时调度 `run_scheduled_sync`；整条链路共享单条 sync run，`run_kind`/`trade_date` 落列供实盘数据检查（`latest_sync_run`）查询，结束时发通知邮件 |
@@ -60,7 +60,7 @@ python scripts/sync_cb_data.py --basic --bond 113709       # 单只
 ```
 
 `symbols` 在 `cb_basic` 场景下会直接触发单只/少量标的详情拉取，不再先执行 `cb-list`。
-`cb_premium_history` 会按可转债代码 + 日期补写已有 `strategy_lab_cb_daily_factors` 行中的 `premium_rate` / `remaining_size` 空值；已有值和不存在的行都会跳过。
+`cb_premium_history` 会按可转债代码 + 日期补写已有 `strategy_lab_cb_daily_factors` 行中的 `premium_rate` / `remaining_size` 空值；已有值和不存在的行都会跳过。默认仅遍历活跃转债，**退市券（含 `status=NULL` 的历史行）需 `include_delisted=true` 才会被遍历**。
 `cb_factors` 为单日因子计算：因子日期取 `end_date`（缺省 `start_date`，均缺省为今天），页面「数据同步」来源下拉框可直接选择触发。
 `cb_scheduled` 为手动触发盘后调度链路：按序执行基础数据 → 行情 → 因子计算 → 持仓股票/ETF 行情（等价定时调度使用的 `run_scheduled_sync`，`run_kind='after_close'`，与每日 20:00 的 `cb_after_close_sync_time` 定时任务同链路），整条链路复用一条 sync run（取消/进度挂在同一条记录上），完成后按配置发送盘后通知邮件；盘中链路（`run_kind='intraday'`）仍仅行情 + 因子。
 `portfolio_holdings` 同步 Portfolio 持仓中的 A 股、ETF 与港股日线：标的自持仓重放（活跃账户、非零数量）自动展开，可转债持仓跳过（行情由 `cb_ohlc` 覆盖）；`start_date` 缺省增量（无本地历史回溯至 `2025-01-01`）、`end_date` 缺省今天，`symbols` 为持仓代码过滤。落 `stock_daily`，`instrument_type` 为 `stock`（0/3/6 开头）、`etf`（1/5 开头，如 159xxx/513xxx）或 `hk_stock`（`HK` 前缀代码，腾讯 `hk` 前缀 K 线，收盘价为港币原币），供持仓页现价/市值估值使用；已纳入盘后调度链路（20:00 定时任务与 `cb_scheduled` 手动触发）。
@@ -77,6 +77,8 @@ python scripts/sync_cb_data.py --basic --bond 113709       # 单只
 | `bondName` | `bond_name` | 直接 |
 | `status`（active/delisted） | `status` | 直接存 `active` / `delisted`（查询层同时兼容历史中文值 `正常`） |
 | `lastPrice` / `lastTradeDate` | `terms_json` 元数据 `last_price` / `last_trade_date` | 仅已退市列表有效 |
+
+状态口径：早期 akshare 本地初始化（`sync_cb_local_init.py`）落库的行 `status` 为 NULL，而 opencli 同步只刷新当前 cb-list 内的标的，不会回填已退出列表的行。2026-10-07 已按 `terms_json.delist_date` 将 732 只可判定退市的 NULL 状态行归位为 `delisted`（无 `delist_date` 的 6 只保持 NULL）。NULL 状态行不在任何 `status='active'` 过滤集合内，仅 `include_delisted=true`（不做状态过滤）时可被遍历。
 
 ### 基础数据：cb-detail → `strategy_lab_cb_basic`（直列字段）
 
@@ -152,6 +154,21 @@ python scripts/sync_cb_data.py --basic --bond 113709       # 单只
 | — | `instrument_type` | 固定 `'stock'`，与主流程 A 股日线同口径 |
 
 正股代码前缀规则：`6xxxxx` → 沪（`sh{code}`）；`0/3xxxxx` → 深（`sz{code}`）；其他前缀（如北交所）不发请求直接跳过。
+
+### 补数：opencli cb-premium-history → `strategy_lab_cb_daily_factors`
+
+`StrategyLabDataSyncService.sync_cb_premium_history`（`src/services/strategy_lab/data_sync_service.py`），经数据同步 API / Web 数据同步页面触发（`sync_type="cb_premium_history"`），**没有 CLI / 定时调度入口**：
+
+- 标的来源：`strategy_lab_cb_basic`，默认仅 `status='active'`；`include_delisted=true` 时不做状态过滤（已退市与 NULL 状态行均包含），传退市券补数需勾选。
+- 逐券串行调用 opencli `cb-premium-history`（每券一次子进程，120s 超时），单券失败记入 `bonds_failed` 不中断整批。
+- 按"可转债代码 + 日期"匹配已有因子行，仅补 `premium_rate` / `remaining_size` 空值；已有非空值与不存在的行跳过；`source` 仅在原值为空时写 `opencli`。
+- 传入 `symbols` 过滤后无可同步标的时，run result 带 `message` 说明，避免全零计数"成功"空跑。
+
+| opencli 源字段 | 落库字段 | 处理 |
+|---|---|---|
+| `date` / `tradeDate` / `trade_date` | `trade_date`（匹配键） | 解析失败整行跳过 |
+| `premiumRate` / `premium_rt` / `转股溢价率` | `premium_rate` | 仅填 NULL |
+| `remainingSize` / `remainSize` / `remain_size` / `剩余规模` | `remaining_size` | 仅填 NULL |
 
 ### 因子计算：本地计算 → `strategy_lab_cb_daily_factors`
 

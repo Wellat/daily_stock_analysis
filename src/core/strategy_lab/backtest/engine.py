@@ -16,7 +16,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import backtrader as bt
@@ -109,6 +109,13 @@ class RotationBacktestEngine(StrategyLabEngine):
                 first_bar_date=min(values_by_date),
                 last_trading_date=self._parse_date(master.get("last_trading_date")),
                 list_date=self._parse_date(master.get("list_date")),
+                final_data_date=max(values_by_date),
+                terminal_exit_date=self._terminal_exit_date(
+                    last_trading_date=self._parse_date(master.get("last_trading_date")),
+                    delist_date=self._parse_date(master.get("delist_date")),
+                    maturity_date=self._parse_date(master.get("maturity_date")),
+                    calendar=calendar,
+                ),
             )
             feed_rows[symbol] = build_feed_rows(
                 calendar,
@@ -148,6 +155,33 @@ class RotationBacktestEngine(StrategyLabEngine):
             except ValueError:
                 return None
         return None
+
+    @staticmethod
+    def _terminal_exit_date(
+        *,
+        last_trading_date: Optional[date],
+        delist_date: Optional[date],
+        maturity_date: Optional[date],
+        calendar: Sequence[date],
+    ) -> Optional[date]:
+        """推导终止交易日前最后一个交易日（T-1 强平日），无终止信息时返回 None。
+
+        终止交易日优先取公告 ``last_trading_date``；缺失时用
+        ``min(到期日, 摘牌日-1自然日)`` 近似——自然到期时摘牌日远晚于最后交易日
+        （兑付结算周期），min 落在到期日；强赎提前终止时摘牌日紧随最后交易日，
+        min 落在摘牌日前一天。终止日在回测日历末尾之后（T-1 在区间外）不强平。
+        """
+        terminal = last_trading_date
+        if terminal is None:
+            approximations = [maturity_date]
+            if delist_date is not None:
+                approximations.append(delist_date - timedelta(days=1))
+            approximations = [d for d in approximations if d is not None]
+            terminal = min(approximations) if approximations else None
+        if terminal is None or not calendar or terminal > calendar[-1]:
+            return None
+        prior_days = [day for day in calendar if day < terminal]
+        return prior_days[-1] if prior_days else None
 
     @staticmethod
     def _datenums(calendar: Sequence[date]) -> List[float]:
