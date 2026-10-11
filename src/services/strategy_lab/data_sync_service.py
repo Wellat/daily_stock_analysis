@@ -17,6 +17,7 @@ from src.services.portfolio_service import PortfolioService
 from src.services.strategy_lab.cb_providers import (
     CbUnderlyingStockOhlcFetcher,
     ConvertibleBondOhlcFetcher,
+    FundNavFetcher,
     OpencliConvertibleBondProvider,
 )
 from src.storage import DatabaseManager
@@ -781,19 +782,29 @@ class StrategyLabDataSyncService:
         _run_id: Optional[int] = None,
         _complete_on_success: bool = True,
     ) -> Dict[str, Any]:
-        """Sync daily OHLC for stocks / ETFs held in Portfolio into ``stock_daily``.
+        """Sync daily OHLC for stocks / ETFs / OTC funds held in Portfolio into ``stock_daily``.
 
         - 标的自 Portfolio 持仓重放（活跃账户、非零数量、指定 market）：
           可转债持仓跳过（行情由 ``cb_ohlc`` 覆盖），其余按 A 股 / ETF / 港股
           同步日线，``instrument_type``：0/3/6 开头 'stock'，1/5 开头 'etf'，
           ``HK`` 前缀 'hk_stock'（收盘价为港币原币，币种换算跟随账本交易
-          的 currency 口径）。
+          的 currency 口径）；场外基金（``XXXXXX.OF``）走 ``FundNavFetcher``
+          单位净值（close=净值，OHLC/成交无值），``instrument_type='fund'``。
         - ``start_date`` 缺省增量：有本地历史则从最后日期次日开始，否则从
           ``2025-01-01`` 开始；``end_date`` 缺省为今天。
-        - ``symbols`` 语义与其他同步方法一致，为持仓代码过滤。
+        - ``symbols`` 语义与其他同步方法一致，为持仓代码过滤（裸码、带
+          ``.SH/.SZ/.OF`` 后缀形态均可命中）。
         """
-        fetcher = CbUnderlyingStockOhlcFetcher()
-        symbol_filter = {str(symbol).strip().lower().split(".")[-1] for symbol in symbols or [] if str(symbol).strip()}
+        stock_fetcher = CbUnderlyingStockOhlcFetcher()
+        fund_fetcher = FundNavFetcher()
+        # 过滤词同时保留完整小写形态与去后缀基础码：裸码（600519）、带后缀
+        # 股票（600519.SH）与场外基金（021583.OF）形态都能命中持仓代码。
+        symbol_filter: Set[str] = set()
+        for symbol in symbols or []:
+            raw = str(symbol).strip().lower()
+            if raw:
+                symbol_filter.add(raw)
+                symbol_filter.add(raw.split(".")[0])
         snapshot = PortfolioService(repo=PortfolioRepository(self.repository.db)).get_portfolio_snapshot(
             include_realtime=False
         )
@@ -814,7 +825,12 @@ class StrategyLabDataSyncService:
         codes = sorted(symbol for lower, symbol in held_lower.items() if lower not in cb_codes)
         bonds_skipped = len(held) - len(codes)
         if symbol_filter:
-            codes = [code for code in codes if code.lower() in symbol_filter]
+            codes = [
+                code
+                for code in codes
+                if code.lower() in symbol_filter or code.lower().split(".")[0] in symbol_filter
+            ]
+        funds_total = sum(1 for code in codes if code.upper().endswith(".OF"))
         effective_end = end_date or date.today()
         payload = {
             "market": market,
@@ -823,6 +839,7 @@ class StrategyLabDataSyncService:
             "symbols": symbols or [],
             "holdings_total": len(codes),
             "bonds_skipped": bonds_skipped,
+            "funds_total": funds_total,
         }
         if _run_id is None:
             run = self.repository.create_sync_run(
@@ -838,6 +855,7 @@ class StrategyLabDataSyncService:
             result = {
                 "holdings_total": len(codes),
                 "bonds_skipped": bonds_skipped,
+                "funds_total": funds_total,
                 "stock_daily_rows_new": 0,
                 "holdings_skipped": 0,
                 "holdings_failed": [],
@@ -852,10 +870,15 @@ class StrategyLabDataSyncService:
                 return {"sync_run_id": run_id, **result}
             for idx, code in enumerate(codes, 1):
                 self._raise_if_cancel_requested(run_id)
-                if code[:2].upper() == "HK":
+                if code.upper().endswith(".OF"):
+                    instrument_type = "fund"
+                    fetcher = fund_fetcher
+                elif code[:2].upper() == "HK":
                     instrument_type = "hk_stock"
+                    fetcher = stock_fetcher
                 else:
                     instrument_type = "stock" if code[0] in ("0", "3", "6") else "etf"
+                    fetcher = stock_fetcher
                 effective_start = self._ohlc_start_date(
                     code, start_date, instrument_type=instrument_type, default_start=date(2025, 1, 1)
                 )

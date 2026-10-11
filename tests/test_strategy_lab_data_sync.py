@@ -16,6 +16,7 @@ from src.services.strategy_lab.cb_providers import (
     AkshareConvertibleBondProvider,
     CbUnderlyingStockOhlcFetcher,
     ConvertibleBondOhlcFetcher,
+    FundNavFetcher,
     JisiluConvertibleBondProvider,
     OpencliConvertibleBondProvider,
 )
@@ -1707,6 +1708,111 @@ def test_portfolio_holdings_sync_routes_stocks_etfs_and_skips_bonds(
     assert by_code["513010"].close == pytest.approx(100.5)
     assert by_code["HK00981"].instrument_type == "hk_stock"  # 港股按原代码大小写落库
     assert "110077" not in by_code  # 转债不经本链路落库
+
+
+def test_portfolio_holdings_sync_routes_of_funds_to_nav_fetcher(
+    db_manager: DatabaseManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from src.repositories.portfolio_repo import PortfolioRepository
+    from src.services.portfolio_service import PortfolioService
+
+    portfolio = PortfolioService(repo=PortfolioRepository(db_manager))
+    account = portfolio.create_account(name="Main", broker="Demo", market="cn", base_currency="CNY")
+    for symbol in ("600519", "021583.OF"):
+        portfolio.record_trade(
+            account_id=int(account["id"]),
+            symbol=symbol,
+            trade_date=date(2026, 9, 12),
+            side="buy",
+            quantity=10,
+            price=100,
+            market="cn",
+            currency="CNY",
+        )
+
+    stock_fetched: list[str] = []
+    fund_fetched: list[tuple] = []
+    monkeypatch.setattr(
+        CbUnderlyingStockOhlcFetcher,
+        "fetch_daily",
+        lambda self, code, start, end: (stock_fetched.append(code) or pd.DataFrame()),
+    )
+
+    def fake_nav(self, code, start, end):
+        fund_fetched.append((code, start, end))
+        return pd.DataFrame([{
+            "date": date(2026, 9, 12), "open": None, "high": None, "low": None,
+            "close": 1.1669, "volume": None, "amount": None,
+        }])
+
+    monkeypatch.setattr(FundNavFetcher, "fetch_daily", fake_nav)
+
+    result = StrategyLabDataSyncService(db_manager).sync_portfolio_holdings_ohlc(
+        start_date=date(2026, 9, 12), end_date=date(2026, 9, 12)
+    )
+
+    # 场外基金走 FundNavFetcher，不再被当作 A 股代码打正股行情接口
+    assert result["funds_total"] == 1
+    assert stock_fetched == ["600519"]
+    assert fund_fetched == [("021583.OF", date(2026, 9, 12), date(2026, 9, 12))]
+    assert result["holdings_failed"] == []
+    assert result["holdings_skipped"] == 1  # 股票空 frame 记为跳过
+
+    with db_manager.get_session() as session:
+        rows = session.execute(
+            select(StockDaily).where(StockDaily.code == "021583.OF")
+        ).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].instrument_type == "fund"
+    assert rows[0].close == pytest.approx(1.1669)
+    assert rows[0].open is None and rows[0].volume is None  # 净值无 OHLC/成交
+
+
+def test_portfolio_holdings_sync_symbol_filter_matches_of_and_suffixed_forms(
+    db_manager: DatabaseManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from src.repositories.portfolio_repo import PortfolioRepository
+    from src.services.portfolio_service import PortfolioService
+
+    portfolio = PortfolioService(repo=PortfolioRepository(db_manager))
+    account = portfolio.create_account(name="Main", broker="Demo", market="cn", base_currency="CNY")
+    for symbol in ("600519", "513010", "021583.OF"):
+        portfolio.record_trade(
+            account_id=int(account["id"]),
+            symbol=symbol,
+            trade_date=date(2026, 9, 12),
+            side="buy",
+            quantity=10,
+            price=100,
+            market="cn",
+            currency="CNY",
+        )
+
+    stock_fetched: list[str] = []
+    fund_fetched: list[str] = []
+    monkeypatch.setattr(
+        CbUnderlyingStockOhlcFetcher,
+        "fetch_daily",
+        lambda self, code, start, end: (stock_fetched.append(code) or pd.DataFrame()),
+    )
+    monkeypatch.setattr(
+        FundNavFetcher,
+        "fetch_daily",
+        lambda self, code, start, end: (fund_fetched.append(code) or pd.DataFrame()),
+    )
+
+    result = StrategyLabDataSyncService(db_manager).sync_portfolio_holdings_ohlc(
+        symbols=["600519.SH", "021583.OF"],
+        start_date=date(2026, 9, 12),
+        end_date=date(2026, 9, 12),
+    )
+
+    # 带后缀股票形态命中裸码持仓，.OF 完整形态命中基金持仓
+    assert sorted(stock_fetched) == ["600519"]
+    assert fund_fetched == ["021583.OF"]
+    assert result["holdings_total"] == 2
+    assert result["funds_total"] == 1
+    assert result["holdings_skipped"] == 2  # 空 frame 记为跳过
 
 
 def test_underlying_stock_fetcher_routes_hk_codes_to_tencent_hk_prefix(

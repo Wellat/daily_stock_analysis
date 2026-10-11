@@ -1007,9 +1007,71 @@ class CbUnderlyingStockOhlcFetcher:
             if not frame.empty:
                 self.last_source = "tencent"
             return frame
-        except Exception as exc:  # noqa: BLE001 - single symbol failure never aborts a batch
+        except Exception as exc:  # noqa: BLE001 - single symbol failure never aborts the batch
             logger.warning("Tencent underlying-stock daily failed for %s: %s", code, exc)
             return _empty_ohlc_frame()
+
+
+class FundNavFetcher:
+    """Fetch OTC-fund (场外基金, ``XXXXXX.OF``) daily NAV via akshare (EastMoney).
+
+    数据源为东财「单位净值走势」全量序列，本地按 ``[start_date, end_date]``
+    过滤。返回与 ``CbUnderlyingStockOhlcFetcher`` 相同的标准列（OHLC/成交
+    无值置 NaN），可直接落 ``stock_daily``（``instrument_type='fund'``，
+    close=单位净值，供持仓快照按 history_close 估值）。
+    """
+
+    name = "fund_nav"
+    _suffix = ".OF"
+
+    def __init__(self, *, timeout: Optional[float] = None):
+        self.timeout = timeout
+        self.last_source: Optional[str] = None
+
+    def fetch_daily(self, symbol: str, start_date: date, end_date: date) -> pd.DataFrame:
+        """Fetch NAV rows within ``[start_date, end_date]``; empty frame on total failure."""
+        code = str(symbol).strip().upper()
+        self.last_source = None
+        if not code.endswith(self._suffix):
+            return _empty_ohlc_frame()
+        fund_code = code[: -len(self._suffix)]
+        try:
+            import akshare as ak
+
+            frame = _akshare_call_with_timeout(
+                ak.fund_open_fund_info_em,
+                fund_code,
+                indicator="单位净值走势",
+                timeout=self.timeout,
+                call_name="strategy_lab_fund_nav",
+            )
+        except Exception as exc:  # noqa: BLE001 - single fund failure never aborts the batch
+            logger.warning("akshare fund NAV failed for %s: %s", code, exc)
+            return _empty_ohlc_frame()
+        if frame is None or frame.empty:
+            return _empty_ohlc_frame()
+        normalized = pd.DataFrame(
+            {
+                "date": pd.to_datetime(frame["净值日期"]).dt.date,
+                "open": float("nan"),
+                "high": float("nan"),
+                "low": float("nan"),
+                "close": pd.to_numeric(frame["单位净值"], errors="coerce"),
+                "volume": float("nan"),
+                "amount": float("nan"),
+                "pct_chg": (
+                    pd.to_numeric(frame["日增长率"], errors="coerce")
+                    if "日增长率" in frame.columns
+                    else float("nan")
+                ),
+            }
+        )
+        normalized = normalized.dropna(subset=["date", "close"]).sort_values("date")
+        normalized = normalized.reset_index(drop=True)
+        self.last_source = "AkshareFetcher"
+        return normalized[
+            (normalized["date"] >= start_date) & (normalized["date"] <= end_date)
+        ].reset_index(drop=True)
 
 
 def _extract_tencent_kline_rows(payload: Any, *, symbol: str) -> List[Dict[str, Any]]:
