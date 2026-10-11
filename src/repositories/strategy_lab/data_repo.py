@@ -442,6 +442,51 @@ class StrategyLabDataRepository:
                 ],
             }
 
+    def list_cb_holding_enrichments(self, *, market: str, codes: List[str]) -> Dict[str, Dict[str, Any]]:
+        """给定转债代码集合，批量返回最新因子 + 条款扁平化（实盘持仓聚合用）。
+
+        复用列表项契约（:meth:`_instrument_list_item`），额外附 ``latest_trade_date``
+        供数据时点展示；持仓数量级为数十只，无分页。找不到 basic 行的代码不出现在
+        返回里（调用方按数据缺失兜底）。
+        """
+        normalized = [str(c).strip().lower().split(".")[-1] for c in codes if str(c).strip()]
+        if not normalized:
+            return {}
+        with self.db.get_session() as session:
+            rows = session.execute(
+                select(StrategyLabCbBasic).where(
+                    StrategyLabCbBasic.market == market,
+                    func.lower(StrategyLabCbBasic.bond_code).in_(normalized),
+                )
+            ).scalars().all()
+            held_codes = [row.bond_code for row in rows]
+            latest_by_code: Dict[str, StrategyLabCbDailyFactor] = {}
+            if held_codes:
+                latest_dates = session.execute(
+                    select(
+                        StrategyLabCbDailyFactor.bond_code,
+                        func.max(StrategyLabCbDailyFactor.trade_date).label("max_date"),
+                    )
+                    .where(StrategyLabCbDailyFactor.bond_code.in_(held_codes))
+                    .group_by(StrategyLabCbDailyFactor.bond_code)
+                ).all()
+                for code, max_date in latest_dates:
+                    factor = session.execute(
+                        select(StrategyLabCbDailyFactor).where(
+                            StrategyLabCbDailyFactor.bond_code == code,
+                            StrategyLabCbDailyFactor.trade_date == max_date,
+                        )
+                    ).scalar_one_or_none()
+                    if factor is not None:
+                        latest_by_code[code] = factor
+            items: Dict[str, Dict[str, Any]] = {}
+            for row in rows:
+                factor = latest_by_code.get(row.bond_code)
+                item = dict(self._instrument_list_item(row, factor, 0))
+                item["latest_trade_date"] = factor.trade_date.isoformat() if factor else None
+                items[row.bond_code] = item
+            return items
+
     def list_cb_basic_codes(self, *, market: str, status: Optional[str] = None) -> List[str]:
         """Return bond codes in the master table, optionally filtered by status.
 

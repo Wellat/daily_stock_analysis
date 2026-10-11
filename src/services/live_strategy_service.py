@@ -440,24 +440,10 @@ class LiveStrategyService:
 
     @staticmethod
     def _remaining_trading_days(trade_date: date, last_day: date) -> int:
-        """trade_date 当日起至最后交易日（含两端）的交易日数。
+        """trade_date 当日起至最后交易日（含两端）的交易日数（真源在 trading_calendar）。"""
+        from src.core.trading_calendar import remaining_trading_days
 
-        已过最后交易日返回 0（临近退市但仍未 delisted 的持仓必须立刻退出）；
-        超过 30 个自然日即超出任何风控窗口，直接返回大数避免无谓逐日计数。
-        """
-        from src.core.trading_calendar import is_market_open
-
-        if last_day < trade_date:
-            return 0
-        if (last_day - trade_date).days > 30:
-            return 999
-        count = 0
-        cursor = trade_date
-        while cursor <= last_day:
-            if is_market_open("cn", cursor):
-                count += 1
-            cursor += timedelta(days=1)
-        return count
+        return remaining_trading_days("cn", trade_date, last_day)
 
     def _premium_data_completeness(self, trade_date: date) -> tuple[int, list[str]]:
         """统计当日 active 转债（有 close）总数与溢价率缺失代码，供观测日志与下单门禁共用。

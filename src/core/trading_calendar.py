@@ -675,3 +675,22 @@ def compute_effective_region(
     if len(open_selected) == 1:
         return open_selected[0]
     return ",".join(open_selected)
+
+
+def remaining_trading_days(market: str, trade_date: date, last_day: date) -> int:
+    """trade_date 当日起至 last_day（含两端）的交易日数。
+
+    已过最后交易日返回 0（临近退市但仍未 delisted 的持仓必须立刻退出）；
+    超过 30 个自然日即超出任何风控窗口，直接返回大数避免无谓逐日计数。
+    """
+    if last_day < trade_date:
+        return 0
+    if (last_day - trade_date).days > 30:
+        return 999
+    count = 0
+    cursor = trade_date
+    while cursor <= last_day:
+        if is_market_open(market, cursor):
+            count += 1
+        cursor += timedelta(days=1)
+    return count

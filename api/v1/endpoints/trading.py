@@ -19,6 +19,7 @@ from api.v1.schemas.trading import (
     QmtPositionListResponse,
     QmtPositionReportRequest,
     QmtPositionReportResponse,
+    TradingCbHoldingsResponse,
     TradingDashboardResponse,
     TradingOrderCallbackRequest,
     TradingOrderCreateRequest,
@@ -26,6 +27,7 @@ from api.v1.schemas.trading import (
     TradingOrderListResponse,
     TradingOrderPendingListResponse,
 )
+from src.services.qmt_cb_holdings_service import QmtCbHoldingsService
 from src.services.qmt_deal_service import QmtDealService
 from src.services.qmt_position_service import QmtPositionService
 from src.services.trading_order_service import (
@@ -280,3 +282,23 @@ def list_positions(
     except Exception as exc:
         logger.error("List QMT positions failed: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail={"error": "internal_error", "message": "List positions failed"})
+
+
+@router.get(
+    "/positions/cb",
+    response_model=TradingCbHoldingsResponse,
+    responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
+    summary="实盘可转债持仓（含基本面与风险字段）",
+)
+def list_cb_positions(
+    account: Optional[str] = Query(None, description="可选资金账号；缺省取实盘策略配置的账户"),
+    db_manager: DatabaseManager = Depends(get_database_manager),
+) -> TradingCbHoldingsResponse:
+    """QMT 持仓 × 最新因子 × 条款聚合：仅返回可转债行，非转债行计数于 excluded_count。"""
+    try:
+        return TradingCbHoldingsResponse(**QmtCbHoldingsService(db_manager).list_holdings(account=account))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail={"error": "invalid_params", "message": str(exc)})
+    except Exception as exc:
+        logger.error("List CB holdings failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail={"error": "internal_error", "message": "List CB holdings failed"})

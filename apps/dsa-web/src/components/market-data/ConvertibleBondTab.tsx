@@ -4,6 +4,7 @@ import type { ColumnsType } from 'antd/es/table';
 import type { TablePaginationConfig } from 'antd/es/table';
 import type { FilterValue, SorterResult } from 'antd/es/table/interface';
 import { ApiErrorAlert } from '../common';
+import { countdownTag, exitDateCell as sharedExitDateCell, formatNumber, formatPct, yearsToMaturity } from '../common/cbIndicators';
 import { EChart } from '../common/EChart';
 import type { EChartOption } from '../common/EChart';
 import type { ParsedApiError } from '../../api/error';
@@ -22,8 +23,6 @@ type SortField = 'premium_rate' | 'double_low' | 'last_trading_date';
 type SortOrder = 'asc' | 'desc';
 const DEFAULT_SORT: { field: SortField; order: SortOrder } = { field: 'premium_rate', order: 'asc' };
 
-const formatNumber = (value?: number | null, digits = 2): string => (value == null ? '--' : value.toFixed(digits));
-const formatPct = (value?: number | null): string => (value == null ? '--' : `${value.toFixed(2)}%`);
 const formatPrice = (value?: number | null): string => (value == null ? '--' : value.toFixed(2));
 
 const eventTypeTag = (eventType: string) => {
@@ -47,31 +46,13 @@ const statusFilterOptions = [
 
 const statusLabel = (status?: string | null) => status === 'delisted' ? '已退市' : status === 'active' ? '未退市' : (status ?? '--');
 
-// 剩余年限（年，1 位小数由调用方格式化）；已到期返回负数，缺失返回 null
-const yearsToMaturity = (maturityDate?: string | null): number | null => {
-  if (!maturityDate) return null;
-  const target = new Date(`${maturityDate}T00:00:00`);
-  if (Number.isNaN(target.getTime())) return null;
-  return (target.getTime() - Date.now()) / (365 * 24 * 3600 * 1000);
-};
-
-// 条款计数（集思录原样字符串，如「15/30」「已公告强赎」），已公告状态红色突出
-const countdownTag = (value?: string | null) => {
-  if (!value) return <span className="text-secondary-text">--</span>;
-  return <Tag color={value.includes('已公告') ? 'error' : 'default'}>{value}</Tag>;
-};
-
 const termText = (terms: Record<string, unknown> | undefined, key: string): string | undefined => {
   const value = terms?.[key];
   return typeof value === 'string' && value ? value : undefined;
 };
 
 // 最后交易日缺失时用到期时间兜底展示（弱色区分，避免误读为已公告强赎）
-const exitDateCell = (item: StrategyLabInstrumentItem) => {
-  if (item.last_trading_date) return item.last_trading_date;
-  if (item.maturity_date) return <span className="text-secondary-text">{item.maturity_date}</span>;
-  return <span className="text-secondary-text">--</span>;
-};
+const exitDateCell = (item: StrategyLabInstrumentItem) => sharedExitDateCell(item.last_trading_date, item.maturity_date);
 
 export const ConvertibleBondTab: React.FC = () => {
   const [instruments, setInstruments] = useState<StrategyLabInstrumentItem[]>([]);

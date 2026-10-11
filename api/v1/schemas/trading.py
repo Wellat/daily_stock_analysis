@@ -158,6 +158,51 @@ class QmtPositionListResponse(BaseModel):
     items: List[QmtPositionListItem] = Field(default_factory=list)
 
 
+class TradingCbHoldingItem(BaseModel):
+    """实盘-持仓（可转债视图）单行：QMT 持仓 × 最新因子 × 条款扁平化。"""
+
+    symbol: str
+    bond_name: Optional[str] = None
+    stock_name: Optional[str] = None
+    volume: float
+    can_use_volume: float
+    open_price: Optional[float] = None
+    latest_close: Optional[float] = None
+    latest_premium_rate: Optional[float] = None
+    market_value: Optional[float] = None
+    weight_pct: Optional[float] = None
+    pnl: Optional[float] = None
+    pnl_pct: Optional[float] = None
+    remaining_years: Optional[float] = None
+    maturity_date: Optional[str] = None
+    last_trading_date: Optional[str] = None
+    remaining_trading_days: Optional[int] = None
+    force_redeem_countdown: Optional[str] = None
+    down_revise_countdown: Optional[str] = None
+    put_countdown: Optional[str] = None
+    bond_rating: Optional[str] = None
+    remaining_size: Optional[float] = None
+    status: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class TradingCbHoldingsSummary(BaseModel):
+    count: int = 0
+    total_volume: Optional[float] = None
+    total_market_value: Optional[float] = None
+    total_pnl: Optional[float] = None
+    total_pnl_pct: Optional[float] = None
+
+
+class TradingCbHoldingsResponse(BaseModel):
+    account: str
+    as_of_trade_date: Optional[str] = None
+    positions_updated_at: Optional[str] = None
+    excluded_count: int = 0
+    summary: TradingCbHoldingsSummary = Field(default_factory=TradingCbHoldingsSummary)
+    items: List[TradingCbHoldingItem] = Field(default_factory=list)
+
+
 class QmtDealReportItem(BaseModel):
     account: str = Field("", description="资金账号（QMT m_strAccountID 透传，入账以请求体 account 为准）")
     symbol: str = Field(..., description="证券代码（6 位数字，不带市场后缀，如 113002）")

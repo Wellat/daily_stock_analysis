@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [新功能] 实盘-持仓改版为可转债专注视图（`GET /api/v1/trading/positions/cb`，可选 account、缺省取实盘策略配置账户）：QMT 持仓 × 最新因子 × 条款聚合，仅展示该账户可转债（非转债行计数提示未展示）；现价/成本价 3 位小数，汇总条含账户/持仓只数/合计市值/浮动盈亏，行内新增正股名称、转股溢价率（负值绿）、占比、按成本价浮动盈亏（盈红亏绿）、剩余年限、强赎/下修/回售倒计、评级列，最后交易日附剩余交易日倒计；条款倒计文本压缩为 "N/M" 短形态（已公告强赎保留全文红标）；关键日期分级突显——已公告强赎红、条款计数达 60% 橙、最后交易日剩余 ≤5 红/≤15 橙、剩余年限 <0.5 年橙；条款 Tag 与最后交易日兜底等展示约定抽取为 `cbIndicators` 共享模块（行情可转债列表同步复用，计数达 60% 也橙色提示）；`_remaining_trading_days` 真源收敛到 `src/core/trading_calendar.py`。
 - [新功能] 价格分档仓位（实盘与策略实验室 rotation 回测同时生效）：按买入价格分档缩放单债额度——默认 ≤165 全额、(165,185] 80%、(185,220] 60%、(220,250] 40%、>250 20%，通过 8 个参数（`price_tier1_max`~`price_tier4_max`、`price_tier2_pct`~`price_tier5_pct`）配置，实盘与回测参数键一致、共用 `src/core/strategies/sizing.py` 同一语义；计算顺序为先分档缩放再被单只权重/仓位上限封顶，金额与固定张数口径都缩放；默认启用（历史保存配置重跑会默认带上分档），一档上限填 0 整体关闭、中间档上界填 0 其后档位不启用；回测表单新增「价格分档仓位」区块。
 - [修复] 可转债补数同步（`cb_premium_history`）解析 opencli `remainingSize` 字段：上游字段名不在解析器候选（`remain_size`/`remainSize`/`剩余规模`）内被静默丢弃，剩余规模历史回填始终为空；溢价率解析不受影响。
 - [改进] 数据同步（cb_basic/cb_ohlc/cb_premium_history/cb_stock_ohlc/portfolio_holdings）传入 `symbols` 过滤后无可同步标的时，sync run result 写入 `message` 说明（如退市券需 `include_delisted=true`），避免全零计数静默"成功"空跑。
