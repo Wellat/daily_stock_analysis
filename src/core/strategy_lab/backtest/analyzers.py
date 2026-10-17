@@ -54,8 +54,13 @@ def cumulative_max_drawdown_pct(equity: Sequence[float]) -> float:
 def annualized_return_pct(total_return_pct: float, start_date: date, end_date: date) -> Optional[float]:
     if end_date <= start_date:
         return None
+    base = 1 + total_return_pct / 100
+    if base <= 0:
+        # 总收益 <= -100% 时几何年化无定义（负底数的分数次幂是复数）；
+        # 相对超额等可去负的曲线会走到这里，返回 None 而不是崩 round
+        return None
     days = max(1, (end_date - start_date).days)
-    return ((1 + total_return_pct / 100) ** (365 / days) - 1) * 100
+    return (base ** (365 / days) - 1) * 100
 
 
 def sharpe_ratio(returns: Sequence[float]) -> Optional[float]:

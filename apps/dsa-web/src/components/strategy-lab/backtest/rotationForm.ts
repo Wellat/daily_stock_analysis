@@ -28,6 +28,8 @@ export type RotationFormState = {
   priceTier3Pct: string;
   priceTier4Pct: string;
   priceTier5Pct: string;
+  stopLossPct: string;
+  stopLossCooldownDays: string;
 };
 
 export const DEFAULT_ROTATION_FORM: RotationFormState = {
@@ -58,6 +60,8 @@ export const DEFAULT_ROTATION_FORM: RotationFormState = {
   priceTier3Pct: '60',
   priceTier4Pct: '40',
   priceTier5Pct: '20',
+  stopLossPct: '0',
+  stopLossCooldownDays: '10',
 };
 
 const num = (value: string, fallback: number): number => {
@@ -98,6 +102,9 @@ export function buildRotationParameters(form: RotationFormState, extra: Record<s
     price_tier3_pct: Math.min(100, Math.max(1, num(form.priceTier3Pct, 60))),
     price_tier4_pct: Math.min(100, Math.max(1, num(form.priceTier4Pct, 40))),
     price_tier5_pct: Math.min(100, Math.max(1, num(form.priceTier5Pct, 20))),
+    // 止损（与实盘策略同键）：阈值 0=关闭，按持仓成本价计
+    stop_loss_pct: Math.max(0, num(form.stopLossPct, 0)),
+    stop_loss_cooldown_days: Math.max(0, Math.round(num(form.stopLossCooldownDays, 10))),
     ...extra,
   };
   const exclusionFactors = form.exclusionFactors
@@ -150,5 +157,7 @@ export function applyRotationParameters(parameters: Record<string, unknown> | un
   if (read('price_tier3_pct') != null) form.priceTier3Pct = String(read('price_tier3_pct'));
   if (read('price_tier4_pct') != null) form.priceTier4Pct = String(read('price_tier4_pct'));
   if (read('price_tier5_pct') != null) form.priceTier5Pct = String(read('price_tier5_pct'));
+  if (read('stop_loss_pct') != null) form.stopLossPct = String(read('stop_loss_pct'));
+  if (read('stop_loss_cooldown_days') != null) form.stopLossCooldownDays = String(read('stop_loss_cooldown_days'));
   return form;
 }

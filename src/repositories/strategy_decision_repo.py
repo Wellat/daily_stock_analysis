@@ -20,3 +20,11 @@ class StrategyDecisionRepository:
             if trade_date: q=q.where(StrategyDecisionRecord.trade_date==trade_date)
             if strategy_id: q=q.where(StrategyDecisionRecord.strategy_id==strategy_id)
             return list(s.execute(q).scalars())
+    def list_by_reason_since(self, *, reason, trade_date_since, account=None, strategy_id=None):
+        """按 reason 拉取 trade_date >= trade_date_since 的决策（止损冷却期推导用）。"""
+        with self.db.get_session() as s:
+            q=select(StrategyDecisionRecord).where(StrategyDecisionRecord.reason==reason,
+                StrategyDecisionRecord.trade_date>=trade_date_since)
+            if account: q=q.where(StrategyDecisionRecord.account==account)
+            if strategy_id: q=q.where(StrategyDecisionRecord.strategy_id==strategy_id)
+            return list(s.execute(q).scalars())

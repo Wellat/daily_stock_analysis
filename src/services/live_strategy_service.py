@@ -238,6 +238,33 @@ class LiveStrategyService:
                         "last_trading_date": ltd_map[symbol].isoformat(),
                         "remaining_trading_days": n,
                     }
+        # ---- 止损风控层：持仓成本亏损达到阈值强制全量卖出 + 冷却期禁再买入 ----
+        # 成本价取 QMT 持仓 open_price、现价取当日上下文最新收盘，与回测引擎同语义
+        # （全量退出、止损日起 N 个交易日内不再入选候选）；终局强退优先级更高。
+        stop_exit: Dict[str, Dict[str, Any]] = {}
+        stop_cooldown: set = set()
+        stop_loss_pct = float(params.get("stop_loss_pct") or 0)
+        if stop_loss_pct > 0:
+            cost_by_symbol = {r.symbol: r.open_price for r in current_rows if r.symbol in current}
+            for symbol, volume in current.items():
+                if symbol in forced_exit or volume <= 0:
+                    continue
+                cost = float(cost_by_symbol.get(symbol) or 0)
+                close = (context.bars.get(symbol) or [None])[-1].close if context.bars.get(symbol) else None
+                if cost <= 0 or close is None or close <= 0:
+                    continue
+                pnl_pct = (close - cost) / cost * 100.0
+                if pnl_pct <= -stop_loss_pct + 1e-9:
+                    stop_exit[symbol] = {"cost_price": cost, "close": close, "pnl_pct": round(pnl_pct, 2)}
+            stop_cooldown |= set(stop_exit)
+            cooldown_days = int(params.get("stop_loss_cooldown_days") or 0)
+            if cooldown_days > 0:
+                stop_cooldown |= self._stop_loss_cooldown_symbols(config, trade_date, cooldown_days)
+            if stop_cooldown:
+                context = replace(context, instruments=[
+                    replace(i, tradable=False) if i.symbol in stop_cooldown else i
+                    for i in context.instruments
+                ])
         bars = context.bars
         decisions = get_strategy(config.strategy_id).evaluate(context, mode=resolved_mode, parameters=params)
         # 强制退出覆盖策略对同一标的的全部决策（hold/exit/buy），保证全量卖出
@@ -252,6 +279,15 @@ class LiveStrategyService:
             decisions = [d for d in decisions if d.symbol not in forced_exit] + exit_decisions
             logger.info("[LiveStrategy] last-trading-day exit: %s",
                         {s: info["remaining_trading_days"] for s, info in forced_exit.items()})
+        # 止损退出覆盖策略对同一标的的全部决策（hold/exit/buy），保证全量卖出
+        if stop_exit:
+            decisions = [d for d in decisions if d.symbol not in stop_exit] + [
+                StrategyDecision("exit", symbol=symbol, suggested_quantity=current[symbol],
+                    reason="stop_loss", decision_data=info)
+                for symbol, info in stop_exit.items()
+            ]
+            logger.info("[LiveStrategy] stop-loss exit: %s",
+                        {s: info["pnl_pct"] for s, info in stop_exit.items()})
         # ---- 对账补卖：持仓中不在目标内的转债补卖出，使组合向目标收敛 ----
         # Target exits are portfolio reconciliation, not strategy logic.
         if resolved_mode == "rebalance":
@@ -259,7 +295,7 @@ class LiveStrategyService:
             decisions = list(decisions) + [StrategyDecision("sell", symbol=symbol,
                 suggested_quantity=volume, reason="live_target_exit")
                 for symbol, volume in current.items()
-                if symbol not in selected and symbol not in forced_exit and volume > 0]
+                if symbol not in selected and symbol not in forced_exit and symbol not in stop_exit and volume > 0]
         # 对账卖出/事件检查等路径只带代码不带名称，统一从上下文补齐，
         # 保证决策记录、订单的 symbol_name 完整（历史缺口曾导致前端名称列为空）
         names_by_symbol = {i.symbol: i.name for i in context.instruments if i.symbol and i.name}
@@ -444,6 +480,29 @@ class LiveStrategyService:
         from src.core.trading_calendar import remaining_trading_days
 
         return remaining_trading_days("cn", trade_date, last_day)
+
+    def _stop_loss_cooldown_symbols(self, config: LiveStrategyConfig, trade_date: date, cooldown_days: int) -> set:
+        """从历史止损决策推导仍在冷却期内的标的（止损日起 N 个交易日内禁再买入）。
+
+        不落新表：止损事实以决策记录（reason=stop_loss）为准，冷却窗口由交易日历
+        推导（(止损日, 当日] 间交易日数 <= N 即冷却中，与回测 bar 序号口径一致），
+        历史决策修正/删除后冷却状态自然收敛。
+        """
+        from src.core.trading_calendar import cn_trading_days_between
+
+        since = trade_date - timedelta(days=cooldown_days * 2 + 10)
+        rows = self.decisions.list_by_reason_since(
+            reason="stop_loss", trade_date_since=since,
+            account=config.qmt_account, strategy_id=config.strategy_id,
+        )
+        blocked: set = set()
+        for row in rows:
+            if not row.symbol:
+                continue
+            sessions = cn_trading_days_between(row.trade_date, trade_date)
+            if sessions and len(sessions) - 1 <= cooldown_days:
+                blocked.add(row.symbol)
+        return blocked
 
     def _premium_data_completeness(self, trade_date: date) -> tuple[int, list[str]]:
         """统计当日 active 转债（有 close）总数与溢价率缺失代码，供观测日志与下单门禁共用。

@@ -99,10 +99,10 @@ def test_low_premium_caps_fixed_quantity_by_position_weight():
 
 
 def test_low_premium_scales_amount_by_price_tiers():
-    """默认四档价格分档：≤165 全额、(185,220] 60%、>250 20%。"""
+    """默认四档价格分档：≤165 全额、(185,220] 60%、>250 20% 保底一手（260×10）。"""
     c = context([("A", "A", 100, 1), ("B", "B", 190, 2), ("C", "C", 260, 3)])
     decisions = LowPremiumStrategy().evaluate(c, parameters={"max_positions": 3, "per_position_cash": 10000})
-    assert {d.symbol: d.target_amount for d in decisions} == {"A": 10000, "B": 6000, "C": 2000}
+    assert {d.symbol: d.target_amount for d in decisions} == {"A": 10000, "B": 6000, "C": 2600}
     assert {d.symbol: d.decision_data["price_ratio"] for d in decisions} == {"A": 1.0, "B": 0.6, "C": 0.2}
 
 
@@ -139,3 +139,22 @@ def test_low_premium_fixed_quantity_scaled_by_price_tiers():
         "max_positions": 1, "per_position_quantity": 100, "lot_size": 10,
     })
     assert decisions[0].suggested_quantity == 60
+
+
+def test_low_premium_min_lot_floor_yields_to_weight_cap():
+    """保底一手不越过单只权重上限：上限 2000 < 一手 2600 时按 2000（执行层跳过）。"""
+    c = context([("B", "B", 260, 2)])
+    decisions = LowPremiumStrategy().evaluate(c, parameters={
+        "max_positions": 1, "per_position_cash": 10000,
+        "account_capital": 20000, "max_position_pct": 10,
+    })
+    assert decisions[0].target_amount == 2000
+
+
+def test_low_premium_fixed_quantity_floors_to_one_lot():
+    """固定张数路径分档缩放后不足一手时保底一手（40×20%=8 → 10 张）。"""
+    c = context([("B", "B", 260, 2)])
+    decisions = LowPremiumStrategy().evaluate(c, parameters={
+        "max_positions": 1, "per_position_quantity": 40, "lot_size": 10,
+    })
+    assert decisions[0].suggested_quantity == 10

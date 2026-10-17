@@ -403,6 +403,49 @@ class TestExecutionAccounting:
         buy = next(t for t in result.trades if t.side == "buy")
         assert buy.amount == pytest.approx(int(100000 / 260.0 / 10) * 10 * 260.0)
 
+    def test_price_tier_min_lot_floor_buys_one_lot(self):
+        """高价档缩放金额不足一手时保底一手：2 万权益 × 20%=4000 < 900×10，按 10 张买入。"""
+        prices = {"CCC": [900.0] * 8}
+        rows = make_rows(prices)
+        config = make_config({"max_positions": 1, "commission": 0.0}, cash=20000.0)
+        result = RotationBacktestEngine(rows).run(config)
+        buys = [t for t in result.trades if t.side == "buy"]
+        assert [(t.symbol, t.quantity) for t in buys] == [("CCC", 10)]
+        assert buys[0].amount == pytest.approx(9000.0)
+
+    def test_stop_loss_exits_and_cooldown_blocks_rebuy(self):
+        """成本亏损达到阈值全量止损；默认冷却 10 个交易日内不再买回。"""
+        prices = {"AAA": [100.0, 100.0, 91.0] + [91.0] * 5}
+        rows = make_rows(prices)
+        config = make_config({"max_positions": 1, "commission": 0.0, "stop_loss_pct": 8.0})
+        result = RotationBacktestEngine(rows).run(config)
+        trades = [(t.trade_date, t.symbol, t.side, t.reason) for t in result.trades]
+        assert (date(2026, 9, 1), "AAA", "buy", "rotation_entry") in trades
+        assert (date(2026, 9, 3), "AAA", "sell", "stop_loss") in trades
+        # 冷却 10 个交易日超出剩余窗口：止损后无任何买回
+        assert len([t for t in result.trades if t.side == "buy"]) == 1
+
+    def test_stop_loss_cooldown_expires_and_allows_rebuy(self):
+        """冷却到期后同一标的可再次入选：cool=1 时止损次日禁买、隔日买回。"""
+        prices = {"AAA": [100.0, 100.0, 91.0, 91.0, 91.0, 91.0, 91.0, 91.0]}
+        rows = make_rows(prices)
+        config = make_config({"max_positions": 1, "commission": 0.0, "stop_loss_pct": 8.0,
+                              "stop_loss_cooldown_days": 1})
+        result = RotationBacktestEngine(rows).run(config)
+        # 9/3 止损（第 3 根 bar，冷却截止 bar4），9/4 禁买，9/7（bar5）买回
+        assert [(t.trade_date, t.reason) for t in result.trades if t.side == "buy"] == [
+            (date(2026, 9, 1), "rotation_entry"),
+            (date(2026, 9, 7), "rotation_entry"),
+        ]
+
+    def test_stop_loss_disabled_by_zero_pct(self):
+        """stop_loss_pct=0（默认）不触发止损，深亏持仓仍交由换仓逻辑处理。"""
+        prices = {"AAA": [100.0, 100.0, 80.0, 80.0, 80.0, 80.0, 80.0, 80.0]}
+        rows = make_rows(prices)
+        config = make_config({"max_positions": 1, "commission": 0.0})
+        result = RotationBacktestEngine(rows).run(config)
+        assert all(t.reason != "stop_loss" for t in result.trades)
+
 
 class TestBenchmarksAndMetrics:
     def test_equal_weight_benchmark_return(self):

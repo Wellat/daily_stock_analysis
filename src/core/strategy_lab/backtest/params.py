@@ -49,6 +49,9 @@ class RotationParams:
     # 价格分档仓位（默认 165/185/220/250 四档，比例 100/80/60/40/20；空 bounds 表示关闭）
     price_tier_bounds: Tuple[float, ...] = (165.0, 185.0, 220.0, 250.0)
     price_tier_ratios: Tuple[float, ...] = (1.0, 0.8, 0.6, 0.4, 0.2)
+    # 止损（按持仓成本价，0 关闭）：亏幅达到阈值全量卖出，冷却期内禁止再买入
+    stop_loss_pct: float = 0.0
+    stop_loss_cooldown_days: int = 10
 
     @classmethod
     def from_parameters(cls, parameters: Dict[str, Any]) -> "RotationParams":
@@ -114,6 +117,8 @@ class RotationParams:
             lot_size=max(1, _int("lot_size", 10, minimum=1)),
             price_tier_bounds=price_tier_bounds,
             price_tier_ratios=price_tier_ratios,
+            stop_loss_pct=_float("stop_loss_pct", 0.0),
+            stop_loss_cooldown_days=_int("stop_loss_cooldown_days", 10),
         )
         if params.min_positions > params.max_positions:
             raise ValueError("min_positions cannot exceed max_positions")
@@ -161,4 +166,6 @@ class RotationParams:
             "lot_size": self.lot_size,
             "price_tier_bounds": list(self.price_tier_bounds),
             "price_tier_ratios": list(self.price_tier_ratios),
+            "stop_loss_pct": self.stop_loss_pct,
+            "stop_loss_cooldown_days": self.stop_loss_cooldown_days,
         }

@@ -47,7 +47,8 @@ class ExecutionPlanner:
                 bars = context.bars.get(d.symbol) or []
                 price = bars[-1].close if bars else None
                 if price is not None and price > 0:
-                    qty = int(float(d.target_amount) / price / lot_size) * lot_size
+                    # +1e-9 容差：恰好整手金额的浮点除法（如 128.2/12.82）不致截成 0 手
+                    qty = int(float(d.target_amount) / price / lot_size + 1e-9) * lot_size
             if d.action == "buy":
                 # Strategy quantities represent target holdings; orders carry
                 # only the delta from the current position.
@@ -60,7 +61,7 @@ class ExecutionPlanner:
                 price=(context.bars.get(d.symbol) or [None])[-1].close if context.bars.get(d.symbol) else None
                 # 单只买入金额封顶：按 max_buy_amount_each_symbol 截断数量（向下取整到手数）。
                 if price is not None and price > 0:
-                    max_qty = int(max_buy_amount_each_symbol / price / lot_size) * lot_size
+                    max_qty = int(max_buy_amount_each_symbol / price / lot_size + 1e-9) * lot_size
                     if qty > max_qty:
                         qty = max_qty
                 # 最多买入标的数封顶：只保留前 max_buy_symbols 只的买入。

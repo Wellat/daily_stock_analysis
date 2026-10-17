@@ -727,3 +727,117 @@ def test_event_check_holds_blocked_holding_when_exclusion_disabled():
         assert actions == {"113003": "hold"}
     finally:
         DatabaseManager.reset_instance()
+
+
+def test_stop_loss_exits_holding_and_satisfies_threshold(monkeypatch: pytest.MonkeyPatch):
+    """成本价亏损达到阈值：持仓强制全量卖出（覆盖策略 hold），高于阈值的持仓不动。"""
+    _weekdays_only(monkeypatch)
+    DatabaseManager.reset_instance()
+    db = DatabaseManager(db_url="sqlite:///:memory:")
+    try:
+        service = LiveStrategyService(db)
+        service.save_config({"qmt_account": "testS", "enabled": True, "data_sync_before_run": False,
+                             "parameters": {"max_positions": 2, "stop_loss_pct": 8}})
+        trade_date = date(2024, 1, 2)
+        _seed_cb_universe(db, trade_date, [
+            {"code": "113001", "name": "深亏债", "close": 91.0, "premium": 1.0},   # 成本 100 → -9% 触发
+            {"code": "113002", "name": "浅亏债", "close": 97.0, "premium": 2.0},   # 成本 100 → -3% 不触发
+        ])
+        QmtPositionService(db).report_positions(account="testS", positions=[
+            {"symbol": "113001", "volume": 100, "can_use_volume": 100, "open_price": 100.0},
+            {"symbol": "113002", "volume": 100, "can_use_volume": 100, "open_price": 100.0},
+        ])
+
+        result = service.run(trade_date=trade_date, mode="event_check", preview=True)
+
+        actions = {d["symbol"]: (d["action"], d.get("reason")) for d in result["decisions"]}
+        assert actions["113001"] == ("exit", "stop_loss")
+        assert actions["113002"] == ("hold", "no_blocking_event")
+        orders = {(o["symbol"], o["side"], o["quantity"]) for o in result["rebalance"]}
+        assert ("113001", "sell", 100) in orders
+        detail = next(d for d in result["decisions"] if d["symbol"] == "113001")
+        assert detail["decision_data"]["pnl_pct"] == -9.0
+    finally:
+        DatabaseManager.reset_instance()
+
+
+def test_stop_loss_blocks_rebuy_in_cooldown_and_dedupes_reconciliation(monkeypatch: pytest.MonkeyPatch):
+    """rebalance：止损债当日不买回（在册+历史冷却），对账补卖与强制退出不重复下单。"""
+    _weekdays_only(monkeypatch)
+    DatabaseManager.reset_instance()
+    db = DatabaseManager(db_url="sqlite:///:memory:")
+    try:
+        service = LiveStrategyService(db)
+        service.save_config({"qmt_account": "testS", "enabled": True, "data_sync_before_run": False,
+                             "parameters": {"max_positions": 2, "per_position_cash": 10000,
+                                            "stop_loss_pct": 8, "stop_loss_cooldown_days": 5}})
+        trade_date = date(2024, 1, 5)  # 周五
+        _seed_cb_universe(db, trade_date, [
+            {"code": "113001", "name": "深亏低溢价", "close": 91.0, "premium": 1.0},  # 持仓 -9% → 止损
+            {"code": "113006", "name": "历史止损债", "close": 100.0, "premium": 3.0},  # 3 个交易日前止损 → 仍在冷却
+            {"code": "113007", "name": "正常候选", "close": 100.0, "premium": 5.0},
+        ])
+        QmtPositionService(db).report_positions(account="testS", positions=[
+            {"symbol": "113001", "volume": 100, "can_use_volume": 100, "open_price": 100.0},
+        ])
+        # 历史止损决策：1/2 止损 113006，(1/2, 1/5] 间 3 个交易日 <= 冷却 5 → 禁买
+        service.decisions.create(strategy_id=service.get_config()["strategy_id"], mode="event_check",
+                                 trade_date=date(2024, 1, 2), action="exit", symbol="113006",
+                                 reason="stop_loss", account="testS")
+
+        result = service.run(trade_date=trade_date, mode="rebalance")
+
+        # 止损债与冷却债都不入选，只买正常候选
+        assert list(result["target"]) == ["113007"]
+        sells = [o for o in result["rebalance"] if o["side"] == "sell" and o["symbol"] == "113001"]
+        assert len(sells) == 1 and sells[0]["quantity"] == 100 and sells[0]["reason"] == "stop_loss"
+    finally:
+        DatabaseManager.reset_instance()
+
+
+def test_stop_loss_cooldown_expires_by_trading_days(monkeypatch: pytest.MonkeyPatch):
+    """冷却按交易日推导：止损 6 个交易日后（冷却 5）解禁，标的恢复入选。"""
+    _weekdays_only(monkeypatch)
+    DatabaseManager.reset_instance()
+    db = DatabaseManager(db_url="sqlite:///:memory:")
+    try:
+        service = LiveStrategyService(db)
+        service.save_config({"qmt_account": "testS", "enabled": True, "data_sync_before_run": False,
+                             "parameters": {"max_positions": 1, "stop_loss_pct": 8, "stop_loss_cooldown_days": 5}})
+        trade_date = date(2024, 1, 10)  # 周三；1/2 止损后 (1/2, 1/10] 共 6 个交易日 > 5 → 解禁
+        _seed_cb_universe(db, trade_date, [
+            {"code": "113006", "name": "历史止损债", "close": 100.0, "premium": 3.0},
+        ])
+        QmtPositionService(db).report_positions(account="testS", positions=[])
+        service.decisions.create(strategy_id=service.get_config()["strategy_id"], mode="event_check",
+                                 trade_date=date(2024, 1, 2), action="exit", symbol="113006",
+                                 reason="stop_loss", account="testS")
+
+        result = service.run(trade_date=trade_date, mode="rebalance", preview=True)
+        assert list(result["target"]) == ["113006"]
+    finally:
+        DatabaseManager.reset_instance()
+
+
+def test_stop_loss_disabled_by_zero_pct(monkeypatch: pytest.MonkeyPatch):
+    """stop_loss_pct=0（默认）：深亏持仓不触发止损，回到纯事件/对账语义。"""
+    _weekdays_only(monkeypatch)
+    DatabaseManager.reset_instance()
+    db = DatabaseManager(db_url="sqlite:///:memory:")
+    try:
+        service = LiveStrategyService(db)
+        service.save_config({"qmt_account": "testS", "enabled": True, "data_sync_before_run": False,
+                             "parameters": {"max_positions": 1}})
+        trade_date = date(2024, 1, 2)
+        _seed_cb_universe(db, trade_date, [
+            {"code": "113001", "name": "深亏债", "close": 80.0, "premium": 1.0},
+        ])
+        QmtPositionService(db).report_positions(account="testS", positions=[
+            {"symbol": "113001", "volume": 100, "can_use_volume": 100, "open_price": 100.0},
+        ])
+
+        result = service.run(trade_date=trade_date, mode="event_check", preview=True)
+        actions = {d["symbol"]: (d["action"], d.get("reason")) for d in result["decisions"]}
+        assert actions["113001"] == ("hold", "no_blocking_event")
+    finally:
+        DatabaseManager.reset_instance()

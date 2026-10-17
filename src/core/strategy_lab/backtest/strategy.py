@@ -26,7 +26,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 import backtrader as bt
 
-from src.core.strategies.sizing import price_size_ratio
+from src.core.strategies.sizing import ensure_min_lot_amount, price_size_ratio
 from src.core.strategy_lab import factors as F
 from src.core.strategy_lab.backtest.params import RotationParams
 
@@ -102,6 +102,8 @@ class CbRotationStrategy(bt.Strategy):
         self._unit_count = 0
         self._last_recorded: Optional[date] = None
         self._last_seen_date: Optional[date] = None
+        # 止损冷却：symbol → 冷却截止 bar 序号（止损当日起 N 个交易日内禁止再买入）
+        self._stop_cool_until: Dict[str, int] = {}
 
     # ------------------------------------------------------------------
     # 主循环
@@ -112,6 +114,7 @@ class CbRotationStrategy(bt.Strategy):
         self._snapshot_previous_day()
         self._bar_count += 1
         force_sold = self._apply_forced_exits(current_date)
+        force_sold |= self._apply_stop_loss(skip_symbols=force_sold)
         if self._is_rebalance_day(current_date):
             self.rebalance_dates.append(current_date)
             self._rebalance(current_date, skip_symbols=force_sold)
@@ -202,6 +205,9 @@ class CbRotationStrategy(bt.Strategy):
                 continue
             if symbol.lower() in self.cfg.excluded_symbols:
                 continue
+            # 止损冷却期内（止损当日起 N 个交易日）不再入选，防止下次换仓买回
+            if self._bar_count <= self._stop_cool_until.get(symbol, 0):
+                continue
             if self.cfg.exclude_event_blocked and (data.event_blocked[0] or 0.0) != 0.0:
                 continue
             if meta is not None:
@@ -254,7 +260,7 @@ class CbRotationStrategy(bt.Strategy):
         sold: Set[str] = set()
         for data, position in list(self.positions.items()):
             size = getattr(position, "size", 0) or 0
-            if size == 0:
+            if size <= 0:
                 continue
             meta = self.metas.get(data._name)
             if meta is None:
@@ -270,6 +276,38 @@ class CbRotationStrategy(bt.Strategy):
                 continue
             self._submit(data, "sell", size, reason)
             sold.add(data._name)
+        return sold
+
+    def _apply_stop_loss(self, skip_symbols: Optional[Set[str]] = None) -> Set[str]:
+        """持仓成本亏损达到 stop_loss_pct 时全量止损，冷却期内禁止再买入。
+
+        低溢价策略里价格下跌常伴随溢价率走低、排名反而更靠前，无冷却期的
+        止损会在下一次换仓把同一标的买回来，变成高卖低买的往返损耗；冷却
+        语义与实盘服务层一致（止损日起 N 个交易日内不再入选候选）。
+        成本取 backtrader 持仓均价（含再平衡加仓的摊薄）；当日已被终局
+        强平的标的跳过——coc 下单在收盘才成交，不跳过会同一根 bar 卖两次
+        全量、把持仓卖成负数。
+        """
+        if self.cfg.stop_loss_pct <= 0:
+            return set()
+        skip = skip_symbols or set()
+        sold: Set[str] = set()
+        for data, position in list(self.positions.items()):
+            size = getattr(position, "size", 0) or 0
+            if size <= 0 or data._name in skip:
+                continue
+            cost = float(getattr(position, "price", 0.0) or 0.0)
+            if cost <= 0:
+                continue
+            close = data.close[0]
+            if _nan(close) or close <= 0:
+                continue
+            if (close - cost) / cost * 100.0 > -self.cfg.stop_loss_pct + 1e-9:
+                continue
+            self._submit(data, "sell", size, "stop_loss")
+            sold.add(data._name)
+            if self.cfg.stop_loss_cooldown_days > 0:
+                self._stop_cool_until[data._name] = self._bar_count + self.cfg.stop_loss_cooldown_days
         return sold
 
     def _rebalance(self, current_date: date, skip_symbols: Optional[Set[str]] = None) -> None:
@@ -291,9 +329,11 @@ class CbRotationStrategy(bt.Strategy):
         skip = skip_symbols or set()
 
         def _per_target(close: float) -> float:
-            """单标的买入金额：等额基准 × 价格分档比例，再被单标的仓位上限封顶。"""
+            """单标的买入金额：等额基准 × 价格分档比例，保底一手，再被单标的仓位上限封顶。"""
             ratio = price_size_ratio(close, self.cfg.price_tier_bounds, self.cfg.price_tier_ratios)
-            return min(base_target * ratio, target_cap)
+            # 保底一手按含佣金的单张成本口径折算，保证恰好一手的金额换回不小于一手
+            amount = ensure_min_lot_amount(base_target * ratio, self._sizing_divisor(close), lot)
+            return min(amount, target_cap)
 
         # 先卖后买：同一根 bar 内先释放现金（coc 下按提交顺序撮合）
         for data, position in list(self.positions.items()):
@@ -311,7 +351,7 @@ class CbRotationStrategy(bt.Strategy):
                 continue
             if symbol in target_symbols:
                 # 再平衡：调回目标权重（预留佣金余量，避免满仓被拒单）
-                target_qty = math.floor(_per_target(close) / self._sizing_divisor(close) / lot) * lot
+                target_qty = math.floor(_per_target(close) / self._sizing_divisor(close) / lot + 1e-9) * lot
                 delta = target_qty - size
                 if delta > 0:
                     self._submit(data, "buy", delta, "rebalance_up")
@@ -329,7 +369,7 @@ class CbRotationStrategy(bt.Strategy):
             close = data.close[0]
             if _nan(close) or close <= 0:
                 continue
-            quantity = math.floor(_per_target(close) / self._sizing_divisor(close) / lot) * lot
+            quantity = math.floor(_per_target(close) / self._sizing_divisor(close) / lot + 1e-9) * lot
             if quantity >= lot:
                 self._submit(data, "buy", quantity, "rotation_entry")
 

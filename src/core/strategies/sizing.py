@@ -71,3 +71,15 @@ def price_tiers_from_scalars(
     ratios = ratios[: len(bounds) + 1]
     validate_price_tiers(bounds, ratios)
     return tuple(bounds), tuple(ratios)
+
+
+def ensure_min_lot_amount(amount: float, price: float, lot: int = 10) -> float:
+    """买入金额保底一手：金额低于一手成本（price×lot）时提到一手成本。
+
+    高价档比例缩放后的额度可能不足一手（如 >250 元档 20%），此时按一手
+    买入而不是整笔跳过。amount 非正或 price/lot 非法时原样返回，交由
+    上层按不足一手跳过。price 传「单张成本口径」（回测含佣金除数）。
+    """
+    if amount <= 0 or price <= 0 or lot <= 0:
+        return amount
+    return max(amount, price * lot)

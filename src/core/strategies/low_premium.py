@@ -1,6 +1,6 @@
 from .base import StrategyBase, StrategyDecision
 from .context import MarketContext
-from .sizing import price_size_ratio, price_tiers_from_scalars
+from .sizing import ensure_min_lot_amount, price_size_ratio, price_tiers_from_scalars
 
 def _is_st_stock(stock_name) -> bool:
     """正股名称含 ST（覆盖 ST/*ST/S*ST 等风险警示形态）即视为 ST 正股。"""
@@ -29,6 +29,8 @@ class LowPremiumStrategy(StrategyBase):
         {"key":"price_tier3_pct","label":"三档仓位比例%","type":"number","default":60,"min":1,"max":100},
         {"key":"price_tier4_pct","label":"四档仓位比例%","type":"number","default":40,"min":1,"max":100},
         {"key":"price_tier5_pct","label":"五档仓位比例%（超四档上限）","type":"number","default":20,"min":1,"max":100},
+        {"key":"stop_loss_pct","label":"止损阈值%（0=关闭，按持仓成本价）","type":"number","default":0,"min":0,"max":50},
+        {"key":"stop_loss_cooldown_days","label":"止损后再买入冷却交易日","type":"integer","default":10,"min":0},
     )
     def evaluate(self, context: MarketContext, *, mode="rebalance", parameters=None):
         self.validate_context(context); p=self.parameters(parameters)
@@ -77,6 +79,8 @@ class LowPremiumStrategy(StrategyBase):
             # live/backtest.
             if fixed_qty>0:
                 qty=int(fixed_qty*ratio/lot)*lot
+                # 高价档缩放后不足一手时保底一手（权重上限仍随后封顶）
+                qty=max(qty,lot)
                 if cap_amount>0: qty=min(qty,int(cap_amount/close/lot)*lot)
                 if qty<=0: continue
                 out.append(StrategyDecision("buy",i.symbol,i.name,suggested_quantity=qty,reason="lowest_premium",
@@ -85,6 +89,8 @@ class LowPremiumStrategy(StrategyBase):
                 "price_ratio":ratio,"position_cap_amount":round(cap_amount,2) if cap_amount>0 else None}))
             else:
                 amount=float(p["per_position_cash"])*ratio
+                # 高价档缩放后不足一手时保底一手金额（权重上限仍随后封顶）
+                amount=ensure_min_lot_amount(amount,close,lot)
                 if cap_amount>0: amount=min(amount,cap_amount)
                 out.append(StrategyDecision("buy",i.symbol,i.name,target_amount=amount,reason="lowest_premium",
                 decision_data={"premium_rate":premium,"close":close,"remaining_size":f.remaining_size,"rank":rank,

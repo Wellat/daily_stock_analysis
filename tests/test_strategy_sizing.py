@@ -4,6 +4,7 @@
 import pytest
 
 from src.core.strategies.sizing import (
+    ensure_min_lot_amount,
     price_size_ratio,
     price_tiers_from_scalars,
     validate_price_tiers,
@@ -74,3 +75,18 @@ def test_scalars_zero_bound_truncates_remaining_tiers():
 def test_scalars_reject_non_ascending_bounds():
     with pytest.raises(ValueError, match="strictly increasing"):
         price_tiers_from_scalars(**_scalars(tier2_max=160))
+
+
+def test_ensure_min_lot_amount_floors_to_one_lot():
+    """金额不足一手成本时提到一手；已足额时不动。"""
+    assert ensure_min_lot_amount(2000, 260, 10) == 2600
+    assert ensure_min_lot_amount(6000, 190, 10) == 6000
+    assert ensure_min_lot_amount(10000, 260, 10) == 10000
+
+
+def test_ensure_min_lot_amount_invalid_inputs_passthrough():
+    """amount 非正或 price/lot 非法时原样返回，交由上层按不足一手跳过。"""
+    assert ensure_min_lot_amount(1500, 0, 10) == 1500
+    assert ensure_min_lot_amount(1500, 260, 0) == 1500
+    assert ensure_min_lot_amount(0, 260, 10) == 0
+    assert ensure_min_lot_amount(-100, 260, 10) == -100

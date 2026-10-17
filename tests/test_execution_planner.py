@@ -75,6 +75,15 @@ def test_planner_skips_sell_without_available_position():
     assert plan.skipped[0].reason == "no_available_quantity"
 
 
+def test_planner_exactly_one_lot_amount_survives_float_truncation():
+    # 恰好一手金额的浮点除法：12.82×10=128.2，128.2/12.82/10=0.999…，无容差会截成 0 手被跳过
+    plan = ExecutionPlanner().plan(
+        [StrategyDecision("buy", symbol="113001", target_amount=128.2)],
+        _context(price=12.82), lot_size=10,
+    )
+    assert [(o.side, o.quantity) for o in plan.orders] == [("buy", 10)]
+
+
 def test_planner_ignores_unknown_actions_and_empty_symbols():
     plan = ExecutionPlanner().plan(
         [StrategyDecision("hold", symbol="113001"), StrategyDecision("buy", symbol="")],

@@ -495,6 +495,38 @@ export const RotationParamsForm: React.FC<Props> = ({ value, onChange, factors, 
           </label>
         </div>
       </div>
+      <div>
+        <div className="mb-1 flex items-center gap-2 text-sm">
+          <span>止损</span>
+          <Tag className="m-0" color="blue">按持仓成本价，每日收盘检查</Tag>
+          <span className="text-xs text-secondary-text">阈值填 0 关闭；触发后全量卖出，冷却期内不再入选</span>
+        </div>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <label className="text-sm">
+            止损阈值(%)
+            <input
+              aria-label="止损阈值"
+              className={`${SL_INPUT_CLASS} mt-1`}
+              type="number"
+              min="0"
+              max="50"
+              value={value.stopLossPct}
+              onChange={(event) => patch({ stopLossPct: event.target.value })}
+            />
+          </label>
+          <label className="text-sm">
+            再买入冷却(交易日)
+            <input
+              aria-label="止损冷却交易日"
+              className={`${SL_INPUT_CLASS} mt-1`}
+              type="number"
+              min="0"
+              value={value.stopLossCooldownDays}
+              onChange={(event) => patch({ stopLossCooldownDays: event.target.value })}
+            />
+          </label>
+        </div>
+      </div>
     </div>
   );
 };
