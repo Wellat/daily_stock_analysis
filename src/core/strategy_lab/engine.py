@@ -41,10 +41,11 @@ def _rotation_strategy_entry() -> Dict[str, Any]:
     ]
     return {
         "strategy_id": "rotation",
-        "name": "Convertible Bond Rotation",
+        "name": "转债轮动",
         "instrument_types": ["convertible_bond"],
         "markets": ["cn"],
-        "description": "Periodic convertible-bond rotation with cross-sectional factor scoring (backtrader).",
+        "live_mode": None,
+        "description": "按换仓周期轮动持有横截面因子打分最优的可转债（backtrader 引擎，可组合打分/排除因子与价格分档、止损等风控）。",
         "parameters": parameters,
         "factors": [spec.metadata() for spec in F.FACTOR_REGISTRY.values()],
         "score_presets": [preset.to_dict() for preset in F.SCORE_PRESETS.values()],
@@ -67,10 +68,11 @@ def _signal_strategy_entry() -> Dict[str, Any]:
     ]
     return {
         "strategy_id": "signal",
-        "name": "ETF Signal",
+        "name": "ETF 信号",
         "instrument_types": ["etf"],
         "markets": ["cn"],
-        "description": "Per-symbol time-series entry/exit rules on daily bars (e.g. MA deviation with optional dividend-yield filter).",
+        "live_mode": "notify",
+        "description": "每标的独立时序进出场规则（如均线乖离率买入、涨幅过高卖出，可叠加股息率过滤）；实盘信号通知规划接入中。",
         "parameters": parameters,
         "factors": SF.list_series_factor_metadata(),
     }
@@ -94,11 +96,12 @@ def _signal_macd_strategy_entry() -> Dict[str, Any]:
     ]
     return {
         "strategy_id": "signal_macd",
-        "name": "ETF Signal · MACD",
+        "name": "ETF 信号 · MACD",
         "instrument_types": ["etf"],
         "markets": ["cn"],
+        "live_mode": "notify",
         "description": "MACD 金叉买入 / 死叉卖出（DIF 上穿/下穿 DEA，收盘确认与成交）；"
-                       "规则可组合零轴过滤（macd_dif）与柱状线（macd_hist）等因子。",
+                       "规则可组合零轴过滤（macd_dif）与柱状线（macd_hist）等因子。实盘信号通知规划接入中。",
         "parameters": parameters,
         "factors": macd_only,
     }
@@ -113,10 +116,11 @@ def list_builtin_strategies() -> List[dict]:
     legacy = [
         {
             "strategy_id": "double-low",
-            "name": "Double Low Rotation",
+            "name": "双低轮动",
             "instrument_types": ["convertible_bond"],
             "markets": ["cn"],
-            "description": "Select instruments by close price plus convertible-bond premium rate.",
+            "live_mode": None,
+            "description": "按价格与转股溢价率之和（双低值）升序轮动持有最优可转债。",
             "parameters": [
                 {"key": "max_positions", "label": "最大持仓数", "type": "integer", "default": 2, "min": 1, "max": 50},
                 {"key": "per_position_cash", "label": "单债目标资金", "type": "number", "default": 10000, "min": 100},
@@ -127,10 +131,11 @@ def list_builtin_strategies() -> List[dict]:
         },
         {
             "strategy_id": "low-premium",
-            "name": "Low Premium Rotation",
+            "name": "低溢价轮动",
             "instrument_types": ["convertible_bond"],
             "markets": ["cn"],
-            "description": "Select convertible bonds by the lowest conversion premium rate.",
+            "live_mode": None,
+            "description": "按转股溢价率升序轮动持有最低溢价的可转债。",
             "parameters": [
                 {"key": "max_positions", "label": "最大持仓数", "type": "integer", "default": 2, "min": 1, "max": 50},
                 {"key": "per_position_cash", "label": "单债目标资金", "type": "number", "default": 10000, "min": 100},
@@ -141,10 +146,11 @@ def list_builtin_strategies() -> List[dict]:
         },
         {
             "strategy_id": "ma-crossover",
-            "name": "Moving Average Crossover",
+            "name": "均线交叉",
             "instrument_types": ["convertible_bond"],
             "markets": ["cn"],
-            "description": "Buy on a fast/slow moving-average golden cross and exit on a death cross or event block.",
+            "live_mode": None,
+            "description": "快速均线上穿慢速均线（金叉）买入，死叉或触发风险事件退出。",
             "parameters": [
                 {"key": "fast_period", "label": "快速均线周期", "type": "integer", "default": 5, "min": 1},
                 {"key": "slow_period", "label": "慢速均线周期", "type": "integer", "default": 20, "min": 2},

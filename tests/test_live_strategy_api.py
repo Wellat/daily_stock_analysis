@@ -95,3 +95,26 @@ def test_run_orders_include_fill_report_fields(client_and_db):
     assert len(items) == 2
     assert {o["status"] for o in items} == {"filled", "pending"}
     assert all("filled_price" in o and "filled_quantity" in o and "completed_at" in o for o in items)
+
+
+def test_notify_config_endpoints_roundtrip_and_validation(client_and_db):
+    """PUT /configs/notify 校验 + GET /configs 列表 + 手动运行对非 notify 配置报 400。"""
+    client, db = client_and_db
+    # 非 notify 策略拒绝
+    bad = client.put("/api/v1/live-strategy/configs/notify",
+                     json={"strategy_id": "low-premium", "symbols": ["510880"], "parameters": {}})
+    assert bad.status_code == 400 and "notify" in bad.json()["message"]
+    # 空标的被 pydantic 拦截
+    empty = client.put("/api/v1/live-strategy/configs/notify",
+                       json={"strategy_id": "signal", "symbols": [], "parameters": {}})
+    assert empty.status_code == 422
+    # 合法保存 → 列表可见，qmt_account 占位 '-'
+    ok = client.put("/api/v1/live-strategy/configs/notify",
+                    json={"strategy_id": "signal", "enabled": False, "symbols": ["510880", "159307"],
+                          "parameters": {"ma_window": 20}, "schedule_time": "14:25"})
+    assert ok.status_code == 200 and ok.json()["qmt_account"] == "-"
+    items = client.get("/api/v1/live-strategy/configs").json()["items"]
+    assert [i["strategy_id"] for i in items] == ["signal"]
+    # 手动运行对不存在配置报 400
+    missing = client.post("/api/v1/live-strategy/configs/9999/notify/run")
+    assert missing.status_code == 400

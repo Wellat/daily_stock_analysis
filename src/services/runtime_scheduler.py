@@ -110,32 +110,49 @@ def build_agent_event_monitor_background_tasks(
 
 
 def build_live_strategy_background_tasks(config: Config) -> List[Dict[str, Any]]:
-    """Run the enabled live strategy once at 14:35 on trading days."""
+    """Run enabled live configs once per trading day at each configured schedule_time.
+
+    按策略 live_mode 分派：order → 实盘交易（LiveStrategyService.run），
+    notify → 信号通知（EtfSignalNotifyService.run，不下单）。
+    """
     if os.getenv("LIVE_STRATEGY_SCHEDULE_ENABLED", "true").strip().lower() in {"0", "false", "no", "off"}:
         logger.info("Live strategy schedule disabled")
         return []
+    from src.core.strategy_lab.engine import list_builtin_strategies
+    from src.services.etf_signal_notify_service import EtfSignalNotifyService
     from src.services.live_strategy_service import LiveStrategyService
-    last_run_key = {"value": None}
+    live_modes = {s["strategy_id"]: s.get("live_mode") for s in list_builtin_strategies()}
+    # 当日幂等按 (config_id, date) 记：多配置并行时互不挤占
+    last_run_keys: dict = {"value": {}}
 
     def live_strategy_task() -> None:
         now = datetime.now()
-        if now.strftime("%H:%M") != "14:35":
-            return
-        key = now.date().isoformat()
-        if last_run_key["value"] == key:
-            return
-        # 仅 A 股交易日运行（exchange-calendars 不可用时 fail-open 视为交易日）
-        if not _is_cn_trading_day(now.date()):
-            logger.info("Skip live strategy on non-trading day %s", now.date())
-            return
         service = LiveStrategyService()
-        live_config = service.get_config()
-        if not live_config or not live_config.get("enabled"):
-            return
-        service.run(trade_date=now.date())
-        last_run_key["value"] = key
+        for live_config in service.list_configs():
+            if not live_config.get("enabled"):
+                continue
+            config_id = live_config.get("id")
+            # 触发时刻由各行配置 schedule_time 决定（页面可改），缺省回落 14:35
+            schedule_time = str(live_config.get("schedule_time") or "14:35")
+            if now.strftime("%H:%M") != schedule_time:
+                continue
+            key = f"{config_id}:{now.date().isoformat()}"
+            if last_run_keys["value"].get(key):
+                continue
+            # 仅 A 股交易日运行（exchange-calendars 不可用时 fail-open 视为交易日）
+            if not _is_cn_trading_day(now.date()):
+                logger.info("Skip live strategy on non-trading day %s", now.date())
+                return
+            try:
+                if live_modes.get(live_config.get("strategy_id")) == "notify":
+                    EtfSignalNotifyService().run(config_id=config_id, trade_date=now.date())
+                else:
+                    service.run(trade_date=now.date(), config_id=config_id)
+                last_run_keys["value"][key] = True
+            except Exception:
+                logger.exception("[LiveStrategySchedule] run failed for config=%s", config_id)
 
-    return [{"task": live_strategy_task, "interval_seconds": 30, "run_immediately": False, "name": "live_strategy_1435"}]
+    return [{"task": live_strategy_task, "interval_seconds": 30, "run_immediately": False, "name": "live_strategy_schedule"}]
 
 # 可转债数据同步任务
 def build_convertible_bond_sync_background_tasks(config: Config) -> List[Dict[str, Any]]:

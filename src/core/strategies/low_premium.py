@@ -8,9 +8,10 @@ def _is_st_stock(stock_name) -> bool:
 
 class LowPremiumStrategy(StrategyBase):
     strategy_id = "low-premium"
-    name = "Low Premium Rotation"
-    description = "Select convertible bonds by the lowest conversion premium rate."
+    name = "低溢价轮动"
+    description = "按转股溢价率升序轮动持有最低溢价的可转债。"
     version = "v1"
+    live_mode = "order"
     parameter_definitions = (
         {"key":"max_positions","label":"最大持仓数","type":"integer","default":2,"min":1,"max":50},
         {"key":"per_position_cash","label":"单债目标资金","type":"number","default":10000,"min":100},

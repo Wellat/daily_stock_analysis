@@ -1144,6 +1144,8 @@ class LiveStrategyConfig(Base):
     # 排除临近最后交易日的标的；提前量按交易日计，0 表示仅最后交易日当天
     last_trading_day_exit_enabled = Column(Boolean, nullable=False, default=True)
     last_trading_day_exit_buffer_days = Column(Integer, nullable=False, default=1)
+    # 交易日自动运行触发时刻（HH:MM）；缺省回落 14:35（引入该列前的写死值）
+    schedule_time = Column(String(5), nullable=False, default='14:35')
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, index=True)
 
@@ -1903,7 +1905,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                 if name not in run_columns:
                     conn.execute(text(f"ALTER TABLE live_strategy_runs ADD COLUMN {name} {ddl}"))
             config_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(live_strategy_configs)"))}
-            for name, ddl in {"rebalance_frequency_days": "INTEGER DEFAULT 1", "event_check_enabled": "BOOLEAN DEFAULT 1", "data_sync_before_run": "BOOLEAN DEFAULT 1", "last_trading_day_exit_enabled": "BOOLEAN DEFAULT 1", "last_trading_day_exit_buffer_days": "INTEGER DEFAULT 1"}.items():
+            for name, ddl in {"rebalance_frequency_days": "INTEGER DEFAULT 1", "event_check_enabled": "BOOLEAN DEFAULT 1", "data_sync_before_run": "BOOLEAN DEFAULT 1", "last_trading_day_exit_enabled": "BOOLEAN DEFAULT 1", "last_trading_day_exit_buffer_days": "INTEGER DEFAULT 1", "schedule_time": "VARCHAR(5) DEFAULT '14:35'"}.items():
                 if name not in config_columns:
                     conn.execute(text(f"ALTER TABLE live_strategy_configs ADD COLUMN {name} {ddl}"))
 

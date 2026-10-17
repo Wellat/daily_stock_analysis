@@ -536,3 +536,7 @@ cd apps/dsa-desktop && npm install && npm run build
 
 - 股息率数据源未接入（用户已决策暂缓）：加了 `dividend_yield > 3` 条件的策略将持续空仓，属预期行为（诊断与表单双重提示）；后续接入按「ETF→跟踪指数映射 + funddb 指数股息率」方案另行落地。
 - ETF 名称富化二期（v1 交易表显示代码）；腾讯兜底为 qfq 前复权口径（仅冷启动使用，source 列可甄别）。
+
+### 15.6 实盘信号通知已接入（2026-10，`live_mode=notify`）
+
+`signal` / `signal_macd` 的实盘信号通知已落地（此前「规划接入中」）：交易日按各行 `schedule_time` 由 runtime scheduler 触发 `EtfSignalNotifyService`，评估配置标的的进出场规则并直发飞书群机器人（复用 `FEISHU_WEBHOOK_URL`），每日汇总必发、不下单。当日 bar 由实时行情折算后复权口径拼接（优先 `现价/pre_close`、缺省用涨跌幅，皆缺或历史过期则该标的标注跳过）；信号评估与回测同一套 `series_factors` + signal_v1 规则语义；持仓状态从历史信号决策推导。配置入口在「策略管理」页（`PUT /live-strategy/configs/notify` 每策略一行 upsert），链路细节见 `docs/convertible-bond-trading.md` 调度与通知两节。

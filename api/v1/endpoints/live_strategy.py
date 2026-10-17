@@ -2,7 +2,7 @@ from __future__ import annotations
 from datetime import date
 from fastapi import APIRouter, Depends, HTTPException
 from api.deps import get_database_manager
-from api.v1.schemas.live_strategy import LiveStrategyConfigRequest, LiveStrategyRunRequest, LiveStrategyRunItem, LiveStrategyRunListResponse
+from api.v1.schemas.live_strategy import LiveStrategyConfigRequest, LiveStrategyNotifyConfigRequest, LiveStrategyRunRequest, LiveStrategyRunItem, LiveStrategyRunListResponse
 from sqlalchemy import desc, select
 from src.storage import LiveStrategyRun, LiveRebalanceBatch, StrategyDecisionRecord
 from src.services.live_strategy_service import LiveStrategyService
@@ -67,6 +67,27 @@ def get_run_orders(run_id: int, db_manager: DatabaseManager = Depends(get_databa
 def list_strategies():
     from src.core.strategy_lab.engine import list_builtin_strategies
     return {"items": list_builtin_strategies()}
+
+@router.get("/configs")
+def list_configs(db_manager: DatabaseManager = Depends(get_database_manager)):
+    """全部实盘配置（order 交易配置 + notify 信号通知配置），策略管理页数据源。"""
+    return {"items": LiveStrategyService(db_manager).list_configs()}
+
+@router.put("/configs/notify")
+def save_notify_config(request: LiveStrategyNotifyConfigRequest, db_manager: DatabaseManager = Depends(get_database_manager)):
+    try:
+        return LiveStrategyService(db_manager).save_notify_config(request.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail={"error": "invalid_params", "message": str(exc)})
+
+@router.post("/configs/{config_id}/notify/run")
+def run_notify_config(config_id: int, db_manager: DatabaseManager = Depends(get_database_manager)):
+    """手动立即运行一次信号通知（返回信号明细与发送结果）。"""
+    from src.services.etf_signal_notify_service import EtfSignalNotifyService
+    try:
+        return EtfSignalNotifyService(db_manager).run(config_id=config_id, trade_date=date.today())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail={"error": "invalid_params", "message": str(exc)})
 
 @router.get("/data-sync/status")
 def data_sync_status(db_manager: DatabaseManager = Depends(get_database_manager)):

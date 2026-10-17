@@ -20,6 +20,8 @@ class StrategyLabStrategyItem(BaseModel):
     name: str
     instrument_types: List[str] = Field(default_factory=list)
     markets: List[str] = Field(default_factory=list)
+    # 实盘能力标注：order=实盘交易下单；notify=只产信号通知（规划中）；None=仅回测
+    live_mode: Optional[str] = None
     description: Optional[str] = None
     parameters: List[Dict[str, Any]] = Field(default_factory=list, description="策略参数元数据（rotation 含枚举选项）")
     factors: List[Dict[str, Any]] = Field(default_factory=list, description="可用因子注册表元数据（rotation 提供）")

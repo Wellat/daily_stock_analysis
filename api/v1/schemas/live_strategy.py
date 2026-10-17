@@ -17,6 +17,17 @@ class LiveStrategyConfigRequest(BaseModel):
     # 强制全量卖出持仓，买入侧排除剩余交易日不足的标的
     last_trading_day_exit_enabled: bool = True
     last_trading_day_exit_buffer_days: int = Field(1, ge=0, le=10)
+    # 交易日自动运行触发时刻（HH:MM），缺省保留库内现值（默认 14:35）
+    schedule_time: Optional[str] = Field(None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+
+class LiveStrategyNotifyConfigRequest(BaseModel):
+    """信号通知配置（live_mode=notify 策略，每策略一行，不涉及 QMT 账户）。"""
+    strategy_id: str
+    strategy_version: str = "v1"
+    enabled: bool = False
+    symbols: List[str] = Field(min_length=1)
+    parameters: Dict[str, Any] = Field(default_factory=dict)
+    schedule_time: Optional[str] = Field(None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
 
 class LiveStrategyConfigResponse(LiveStrategyConfigRequest):
     id: Optional[int] = None

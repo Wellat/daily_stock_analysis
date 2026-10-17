@@ -841,3 +841,44 @@ def test_stop_loss_disabled_by_zero_pct(monkeypatch: pytest.MonkeyPatch):
         assert actions["113001"] == ("hold", "no_blocking_event")
     finally:
         DatabaseManager.reset_instance()
+
+
+def test_save_config_validates_and_persists_schedule_time():
+    """schedule_time：合法 HH:MM 落库、非法拒绝、缺省保留原值。"""
+    DatabaseManager.reset_instance()
+    db = DatabaseManager(db_url="sqlite:///:memory:")
+    try:
+        service = LiveStrategyService(db)
+        service.save_config({"qmt_account": "testS", "enabled": True, "strategy_id": "low-premium",
+                             "parameters": {"max_positions": 1}, "schedule_time": "14:30"})
+        assert service.get_config()["schedule_time"] == "14:30"
+
+        # 非法时刻拒绝
+        with pytest.raises(ValueError, match="schedule_time"):
+            service.save_config({"qmt_account": "testS", "strategy_id": "low-premium",
+                                 "parameters": {}, "schedule_time": "25:00"})
+
+        # 缺省不动库内现值
+        service.save_config({"qmt_account": "testS", "strategy_id": "low-premium", "parameters": {}})
+        assert service.get_config()["schedule_time"] == "14:30"
+    finally:
+        DatabaseManager.reset_instance()
+
+
+def test_strategy_metadata_live_mode_and_chinese_names():
+    """策略清单：中文名 + live_mode 三态（order/notify/仅回测），实盘注册表同样输出 live_mode。"""
+    from src.core.strategy_lab.engine import list_builtin_strategies as lab_list
+    items = {s["strategy_id"]: s for s in lab_list()}
+    assert items["low-premium"]["live_mode"] == "order"
+    assert items["double-low"]["live_mode"] == "order"
+    assert items["signal"]["live_mode"] == "notify"
+    assert items["signal_macd"]["live_mode"] == "notify"
+    assert items["rotation"]["live_mode"] is None
+    assert items["ma-crossover"]["live_mode"] is None
+    assert items["low-premium"]["name"] == "低溢价轮动"
+    assert items["signal"]["name"] == "ETF 信号"
+    assert all(s["name"] for s in items.values())
+
+    from src.core.strategies.registry import list_builtin_strategies as registry_list
+    assert {s["live_mode"] for s in registry_list()} == {"order"}
+    assert all(s["name"] for s in registry_list())

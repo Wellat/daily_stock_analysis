@@ -28,3 +28,24 @@ class StrategyDecisionRepository:
             if account: q=q.where(StrategyDecisionRecord.account==account)
             if strategy_id: q=q.where(StrategyDecisionRecord.strategy_id==strategy_id)
             return list(s.execute(q).scalars())
+    def latest_signal_actions(self, *, config_id, symbols):
+        """每个标的在指定实盘配置下最近一次 buy/sell 信号决策（ETF 信号持仓状态机用）。
+
+        返回 {symbol: "buy"|"sell"}；无历史则不在结果中（视为未持仓）。
+        """
+        from src.storage import LiveStrategyRun
+        rows_in = [str(x).strip().lower().split(".")[-1] for x in symbols if str(x).strip()]
+        if not rows_in:
+            return {}
+        with self.db.get_session() as s:
+            q=(select(StrategyDecisionRecord)
+                .join(LiveStrategyRun, StrategyDecisionRecord.live_run_id==LiveStrategyRun.id)
+                .where(LiveStrategyRun.config_id==config_id,
+                       StrategyDecisionRecord.action.in_(("buy","sell")),
+                       StrategyDecisionRecord.symbol.in_(rows_in))
+                .order_by(StrategyDecisionRecord.id.desc()))
+            out={}
+            for row in s.execute(q).scalars():
+                if row.symbol not in out:
+                    out[row.symbol]=row.action
+            return out

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import replace
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, Optional
@@ -49,8 +50,7 @@ class LiveStrategyService:
         self.planner = ExecutionPlanner()
 
     def get_config(self) -> Dict[str, Any] | None:
-        with self.db.get_session() as session:
-            row = session.execute(select(LiveStrategyConfig).order_by(desc(LiveStrategyConfig.id))).scalars().first()
+        row = self._latest_config()
         if row is None:
             return None
         payload = self._config_payload(row)
@@ -69,6 +69,12 @@ class LiveStrategyService:
             raise ValueError(f"unsupported strategy_id: {strategy_id}")
         symbols = [str(x).strip() for x in payload.get("symbols", []) if str(x).strip()]
         params = dict(payload.get("parameters") or {})
+        # 交易日自动运行触发时刻：HH:MM 严格校验，缺省保留原值（新行落默认 14:35）
+        schedule_time = payload.get("schedule_time")
+        if schedule_time is not None:
+            schedule_time = str(schedule_time).strip()
+            if not re.match(r"^([01]\d|2[0-3]):[0-5]\d$", schedule_time):
+                raise ValueError("schedule_time must be HH:MM (e.g. 14:35)")
         # 参数键按策略定义白名单校验：键名形态漂移（如驼峰）会绕过默认值合并、
         # 静默失效，必须在保存时拦截而不是等策略读参时走默认值。
         definitions = {item["key"]: item for item in metadata.get("parameters", [])}
@@ -100,6 +106,8 @@ class LiveStrategyService:
             row.data_sync_before_run = bool(payload.get("data_sync_before_run", True))
             row.last_trading_day_exit_enabled = bool(payload.get("last_trading_day_exit_enabled", True))
             row.last_trading_day_exit_buffer_days = max(int(payload.get("last_trading_day_exit_buffer_days", 1)), 0)
+            if schedule_time is not None:
+                row.schedule_time = schedule_time
             row.updated_at = datetime.now()
             session.commit(); session.refresh(row)
             payload = self._config_payload(row)
@@ -107,11 +115,18 @@ class LiveStrategyService:
         payload["next_rebalance_date"] = next_date.isoformat() if next_date else None
         return payload
 
-    def run(self, *, trade_date: date, preview: bool = False, mode: str = "auto") -> Dict[str, Any]:
+    def run(self, *, trade_date: date, preview: bool = False, mode: str = "auto", config_id: Optional[int] = None) -> Dict[str, Any]:
         # ---- 门禁：mode/配置校验、盘中数据同步、当日幂等、调仓频率 ----
         if mode not in {"auto", "rebalance", "event_check"}:
             raise ValueError("mode must be auto, rebalance or event_check")
-        config = self._latest_config()
+        if config_id is not None:
+            # 调度器按配置分派时显式指定行；notify 配置不属于本链路，直接拒绝
+            with self.db.get_session() as session:
+                config = session.get(LiveStrategyConfig, int(config_id))
+            if config is not None and self._live_mode_of(config.strategy_id) != "order":
+                raise ValueError(f"config {config_id} is not an order-mode live strategy")
+        else:
+            config = self._latest_config()
         if config is None:
             raise ValueError("live strategy config is not configured")
         # 盘中数据检查：当日必须存在 run_kind='intraday' 且已完成的同步记录，
@@ -558,14 +573,95 @@ class LiveStrategyService:
                 trade_date, ", ".join(sorted(missing)[:20]),
             )
 
-    def _latest_config(self):
+    def _latest_config(self, *, order_only: bool = True):
+        """最新实盘配置行。
+
+        order_only=True（默认）只取 live_mode=order 策略的行：notify 配置（ETF
+        信号通知）也会落本表，任由「最新行」语义取到会抢占 GET /config 与
+        转债实盘运行链路；无 order 行时回退最新行，保持单配置时代语义。
+        """
+        rows = self.list_config_rows()
+        if not rows:
+            return None
+        if order_only:
+            order_ids = self._order_strategy_ids()
+            order_rows = [r for r in rows if r.strategy_id in order_ids]
+            if order_rows:
+                return order_rows[0]
+        return rows[0]
+
+    def list_config_rows(self):
+        """全部实盘配置行（id 降序），多配置调度的数据源。"""
         with self.db.get_session() as session:
-            return session.execute(select(LiveStrategyConfig).order_by(desc(LiveStrategyConfig.id))).scalars().first()
+            return list(session.execute(
+                select(LiveStrategyConfig).order_by(desc(LiveStrategyConfig.id))
+            ).scalars())
+
+    def list_configs(self) -> list[Dict[str, Any]]:
+        """全部实盘配置 payload（含 notify 行），供配置列表 API/管理页合并。"""
+        out = []
+        for row in self.list_config_rows():
+            payload = self._config_payload(row)
+            next_date = self._rebalance_schedule(row)["next_rebalance_date"]
+            payload["next_rebalance_date"] = next_date.isoformat() if next_date else None
+            out.append(payload)
+        return out
+
+    @staticmethod
+    def _order_strategy_ids() -> set:
+        return {s["strategy_id"] for s in list_builtin_strategies() if s.get("live_mode") == "order"}
+
+    @staticmethod
+    def _live_mode_of(strategy_id: str) -> Optional[str]:
+        metadata = next((s for s in list_builtin_strategies() if s["strategy_id"] == strategy_id), None)
+        return (metadata or {}).get("live_mode")
+
+    def save_notify_config(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Upsert 信号通知配置（live_mode=notify 策略，每策略一行）。
+
+        与交易配置不同：不涉及 QMT 账户（qmt_account 落占位符 '-'）、标的
+        必填、无调仓/风控字段；参数键按策略元数据白名单校验。
+        """
+        strategy_id = str(payload.get("strategy_id") or "").strip()
+        if not strategy_id or self._live_mode_of(strategy_id) != "notify":
+            raise ValueError(f"strategy_id must be a notify-mode strategy, got: {strategy_id or 'empty'}")
+        symbols = [str(x).strip() for x in payload.get("symbols", []) if str(x).strip()]
+        if not symbols:
+            raise ValueError("notify config requires at least one symbol")
+        metadata = next(x for x in list_builtin_strategies() if x["strategy_id"] == strategy_id)
+        definitions = {item["key"]: item for item in metadata.get("parameters", [])}
+        params = dict(payload.get("parameters") or {})
+        unknown = sorted(str(k) for k in params if k not in definitions)
+        if unknown:
+            raise ValueError(f"unknown strategy parameters: {', '.join(unknown)}")
+        schedule_time = payload.get("schedule_time")
+        if schedule_time is not None:
+            schedule_time = str(schedule_time).strip()
+            if not re.match(r"^([01]\d|2[0-3]):[0-5]\d$", schedule_time):
+                raise ValueError("schedule_time must be HH:MM (e.g. 14:25)")
+        with self.db.get_session() as session:
+            row = session.execute(select(LiveStrategyConfig).where(
+                LiveStrategyConfig.strategy_id == strategy_id
+            ).order_by(desc(LiveStrategyConfig.id))).scalars().first()
+            if row is None:
+                row = LiveStrategyConfig(name=f"notify-{strategy_id}", qmt_account="-", strategy_id=strategy_id)
+                session.add(row)
+            row.strategy_version = str(payload.get("strategy_version") or "v1")
+            row.qmt_account = "-"
+            row.enabled = bool(payload.get("enabled", False))
+            row.symbols_json = json.dumps(symbols, ensure_ascii=False)
+            row.parameters_json = json.dumps(params, ensure_ascii=False)
+            if schedule_time is not None:
+                row.schedule_time = schedule_time
+            row.updated_at = datetime.now()
+            session.commit()
+            session.refresh(row)
+            return self._config_payload(row)
 
     @staticmethod
     def _config_payload(row):
         buffer_days = getattr(row, "last_trading_day_exit_buffer_days", None)
-        return {"id": row.id, "name": row.name, "strategy_id": row.strategy_id, "strategy_version": row.strategy_version, "qmt_account": row.qmt_account, "enabled": row.enabled, "symbols": json.loads(row.symbols_json or "[]"), "parameters": json.loads(row.parameters_json or "{}"), "rebalance_frequency_days": row.rebalance_frequency_days or 1, "event_check_enabled": row.event_check_enabled if row.event_check_enabled is not None else True, "data_sync_before_run": row.data_sync_before_run if row.data_sync_before_run is not None else True, "last_trading_day_exit_enabled": getattr(row, "last_trading_day_exit_enabled", True) if getattr(row, "last_trading_day_exit_enabled", None) is not None else True, "last_trading_day_exit_buffer_days": buffer_days if buffer_days is not None else 1}
+        return {"id": row.id, "name": row.name, "strategy_id": row.strategy_id, "strategy_version": row.strategy_version, "qmt_account": row.qmt_account, "enabled": row.enabled, "symbols": json.loads(row.symbols_json or "[]"), "parameters": json.loads(row.parameters_json or "{}"), "rebalance_frequency_days": row.rebalance_frequency_days or 1, "event_check_enabled": row.event_check_enabled if row.event_check_enabled is not None else True, "data_sync_before_run": row.data_sync_before_run if row.data_sync_before_run is not None else True, "last_trading_day_exit_enabled": getattr(row, "last_trading_day_exit_enabled", True) if getattr(row, "last_trading_day_exit_enabled", None) is not None else True, "last_trading_day_exit_buffer_days": buffer_days if buffer_days is not None else 1, "schedule_time": getattr(row, "schedule_time", None) or "14:35"}
 
     @staticmethod
     def _run_payload(row):

@@ -21,6 +21,8 @@ class StrategyBase(ABC):
     version = "v1"
     instrument_types = ("convertible_bond",)
     markets = ("cn",)
+    # 实盘能力标注：order=实盘交易下单；notify=只产信号通知（规划中）；None=仅回测
+    live_mode = None
     parameter_definitions: tuple[dict[str, Any], ...] = ()
 
     def validate_context(self, context: MarketContext) -> None:

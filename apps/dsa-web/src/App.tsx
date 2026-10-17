@@ -16,6 +16,7 @@ import './App.css';
 const HomePage = lazy(() => import('./pages/HomePage'));
 const BacktestPage = lazy(() => import('./pages/BacktestPage'));
 const StrategyLabPage = lazy(() => import('./pages/StrategyLabPage'));
+const StrategiesPage = lazy(() => import('./pages/StrategiesPage'));
 const MarketDataPage = lazy(() => import('./pages/MarketDataPage'));
 const SettingsPage = lazy(() => import('./pages/SettingsPage'));
 const LoginPage = lazy(() => import('./pages/LoginPage'));
@@ -93,6 +94,7 @@ const AppContent: React.FC = () => {
           <Route path="/screening" element={<StockScreeningPage />} />
           <Route path="/backtest" element={<BacktestPage />} />
           <Route path="/strategy-lab" element={<StrategyLabPage />} />
+          <Route path="/strategies" element={<StrategiesPage />} />
           <Route path="/market-data" element={<MarketDataPage />} />
           <Route path="/alerts" element={<AlertsPage />} />
           <Route path="/usage" element={<TokenUsagePage />} />

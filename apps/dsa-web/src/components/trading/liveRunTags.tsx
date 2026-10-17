@@ -3,6 +3,7 @@ import { Tag, Tooltip } from 'antd';
 const MODE_LABELS: Record<string, { label: string; color: string; tip: string }> = {
   rebalance: { label: '调仓', color: 'blue', tip: '按调仓节奏轮动：全市场排序选债并重构目标组合' },
   event_check: { label: '事件检查', color: 'orange', tip: '盘中风险事件扫描：只处理持仓的强赎/下修/回售事件，不买入' },
+  notify: { label: '信号通知', color: 'purple', tip: 'ETF 信号评估：产出买卖信号并推送飞书通知，不下单' },
 };
 
 const SKIP_REASON_LABELS: Record<string, string> = {
@@ -10,6 +11,7 @@ const SKIP_REASON_LABELS: Record<string, string> = {
   rebalance_frequency: '未到调仓日，本次不生成调仓',
   event_check_disabled: '事件检查已关闭，非调仓日不执行持仓扫描',
   premium_coverage_low: '溢价率覆盖率不足（数据缺失过多），本次不生成调仓',
+  feishu_send_failed: '飞书通知发送失败，可手动重试（当日重试复用同一运行记录）',
 };
 
 export const runStatusTag = (status?: string) => {
