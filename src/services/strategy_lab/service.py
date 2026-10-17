@@ -55,6 +55,8 @@ class StrategyLabService:
 
     def _resolve_engine(self, config: StrategyLabRunConfig) -> Any:
         """Prefer synchronized domain data while retaining fixture-only developer samples."""
+        if config.instrument_type == "etf":
+            return self._resolve_signal_engine(config)
         if config.instrument_type != "convertible_bond":
             return FixtureDoubleLowEngine()
         if config.strategy_id == "rotation":
@@ -99,6 +101,38 @@ class StrategyLabService:
         if config.strategy_id == "ma-crossover":
             return MovingAverageCrossoverEngine(dataset)
         return FixtureDoubleLowEngine(dataset, name="database_double_low_v1")
+
+    def _resolve_signal_engine(self, config: StrategyLabRunConfig) -> Any:
+        """signal 策略：纯 Python 信号引擎 + ETF 日线（含均线预热段）+ 可选指数基准。
+
+        无已同步数据时直接报错（ETF 依赖显式 symbols，无 fixture 回退语义）。
+        """
+        from src.core.strategy_lab.signal_engine import SignalEngine
+        from src.core.strategy_lab.signal_params import SignalParams
+
+        if not config.symbols:
+            raise ValueError(
+                "ETF 回测需要在「标的」中提供 ETF 代码（如 510880），并先完成 etf_daily 数据同步"
+            )
+        params = SignalParams.from_parameters(config.parameters or {})
+        # 均线类因子预热：按窗口大小回看（交易日×1.6 ≈ 自然日），从库里多取一段
+        lookback_days = int(max(params.ma_window, params.roc_window) * 1.6)
+        rows = self.data_repository.load_etf_signal_rows(
+            symbols=config.symbols,
+            start_date=config.start_date,
+            end_date=config.end_date,
+            lookback_days=lookback_days,
+        )
+        benchmark_rows = None
+        requested = (config.benchmark_symbol or "").strip().lower()
+        if requested in {"000300", "hs300", "csi300", "sh000300", "1.000300"}:
+            index_rows = self.data_repository.load_index_daily(
+                symbol="000300",
+                start_date=config.start_date,
+                end_date=config.end_date,
+            )
+            benchmark_rows = [(row["trade_date"], float(row["close"])) for row in index_rows]
+        return SignalEngine(rows, benchmark_rows=benchmark_rows)
 
     def _resolve_rotation_engine(self, config: StrategyLabRunConfig) -> Any:
         """rotation 策略：backtrader 引擎 + v2 数据行 + 可选指数基准。
@@ -156,8 +190,9 @@ class StrategyLabService:
             raise KeyError(f"Strategy Lab run not found: {run_id}")
         rows = self.repository.list_trades(run_id)
         # Trades persist codes only; enrich display names from the CB master table.
+        # （ETF/股票暂无名称主数据表，symbol_name 为 None 由前端回退显示代码）
         names: Dict[str, str] = {}
-        for market in {row.market for row in rows}:
+        for market in {row.market for row in rows if row.instrument_type == "convertible_bond"}:
             names.update(
                 self.data_repository.get_cb_names(
                     market=market, codes=[row.symbol for row in rows]

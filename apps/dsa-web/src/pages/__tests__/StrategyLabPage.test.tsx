@@ -37,10 +37,23 @@ const LEGACY_STRATEGIES = [
   { strategy_id: 'ma-crossover', name: '均线交叉', instrument_types: ['convertible_bond'], markets: ['cn'] },
 ];
 
+const SIGNAL_STRATEGY = {
+  strategy_id: 'signal',
+  name: 'ETF 信号',
+  instrument_types: ['etf'],
+  markets: ['cn'],
+  factors: [
+    { factor: 'close', label: '收盘价', column: null, transform: 'series', default_direction: 'asc' },
+    { factor: 'ma_gap_pct', label: '均线乖离率', column: null, transform: 'series', default_direction: 'asc' },
+    { factor: 'roc_pct', label: '区间涨跌幅', column: null, transform: 'series', default_direction: 'asc' },
+    { factor: 'dividend_yield', label: '股息率', column: null, transform: 'series', default_direction: 'asc' },
+  ],
+};
+
 describe('StrategyLabPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    api.listStrategies.mockResolvedValue([ROTATION_STRATEGY, ...LEGACY_STRATEGIES]);
+    api.listStrategies.mockResolvedValue([ROTATION_STRATEGY, SIGNAL_STRATEGY, ...LEGACY_STRATEGIES]);
     api.listRuns.mockResolvedValue([]);
     api.listBatches.mockResolvedValue([]);
     api.listConfigs.mockResolvedValue([]);
@@ -284,6 +297,71 @@ describe('StrategyLabPage', () => {
     fireEvent.click(screen.getByText('#1'));
     await waitFor(() => expect(api.getRun).toHaveBeenCalledWith(1));
     await waitFor(() => expect(api.listRunTrades).toHaveBeenCalledWith(1));
+  }, 15000);
+
+  it('submits an ETF signal run with entry/exit rules and etf instrument_type', async () => {
+    render(<UiLanguageProvider><StrategyLabPage /></UiLanguageProvider>);
+    await screen.findByRole('button', { name: '开始回测' });
+    fireEvent.change(screen.getByLabelText('策略'), { target: { value: 'signal' } });
+    // signal 表单：均线窗口 + 买入/卖出条件表；ETF 标的必填
+    expect(await screen.findByLabelText('均线窗口')).toHaveValue(182);
+    expect(screen.getByText('买入条件')).toBeInTheDocument();
+    expect(screen.getByText('卖出条件')).toBeInTheDocument();
+    // 涨跌幅窗口仅当规则引用「区间涨跌幅」因子时显示
+    expect(screen.queryByLabelText('涨跌幅窗口')).not.toBeInTheDocument();
+    fireEvent.click(screen.getAllByRole('button', { name: '添加条件' })[0]); // 买入条件表添加一行
+    const ruleFactorSelects = screen.getAllByRole('combobox', { name: '买入条件-因子-1' });
+    const ruleSelector = ruleFactorSelects[0].closest('.ant-select')?.querySelector('.ant-select-selector') as HTMLElement;
+    fireEvent.mouseDown(ruleSelector);
+    fireEvent.click(await screen.findByText('区间涨跌幅'));
+    expect(await screen.findByLabelText('涨跌幅窗口')).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('买入条件-值-1'), { target: { value: '-10' } });
+    fireEvent.change(screen.getByLabelText('均线窗口'), { target: { value: '120' } });
+    // 基准切到长持·买入持有（signal 专属选项）
+    const benchmarkSelects = screen.getAllByRole('combobox', { name: '基准指标' });
+    const benchmarkSelector = benchmarkSelects[0].closest('.ant-select')?.querySelector('.ant-select-selector') as HTMLElement;
+    fireEvent.mouseDown(benchmarkSelector);
+    fireEvent.click(await screen.findByText('长持·买入持有'));
+    fireEvent.change(screen.getByLabelText('ETF标的'), { target: { value: '510880' } });
+    fireEvent.click(screen.getByRole('button', { name: '开始回测' }));
+    await waitFor(() => expect(api.createRun).toHaveBeenCalledWith(expect.objectContaining({
+      strategy_id: 'signal',
+      instrument_type: 'etf',
+      benchmark_symbol: 'buy_hold',
+      symbols: ['510880'],
+      parameters: expect.objectContaining({
+        ma_window: 120,
+        entry_rules: [
+          { factor: 'ma_gap_pct', op: '<', value: 0 },
+          { factor: 'roc_pct', op: '<', value: -10 },
+        ],
+        exit_rules: [{ factor: 'ma_gap_pct', op: '>', value: 7 }],
+        entry_gap_max: 0,
+        exit_gap_min: 7,
+        lot_size: 100,
+      }),
+    })));
+  }, 15000);
+
+  it('submits a signal batch with ma_window grid on the parameter-search tab', async () => {
+    render(<UiLanguageProvider><StrategyLabPage /></UiLanguageProvider>);
+    await screen.findByRole('button', { name: '开始回测' });
+    fireEvent.click(screen.getByRole('tab', { name: '参数搜索' }));
+    await screen.findByRole('button', { name: '运行参数批次' });
+    // 研究面板与搜索面板各有策略下拉（切换动画期间可能并存），取搜索面板的
+    const strategySelects = await screen.findAllByLabelText('策略');
+    fireEvent.change(strategySelects[strategySelects.length - 1], { target: { value: 'signal' } });
+    const maInput = await screen.findByLabelText('均线窗口候选');
+    fireEvent.change(maInput, { target: { value: '60,182' } });
+    fireEvent.change(screen.getByLabelText('卖出乖离率候选'), { target: { value: '5,7' } });
+    fireEvent.change(await screen.findByLabelText('ETF标的'), { target: { value: '510880' } });
+    fireEvent.click(screen.getByRole('button', { name: '运行参数批次' }));
+    await waitFor(() => expect(api.createBatch).toHaveBeenCalledWith(expect.objectContaining({
+      strategy_id: 'signal',
+      instrument_type: 'etf',
+      parameter_grid: { ma_window: [60, 182], exit_gap_min: [5, 7] },
+      base_config: expect.objectContaining({ instrument_type: 'etf', symbols: ['510880'] }),
+    })));
   }, 15000);
 
   it('switches to the parameter-search tab and submits an async batch', async () => {

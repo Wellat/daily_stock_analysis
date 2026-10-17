@@ -31,6 +31,8 @@ const {
   getTrend,
   listDecisionSignals,
   getLatestDecisionSignals,
+  updatePositionMeta,
+  autofillPositionMeta,
 } = vi.hoisted(() => ({
   getAccounts: vi.fn(),
   getSnapshot: vi.fn(),
@@ -55,6 +57,8 @@ const {
   getTrend: vi.fn(),
   listDecisionSignals: vi.fn(),
   getLatestDecisionSignals: vi.fn(),
+  updatePositionMeta: vi.fn(),
+  autofillPositionMeta: vi.fn(),
 }));
 
 vi.mock('../../api/decisionSignals', () => ({
@@ -87,6 +91,8 @@ vi.mock('../../api/portfolio', () => ({
     deleteAccount,
     analyzePosition,
     getTrend,
+    updatePositionMeta,
+    autofillPositionMeta,
   },
 }));
 
@@ -349,6 +355,8 @@ describe('PortfolioPage FX refresh', () => {
       analysisPhase: 'auto',
     });
     getLatestDecisionSignals.mockResolvedValue({ items: [], total: 0, page: 1, pageSize: 1 });
+    updatePositionMeta.mockResolvedValue({ accountId: 1, symbol: '600519', market: 'cn', industry: '食品饮料', category: 'stock', buyLogic: 'dividend', note: '' });
+    autofillPositionMeta.mockResolvedValue({ accountsScanned: 1, positionsScanned: 0, industryCandidates: 0, industryFilled: 0, failed: [] });
   });
 
   function renderEnglishPage() {
@@ -530,6 +538,85 @@ describe('PortfolioPage FX refresh', () => {
     const aaplRowCells = within(aaplRow as HTMLTableRowElement).getAllByRole('cell');
     expect(hkRowCells.at(-3)).toHaveClass('text-success');
     expect(aaplRowCells.at(-3)).toHaveClass('text-secondary');
+  });
+
+  it('renders position meta columns, pie titles, and edits meta via dialog', async () => {
+    getSnapshot.mockResolvedValueOnce(makeSnapshot({ fxStale: true, positions: [
+      { symbol: '600519', symbolName: '贵州茅台', market: 'cn', currency: 'CNY', quantity: 1, avgCost: 1500, totalCost: 1500, lastPrice: 1600, marketValueBase: 1600, unrealizedPnlBase: 100, unrealizedPnlPct: 6.67, valuationCurrency: 'CNY', priceSource: 'history_close', priceDate: '2026-06-17', priceStale: false, priceAvailable: true, industry: '食品饮料', category: 'stock', buyLogic: 'dividend', note: '打新底仓' },
+      { symbol: '021583.OF', symbolName: '中欧港股通央企红利', market: 'cn', currency: 'CNY', quantity: 100, avgCost: 1.19, totalCost: 119, lastPrice: 1.17, marketValueBase: 117, unrealizedPnlBase: -2, unrealizedPnlPct: -1.68, valuationCurrency: 'CNY', priceSource: 'history_close', priceDate: '2026-10-09', priceStale: false, priceAvailable: true, industry: null, category: 'fund', buyLogic: 'index_tracking', note: null },
+    ] }));
+
+    render(<PortfolioPage />);
+
+    await waitForInitialLoad();
+
+    // 新增列与标签渲染（这些文案同时出现在筛选下拉与表格单元格，取单元格断言）
+    expect(screen.getByText('行业')).toBeInTheDocument();
+    expect(screen.getByText('分类')).toBeInTheDocument();
+    expect(screen.getByText('买入逻辑')).toBeInTheDocument();
+    expect(screen.getByText('备注')).toBeInTheDocument();
+    const expectCellWithText = async (label: string) => {
+      const cells = await screen.findAllByText(label);
+      expect(cells.some((el) => el.tagName === 'TD')).toBe(true);
+    };
+    await expectCellWithText('食品饮料');
+    await expectCellWithText('普通股票');
+    await expectCellWithText('场外基金');
+    await expectCellWithText('得股息');
+    await expectCellWithText('跟踪指数');
+    await expectCellWithText('打新底仓');
+
+    // 三个饼图标题同屏
+    expect(screen.getByText('行业集中度分布')).toBeInTheDocument();
+    expect(screen.getByText('分类市值分布')).toBeInTheDocument();
+    expect(screen.getByText('买入逻辑市值分布')).toBeInTheDocument();
+
+    // 编辑弹窗：打开、修改行业、保存
+    fireEvent.click(screen.getAllByText('编辑')[0]);
+    const dialog = await screen.findByText('编辑持仓信息');
+    expect(dialog).toBeInTheDocument();
+    const industryInput = screen.getByDisplayValue('食品饮料');
+    fireEvent.change(industryInput, { target: { value: '白酒' } });
+    fireEvent.click(screen.getByText('保存'));
+
+    await waitFor(() => expect(updatePositionMeta).toHaveBeenCalledWith({
+      accountId: 1,
+      symbol: '600519',
+      industry: '白酒',
+      category: 'stock',
+      buyLogic: 'dividend',
+      note: '打新底仓',
+    }));
+  });
+
+  it('filters positions by industry, category and buy logic selects', async () => {
+    getSnapshot.mockResolvedValueOnce(makeSnapshot({ fxStale: true, positions: [
+      { symbol: '600519', symbolName: '贵州茅台', market: 'cn', currency: 'CNY', quantity: 1, avgCost: 1500, totalCost: 1500, lastPrice: 1600, marketValueBase: 1600, unrealizedPnlBase: 100, unrealizedPnlPct: 6.67, valuationCurrency: 'CNY', priceSource: 'history_close', priceDate: '2026-06-17', priceStale: false, priceAvailable: true, industry: '食品饮料', category: 'stock', buyLogic: 'dividend', note: null },
+      { symbol: '021583.OF', symbolName: '中欧港股通央企红利', market: 'cn', currency: 'CNY', quantity: 100, avgCost: 1.19, totalCost: 119, lastPrice: 1.17, marketValueBase: 117, unrealizedPnlBase: -2, unrealizedPnlPct: -1.68, valuationCurrency: 'CNY', priceSource: 'history_close', priceDate: '2026-10-13', priceStale: false, priceAvailable: true, industry: null, category: 'fund', buyLogic: 'index_tracking', note: null },
+    ] }));
+
+    render(<PortfolioPage />);
+
+    expect(await screen.findByText('贵州茅台（600519）')).toBeInTheDocument();
+
+    // 分类筛选：只看场外基金
+    fireEvent.change(screen.getByLabelText('分类'), { target: { value: 'fund' } });
+    expect(screen.queryByText('贵州茅台（600519）')).not.toBeInTheDocument();
+    expect(screen.getByText('中欧港股通央企红利（021583.OF）')).toBeInTheDocument();
+    expect(screen.getByText('筛选 1 / 2 项')).toBeInTheDocument();
+
+    // 叠加行业筛选：未分类（空行业基金）
+    fireEvent.change(screen.getByLabelText('行业'), { target: { value: '未分类' } });
+    expect(screen.getByText('中欧港股通央企红利（021583.OF）')).toBeInTheDocument();
+
+    // 叠加买入逻辑筛选后无匹配 → 空提示
+    fireEvent.change(screen.getByLabelText('买入逻辑'), { target: { value: 'dividend' } });
+    expect(screen.getByText('当前筛选条件下没有匹配的持仓。')).toBeInTheDocument();
+
+    // 清除筛选后恢复全量
+    fireEvent.click(screen.getByText('清除筛选'));
+    expect(await screen.findByText('贵州茅台（600519）')).toBeInTheDocument();
+    expect(screen.getByText('共 2 项')).toBeInTheDocument();
   });
 
   it('loads latest active signals for holdings without scanning paginated signal lists', async () => {

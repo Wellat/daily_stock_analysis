@@ -32,6 +32,10 @@ from api.v1.schemas.portfolio import (
     PortfolioQmtSyncRequest,
     PortfolioQmtSyncResponse,
     PortfolioPositionAnalysisRequest,
+    PortfolioPositionMetaAutofillRequest,
+    PortfolioPositionMetaAutofillResponse,
+    PortfolioPositionMetaItem,
+    PortfolioPositionMetaUpdateRequest,
     PortfolioRiskResponse,
     PortfolioSnapshotResponse,
     PortfolioTradeListResponse,
@@ -199,6 +203,62 @@ def create_trade(request: PortfolioTradeCreateRequest) -> PortfolioEventCreatedR
         raise _bad_request(exc)
     except Exception as exc:
         raise _internal_error("Create trade failed", exc)
+
+
+@router.put(
+    "/position-meta",
+    response_model=PortfolioPositionMetaItem,
+    responses={400: {"model": ErrorResponse}, 404: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
+    summary="Update position display meta",
+)
+def update_position_meta(request: PortfolioPositionMetaUpdateRequest) -> PortfolioPositionMetaItem:
+    """人工维护持仓展示元数据（行业/分类/买入逻辑/备注）。
+
+    只应用请求里显式出现的字段；传空串表示清除该字段。行业更新会同步
+    到其他账户同代码的元数据行。
+    """
+    service = PortfolioService()
+    updates = {
+        key: value
+        for key, value in request.model_dump(exclude_unset=True).items()
+        if key not in ("account_id", "symbol")
+    }
+    try:
+        row = service.update_position_meta(
+            account_id=request.account_id,
+            symbol=request.symbol,
+            updates=updates,
+        )
+        return PortfolioPositionMetaItem(**row)
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise _bad_request(exc)
+    except Exception as exc:
+        raise _internal_error("Update position meta failed", exc)
+
+
+@router.post(
+    "/position-meta/autofill",
+    response_model=PortfolioPositionMetaAutofillResponse,
+    responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
+    summary="Auto-fill empty position meta fields",
+)
+def autofill_position_meta(request: PortfolioPositionMetaAutofillRequest) -> PortfolioPositionMetaAutofillResponse:
+    """为当前持仓自动补全元数据空字段（只填空，不覆盖人工值）。
+
+    行业：普通股票直接拉板块、可转债按正股代码拉；ETF/场外基金跳过。
+    """
+    service = PortfolioService()
+    try:
+        result = service.autofill_position_meta(account_id=request.account_id)
+        return PortfolioPositionMetaAutofillResponse(**result)
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise _bad_request(exc)
+    except Exception as exc:
+        raise _internal_error("Autofill position meta failed", exc)
 
 
 @router.get(

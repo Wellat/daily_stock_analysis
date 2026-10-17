@@ -110,8 +110,41 @@ type PendingAccountDelete = {
 const PORTFOLIO_INPUT_CLASS =
   'input-surface input-focus-glow h-11 w-full rounded-xl border bg-transparent px-4 text-sm transition-all focus:outline-none disabled:cursor-not-allowed disabled:opacity-60';
 const PORTFOLIO_SELECT_CLASS = `${PORTFOLIO_INPUT_CLASS} appearance-none pr-10`;
+const PORTFOLIO_FILTER_SELECT_CLASS =
+  'input-surface input-focus-glow h-8 w-auto min-w-[7rem] appearance-none rounded-lg border bg-transparent px-2 pr-7 text-xs transition-all focus:outline-none disabled:cursor-not-allowed disabled:opacity-60';
 const PORTFOLIO_FILE_PICKER_CLASS =
   'input-surface input-focus-glow flex h-11 w-full cursor-pointer items-center justify-center rounded-xl border bg-transparent px-4 text-sm transition-all focus:outline-none disabled:cursor-not-allowed disabled:opacity-60';
+
+// 饼图扇区内标注占比；小于 4% 的扇区不标注（避免小扇区文字重叠，占比仍可在悬浮提示查看）
+const PIE_PERCENT_LABEL_MIN_PCT = 4;
+
+type PieLabelProps = {
+  cx?: number;
+  cy?: number;
+  midAngle?: number;
+  innerRadius?: number;
+  outerRadius?: number;
+  percent?: number;
+};
+
+function renderPiePercentLabel({ cx = 0, cy = 0, midAngle = 0, innerRadius = 0, outerRadius = 0, percent = 0 }: PieLabelProps) {
+  const pct = percent * 100;
+  if (pct < PIE_PERCENT_LABEL_MIN_PCT) return null;
+  const radius = innerRadius + (outerRadius - innerRadius) * 0.55;
+  const rad = (-midAngle * Math.PI) / 180;
+  return (
+    <text
+      x={cx + radius * Math.cos(rad)}
+      y={cy + radius * Math.sin(rad)}
+      fill="#e5e7eb"
+      textAnchor="middle"
+      dominantBaseline="central"
+      fontSize={10}
+    >
+      {`${pct.toFixed(0)}%`}
+    </text>
+  );
+}
 
 function getSignalTime(item: DecisionSignalItem): number {
   return parseDecisionSignalDate(item.createdAt)?.getTime()
@@ -465,6 +498,121 @@ const PortfolioPage: React.FC = () => {
   const positionCostTotal = positionRows.reduce((sum, row) => sum + Number(row.totalCost || 0), 0);
   const positionPnlPct = positionCostTotal > 0 ? (positionPnlTotal / positionCostTotal) * 100 : null;
 
+  // ---- 持仓展示元数据（行业 / 分类 / 买入逻辑 / 备注，支持人工编辑） ----
+  const [editingMetaRow, setEditingMetaRow] = useState<FlatPosition | null>(null);
+  const [metaSaving, setMetaSaving] = useState(false);
+  const [metaMessage, setMetaMessage] = useState<string | null>(null);
+  const [metaForm, setMetaForm] = useState({ industry: '', category: 'stock', buyLogic: 'undefined', note: '' });
+  const [autofillRunning, setAutofillRunning] = useState(false);
+  const autofillAttemptedRef = useRef(false);
+
+  const categoryLabels: Record<string, string> = useMemo(() => ({
+    stock: text.categoryStock,
+    etf: text.categoryEtf,
+    fund: text.categoryFund,
+    convertible_bond: text.categoryConvertibleBond,
+  }), [text]);
+  const buyLogicLabels: Record<string, string> = useMemo(() => ({
+    dividend: text.logicDividend,
+    index_tracking: text.logicIndexTracking,
+    automated: text.logicAutomated,
+    undefined: text.logicUndefined,
+    value: text.logicValue,
+  }), [text]);
+  const categoryOptions = ['stock', 'etf', 'fund', 'convertible_bond'];
+  const buyLogicOptions = ['dividend', 'index_tracking', 'automated', 'undefined', 'value'];
+
+  const handleEditMeta = (row: FlatPosition) => {
+    setEditingMetaRow(row);
+    setMetaMessage(null);
+    setMetaForm({
+      industry: row.industry || '',
+      category: row.category || 'stock',
+      buyLogic: row.buyLogic || 'undefined',
+      note: row.note || '',
+    });
+  };
+
+  const handleSaveMeta = async () => {
+    if (!editingMetaRow) return;
+    setMetaSaving(true);
+    try {
+      await portfolioApi.updatePositionMeta({
+        accountId: editingMetaRow.accountId,
+        symbol: editingMetaRow.symbol,
+        industry: metaForm.industry.trim(),
+        category: metaForm.category,
+        buyLogic: metaForm.buyLogic,
+        note: metaForm.note.trim(),
+      });
+      setEditingMetaRow(null);
+      await loadSnapshotAndRisk();
+    } catch (err) {
+      setError(getParsedApiError(err));
+    } finally {
+      setMetaSaving(false);
+    }
+  };
+
+  const handleAutofillMeta = useCallback(async () => {
+    setAutofillRunning(true);
+    try {
+      const result = await portfolioApi.autofillPositionMeta(queryAccountId);
+      if (result.industryFilled > 0) {
+        await loadSnapshotAndRisk();
+      }
+      setMetaMessage(formatUiText(text.autofillDone, {
+        filled: result.industryFilled,
+        candidates: result.industryCandidates,
+      }));
+    } catch (err) {
+      setError(getParsedApiError(err));
+    } finally {
+      setAutofillRunning(false);
+    }
+  }, [loadSnapshotAndRisk, queryAccountId, text]);
+
+  // 首次进入页面时，对缺行业的股票/转债自动补全一次（人工值不覆盖）
+  useEffect(() => {
+    if (autofillAttemptedRef.current || positionRows.length === 0) return;
+    const needsIndustry = positionRows.some(
+      (row) => !row.industry && (row.category === 'stock' || row.category === 'convertible_bond'),
+    );
+    if (!needsIndustry) return;
+    autofillAttemptedRef.current = true;
+    void handleAutofillMeta();
+  }, [positionRows, handleAutofillMeta]);
+
+  // ---- 持仓明细筛选（行业 / 分类 / 买入逻辑，纯前端过滤快照数据） ----
+  const [industryFilter, setIndustryFilter] = useState('');
+  const [categoryFilter, setCategoryFilter] = useState('');
+  const [buyLogicFilter, setBuyLogicFilter] = useState('');
+
+  const industryFilterOptions = useMemo(() => {
+    const names = new Set<string>();
+    for (const row of positionRows) {
+      names.add(row.industry || text.unclassified);
+    }
+    if (industryFilter) {
+      names.add(industryFilter); // 数据刷新后保留当前选择，避免选项消失导致显示异常
+    }
+    return Array.from(names).sort((a, b) => a.localeCompare(b, 'zh-Hans-CN'));
+  }, [positionRows, text, industryFilter]);
+
+  const filteredPositionRows = useMemo(() => (
+    positionRows.filter((row) =>
+      (industryFilter === '' || (row.industry || text.unclassified) === industryFilter)
+      && (categoryFilter === '' || (row.category || 'stock') === categoryFilter)
+      && (buyLogicFilter === '' || (row.buyLogic || 'undefined') === buyLogicFilter))
+  ), [positionRows, industryFilter, categoryFilter, buyLogicFilter, text]);
+
+  const hasPositionFilter = industryFilter !== '' || categoryFilter !== '' || buyLogicFilter !== '';
+  const resetPositionFilters = () => {
+    setIndustryFilter('');
+    setCategoryFilter('');
+    setBuyLogicFilter('');
+  };
+
   const snapshotMatchesAccountScope = useMemo(() => {
     if (!snapshot) return false;
     const snapshotAccountIds = new Set((snapshot.accounts || []).map((account) => account.accountId));
@@ -575,32 +723,51 @@ const PortfolioPage: React.FC = () => {
     }
   };
 
-  const sectorPieData = useMemo(() => {
-    const sectors = risk?.sectorConcentration?.topSectors || [];
-    return sectors
-      .slice(0, 6)
-      .map((item) => ({
-        name: item.sector,
-        value: Number(item.weightPct || 0),
-      }))
-      .filter((item) => item.value > 0);
-  }, [risk]);
-
-  const positionFallbackPieData = useMemo(() => {
-    if (!risk?.concentration?.topPositions?.length) {
-      return [];
+  const industryPieData = useMemo(() => {
+    const buckets = new Map<string, number>();
+    for (const row of positionRows) {
+      const name = row.industry || text.unclassified;
+      buckets.set(name, (buckets.get(name) || 0) + Number(row.marketValueBase || 0));
     }
-    return risk.concentration.topPositions
-      .slice(0, 6)
-      .map((item) => ({
-        name: item.symbol,
-        value: Number(item.weightPct || 0),
-      }))
-      .filter((item) => item.value > 0);
-  }, [risk]);
+    return Array.from(buckets.entries())
+      .map(([name, value]) => ({ name, value }))
+      .filter((item) => item.value > 0)
+      .sort((a, b) => b.value - a.value)
+      .slice(0, 8);
+  }, [positionRows, text]);
 
-  const concentrationPieData = sectorPieData.length > 0 ? sectorPieData : positionFallbackPieData;
-  const concentrationMode = sectorPieData.length > 0 ? 'sector' : 'position';
+  const categoryPieData = useMemo(() => {
+    const buckets = new Map<string, number>();
+    for (const row of positionRows) {
+      const name = categoryLabels[row.category || 'stock'] || row.category || text.unclassified;
+      buckets.set(name, (buckets.get(name) || 0) + Number(row.marketValueBase || 0));
+    }
+    return Array.from(buckets.entries())
+      .map(([name, value]) => ({ name, value }))
+      .filter((item) => item.value > 0)
+      .sort((a, b) => b.value - a.value);
+  }, [positionRows, categoryLabels, text]);
+
+  const buyLogicPieData = useMemo(() => {
+    const buckets = new Map<string, number>();
+    for (const row of positionRows) {
+      const name = buyLogicLabels[row.buyLogic || 'undefined'] || row.buyLogic || text.unclassified;
+      buckets.set(name, (buckets.get(name) || 0) + Number(row.marketValueBase || 0));
+    }
+    return Array.from(buckets.entries())
+      .map(([name, value]) => ({ name, value }))
+      .filter((item) => item.value > 0)
+      .sort((a, b) => b.value - a.value);
+  }, [positionRows, buyLogicLabels, text]);
+
+  const makePieTooltipFormatter = (data: Array<{ value: number }>) => {
+    const total = data.reduce((sum, item) => sum + Number(item.value || 0), 0);
+    return (value: unknown): string => {
+      const amount = Number(value ?? 0);
+      const pct = total > 0 ? (amount / total) * 100 : 0;
+      return `${formatMoney(amount, snapshot?.currency || 'CNY')}（${pct.toFixed(1)}%）`;
+    };
+  };
 
   const handleTradeSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1079,12 +1246,78 @@ const PortfolioPage: React.FC = () => {
         </Card>
       </section>
 
-      <section className="grid grid-cols-1 xl:grid-cols-3 gap-3">
-        <Card className="xl:col-span-2" padding="md">
-          <div className="flex items-center justify-between mb-3">
+      <section className="grid grid-cols-1 gap-3">
+        <Card padding="md">
+          <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
             <h2 className="text-sm font-semibold text-foreground">{text.positionsTitle}</h2>
-            <span className="text-xs text-secondary">{formatUiText(text.countItems, { count: positionRows.length })}</span>
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-secondary">
+                {hasPositionFilter
+                  ? formatUiText(text.filteredItems, {
+                      shown: filteredPositionRows.length,
+                      total: positionRows.length,
+                    })
+                  : formatUiText(text.countItems, { count: positionRows.length })}
+              </span>
+              <button
+                type="button"
+                className="btn-secondary px-2 py-1 text-xs disabled:cursor-wait disabled:opacity-60"
+                onClick={() => void handleAutofillMeta()}
+                disabled={autofillRunning || positionRows.length === 0}
+              >
+                {autofillRunning ? text.autofillRunning : text.autofillIndustry}
+              </button>
+            </div>
           </div>
+          {positionRows.length > 0 ? (
+            <div className="mb-3 flex flex-wrap items-center gap-2">
+              <select
+                aria-label={text.industry}
+                className={PORTFOLIO_FILTER_SELECT_CLASS}
+                value={industryFilter}
+                onChange={(e) => setIndustryFilter(e.target.value)}
+              >
+                <option value="">{`${text.industry}: ${text.filterAll}`}</option>
+                {industryFilterOptions.map((name) => (
+                  <option key={name} value={name}>{name}</option>
+                ))}
+              </select>
+              <select
+                aria-label={text.category}
+                className={PORTFOLIO_FILTER_SELECT_CLASS}
+                value={categoryFilter}
+                onChange={(e) => setCategoryFilter(e.target.value)}
+              >
+                <option value="">{`${text.category}: ${text.filterAll}`}</option>
+                {categoryOptions.map((value) => (
+                  <option key={value} value={value}>{categoryLabels[value]}</option>
+                ))}
+              </select>
+              <select
+                aria-label={text.buyLogic}
+                className={PORTFOLIO_FILTER_SELECT_CLASS}
+                value={buyLogicFilter}
+                onChange={(e) => setBuyLogicFilter(e.target.value)}
+              >
+                <option value="">{`${text.buyLogic}: ${text.filterAll}`}</option>
+                {buyLogicOptions.map((value) => (
+                  <option key={value} value={value}>{buyLogicLabels[value]}</option>
+                ))}
+              </select>
+              {hasPositionFilter ? (
+                <button
+                  type="button"
+                  className="btn-secondary px-2 py-1 text-xs"
+                  onClick={resetPositionFilters}
+                >
+                  {text.clearFilters}
+                </button>
+              ) : null}
+            </div>
+          ) : null}
+          {metaMessage ? (
+            <p className="mb-2 text-xs text-secondary">{metaMessage}</p>
+          ) : null}
           {portfolioSignalsWarning ? (
             <InlineAlert
               variant="warning"
@@ -1099,13 +1332,19 @@ const PortfolioPage: React.FC = () => {
               description={text.noPositionsDescription}
               className="border-none bg-transparent px-4 py-8 shadow-none"
             />
+          ) : filteredPositionRows.length === 0 ? (
+            <p className="py-6 text-center text-xs text-secondary">{text.noFilteredPositions}</p>
           ) : (
             <div className="overflow-x-auto">
-              <table className="min-w-[860px] w-full text-sm">
+              <table className="min-w-[1180px] w-full text-sm">
                 <thead className="text-xs text-secondary border-b border-white/10">
                   <tr>
                     <th className="text-left py-2 pr-2">{text.account}</th>
                     <th className="text-left py-2 pr-2">{text.code}</th>
+                    <th className="text-left py-2 pr-2">{text.industry}</th>
+                    <th className="text-left py-2 pr-2">{text.category}</th>
+                    <th className="text-left py-2 pr-2">{text.buyLogic}</th>
+                    <th className="text-left py-2 pr-2">{text.note}</th>
                     <th className="text-right py-2 pr-2">{text.quantity}</th>
                     <th className="text-right py-2 pr-2">{text.avgCost}</th>
                     <th className="text-right py-2 pr-2">{text.lastPrice}</th>
@@ -1113,11 +1352,11 @@ const PortfolioPage: React.FC = () => {
                     <th className="text-right py-2 pr-3">{text.unrealizedPnl}</th>
                     <th className="text-right py-2 pr-3">{text.returnPct}</th>
                     <th className="min-w-[9rem] text-right py-2 pr-3">{t('decisionSignals.portfolioColumn')}</th>
-                    <th className="w-20 text-right py-2">{text.action}</th>
+                    <th className="w-28 text-right py-2">{text.action}</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {positionRows.map((row) => {
+                  {filteredPositionRows.map((row) => {
                     const rowKey = `${row.accountId}-${row.symbol}-${row.market}`;
                     const analyzing = positionAnalysisLoadingKey === rowKey;
                     const signal = signalByPositionKey.get(rowKey);
@@ -1126,6 +1365,18 @@ const PortfolioPage: React.FC = () => {
                       <td className="py-2 pr-2 text-secondary">{row.accountName}</td>
                       <td className="py-2 pr-2 font-mono text-foreground">
                         {row.symbolName ? `${row.symbolName}（${row.symbol}）` : row.symbol}
+                      </td>
+                      <td className="py-2 pr-2 text-secondary" title={row.industry || undefined}>
+                        {row.industry || '--'}
+                      </td>
+                      <td className="py-2 pr-2 text-secondary">
+                        {categoryLabels[row.category || 'stock'] || row.category || '--'}
+                      </td>
+                      <td className="py-2 pr-2 text-secondary">
+                        {buyLogicLabels[row.buyLogic || 'undefined'] || row.buyLogic || '--'}
+                      </td>
+                      <td className="py-2 pr-2 max-w-[10rem] truncate text-secondary" title={row.note || undefined}>
+                        {row.note || '--'}
                       </td>
                       <td className="py-2 pr-2 text-right">{row.quantity.toFixed(2)}</td>
                       <td className="py-2 pr-2 text-right">{row.avgCost.toFixed(4)}</td>
@@ -1161,7 +1412,7 @@ const PortfolioPage: React.FC = () => {
                       <td className="py-2 pr-3 text-right align-top">
                         <PortfolioSignalSummary item={signal} loading={portfolioSignalsLoading} />
                       </td>
-                      <td className="py-2 text-right">
+                      <td className="py-2 text-right whitespace-nowrap">
                         <button
                           type="button"
                           onClick={() => void handleAnalyzePosition(row)}
@@ -1169,6 +1420,13 @@ const PortfolioPage: React.FC = () => {
                           className="btn-secondary px-2 py-1 text-xs disabled:cursor-wait disabled:opacity-60"
                         >
                           {analyzing ? text.submitting : text.analyze}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleEditMeta(row)}
+                          className="btn-secondary ml-1 px-2 py-1 text-xs"
+                        >
+                          {text.edit}
                         </button>
                       </td>
                     </tr>
@@ -1179,22 +1437,22 @@ const PortfolioPage: React.FC = () => {
             </div>
           )}
         </Card>
+      </section>
 
+      <section className="grid grid-cols-1 xl:grid-cols-3 gap-3">
         <Card padding="md">
-          <h2 className="text-sm font-semibold text-foreground mb-3">
-            {concentrationMode === 'sector' ? text.sectorConcentration : text.positionConcentrationFallback}
-          </h2>
-          {concentrationPieData.length > 0 ? (
+          <h2 className="text-sm font-semibold text-foreground mb-3">{text.sectorConcentration}</h2>
+          {industryPieData.length > 0 ? (
             <div className="h-64">
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
-                  <Pie data={concentrationPieData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={90}>
-                    {concentrationPieData.map((entry, index) => (
+                  <Pie data={industryPieData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={70} label={renderPiePercentLabel} labelLine={false}>
+                    {industryPieData.map((entry, index) => (
                       <Cell key={`cell-${entry.name}`} fill={PIE_COLORS[index % PIE_COLORS.length]} />
                     ))}
                   </Pie>
-                  <Tooltip formatter={(value) => `${Number(value).toFixed(2)}%`} />
-                  <Legend />
+                  <Tooltip formatter={makePieTooltipFormatter(industryPieData)} />
+                  <Legend wrapperStyle={{ fontSize: 11 }} />
                 </PieChart>
               </ResponsiveContainer>
             </div>
@@ -1206,10 +1464,60 @@ const PortfolioPage: React.FC = () => {
             />
           )}
           <div className="mt-3 text-xs text-secondary space-y-1">
-            <div>{text.displayScope}: {concentrationMode === 'sector' ? text.sectorDimension : text.positionDimensionFallback}</div>
+            <div>{text.industryScopeNote}</div>
             <div>{text.sectorAlert}: {risk?.sectorConcentration?.alert ? text.yes : text.no}</div>
             <div>{text.topWeight}: {formatPct(risk?.sectorConcentration?.topWeightPct ?? risk?.concentration?.topWeightPct)}</div>
           </div>
+        </Card>
+
+        <Card padding="md">
+          <h2 className="text-sm font-semibold text-foreground mb-3">{text.categoryPieTitle}</h2>
+          {categoryPieData.length > 0 ? (
+            <div className="h-64">
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie data={categoryPieData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={70} label={renderPiePercentLabel} labelLine={false}>
+                    {categoryPieData.map((entry, index) => (
+                      <Cell key={`cell-${entry.name}`} fill={PIE_COLORS[index % PIE_COLORS.length]} />
+                    ))}
+                  </Pie>
+                  <Tooltip formatter={makePieTooltipFormatter(categoryPieData)} />
+                  <Legend wrapperStyle={{ fontSize: 11 }} />
+                </PieChart>
+              </ResponsiveContainer>
+            </div>
+          ) : (
+            <EmptyState
+              title={text.noConcentrationTitle}
+              description={text.noConcentrationDescription}
+              className="border-none bg-transparent px-4 py-10 shadow-none"
+            />
+          )}
+        </Card>
+
+        <Card padding="md">
+          <h2 className="text-sm font-semibold text-foreground mb-3">{text.buyLogicPieTitle}</h2>
+          {buyLogicPieData.length > 0 ? (
+            <div className="h-64">
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie data={buyLogicPieData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={70} label={renderPiePercentLabel} labelLine={false}>
+                    {buyLogicPieData.map((entry, index) => (
+                      <Cell key={`cell-${entry.name}`} fill={PIE_COLORS[index % PIE_COLORS.length]} />
+                    ))}
+                  </Pie>
+                  <Tooltip formatter={makePieTooltipFormatter(buyLogicPieData)} />
+                  <Legend wrapperStyle={{ fontSize: 11 }} />
+                </PieChart>
+              </ResponsiveContainer>
+            </div>
+          ) : (
+            <EmptyState
+              title={text.noConcentrationTitle}
+              description={text.noConcentrationDescription}
+              className="border-none bg-transparent px-4 py-10 shadow-none"
+            />
+          )}
         </Card>
       </section>
 
@@ -1605,6 +1913,95 @@ const PortfolioPage: React.FC = () => {
           },
         ]}
       />
+      {editingMetaRow ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm transition-all"
+          onClick={() => {
+            if (!metaSaving) {
+              setEditingMetaRow(null);
+            }
+          }}
+        >
+          <div
+            className="mx-4 w-full max-w-md rounded-xl border border-border/70 bg-elevated p-6 shadow-2xl animate-in fade-in zoom-in duration-200"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="mb-1 text-lg font-medium text-foreground">{text.editMetaTitle}</h3>
+            <p className="mb-4 text-xs text-secondary">
+              {editingMetaRow.accountName} ·{' '}
+              {editingMetaRow.symbolName
+                ? `${editingMetaRow.symbolName}（${editingMetaRow.symbol}）`
+                : editingMetaRow.symbol}
+            </p>
+            <div className="space-y-3">
+              <label className="block text-xs text-secondary">
+                {text.industry}
+                <input
+                  className={`${PORTFOLIO_INPUT_CLASS} mt-1`}
+                  value={metaForm.industry}
+                  onChange={(e) => setMetaForm((form) => ({ ...form, industry: e.target.value }))}
+                  maxLength={64}
+                />
+              </label>
+              <label className="block text-xs text-secondary">
+                {text.category}
+                <select
+                  className={`${PORTFOLIO_SELECT_CLASS} mt-1`}
+                  value={metaForm.category}
+                  onChange={(e) => setMetaForm((form) => ({ ...form, category: e.target.value }))}
+                >
+                  {categoryOptions.map((value) => (
+                    <option key={value} value={value}>
+                      {categoryLabels[value]}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="block text-xs text-secondary">
+                {text.buyLogic}
+                <select
+                  className={`${PORTFOLIO_SELECT_CLASS} mt-1`}
+                  value={metaForm.buyLogic}
+                  onChange={(e) => setMetaForm((form) => ({ ...form, buyLogic: e.target.value }))}
+                >
+                  {buyLogicOptions.map((value) => (
+                    <option key={value} value={value}>
+                      {buyLogicLabels[value]}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="block text-xs text-secondary">
+                {text.note}
+                <input
+                  className={`${PORTFOLIO_INPUT_CLASS} mt-1`}
+                  value={metaForm.note}
+                  onChange={(e) => setMetaForm((form) => ({ ...form, note: e.target.value }))}
+                  maxLength={255}
+                />
+              </label>
+            </div>
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                className="btn-secondary px-3 py-1.5 text-sm"
+                onClick={() => setEditingMetaRow(null)}
+                disabled={metaSaving}
+              >
+                {text.cancel}
+              </button>
+              <button
+                type="button"
+                className="btn-primary px-3 py-1.5 text-sm disabled:cursor-wait disabled:opacity-60"
+                onClick={() => void handleSaveMeta()}
+                disabled={metaSaving}
+              >
+                {metaSaving ? text.submitting : text.save}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
       <ConfirmDialog
         isOpen={Boolean(pendingDelete)}
         title="删除错误流水"

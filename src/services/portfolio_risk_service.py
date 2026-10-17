@@ -19,6 +19,27 @@ logger = logging.getLogger(__name__)
 DEFENSIVE_DECISION_SIGNAL_ACTIONS = ("sell", "reduce", "alert")
 
 
+def fetch_industry_name(symbol: str, market: str, *, data_manager: Any = None) -> Optional[str]:
+    """拉取单个 cn 标的的主行业板块名（模块级，供风险聚合与持仓元数据 autofill 复用）。
+
+    非 cn 市场或拉取失败返回 None，由调用方降级（风险聚合记 UNCLASSIFIED、
+    元数据 autofill 留空人工补）。
+    """
+    if market != "cn":
+        return None
+    try:
+        manager = data_manager
+        if manager is None:
+            from data_provider import DataFetcherManager
+
+            manager = DataFetcherManager()
+        result = manager.get_belong_boards(symbol)
+        boards = result if isinstance(result, list) else []
+        return PortfolioRiskService._pick_primary_board_name(boards)
+    except Exception:
+        return None
+
+
 class PortfolioRiskService:
     """Compute portfolio risk blocks on top of replayed snapshot data."""
 

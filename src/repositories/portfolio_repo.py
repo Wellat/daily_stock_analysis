@@ -23,6 +23,7 @@ from src.storage import (
     PortfolioFxRate,
     PortfolioPosition,
     PortfolioPositionLot,
+    PortfolioPositionMeta,
     PortfolioTrade,
     StockDaily,
 )
@@ -705,6 +706,105 @@ class PortfolioRepository:
                 .limit(page_size)
             ).scalars().all()
             return list(rows), total
+
+    # ------------------------------------------------------------------
+    # Position meta
+    # ------------------------------------------------------------------
+    def get_position_meta_map(self, account_id: int) -> Dict[str, PortfolioPositionMeta]:
+        """Return the account's position meta rows keyed by lowercase symbol."""
+        with self.db.get_session() as session:
+            rows = session.execute(
+                select(PortfolioPositionMeta).where(
+                    PortfolioPositionMeta.account_id == account_id
+                )
+            ).scalars().all()
+            return {str(row.symbol or "").strip().lower(): row for row in rows}
+
+    def upsert_position_meta(
+        self,
+        *,
+        account_id: int,
+        symbol: str,
+        market: str = "cn",
+        fields: Dict[str, Any],
+    ) -> PortfolioPositionMeta:
+        """Upsert one (account, symbol) meta row; only provided keys are applied.
+
+        ``fields`` 值为 None 表示清除该列；缺失的键保持原值。autofill 场景
+        传 ``only_fill_missing=True`` 语义由调用方保证（仅传空字段）。
+        """
+        with self.db.get_session() as session:
+            row = session.execute(
+                select(PortfolioPositionMeta).where(
+                    and_(
+                        PortfolioPositionMeta.account_id == account_id,
+                        PortfolioPositionMeta.symbol == symbol,
+                    )
+                ).limit(1)
+            ).scalar_one_or_none()
+            if row is None:
+                row = PortfolioPositionMeta(
+                    account_id=account_id,
+                    symbol=symbol,
+                    market=market,
+                )
+                session.add(row)
+            else:
+                row.market = market or row.market
+            for key, value in fields.items():
+                setattr(row, key, value)
+            session.commit()
+            session.refresh(row)
+            return row
+
+    def propagate_position_industry(self, *, symbol: str, industry: Optional[str]) -> int:
+        """同步行业到所有持有同代码的账户元数据行（行业按代码全局共享）。
+
+        已有行原地更新；持有该代码但没有元数据行的账户（有交易流水）补建。
+        """
+        with self.db.get_session() as session:
+            rows = session.execute(
+                select(PortfolioPositionMeta).where(
+                    PortfolioPositionMeta.symbol == symbol,
+                )
+            ).scalars().all()
+            known_accounts = {row.account_id for row in rows}
+            trade_account_ids = set(
+                session.execute(
+                    select(PortfolioTrade.account_id).where(
+                        PortfolioTrade.symbol == symbol,
+                    ).distinct()
+                ).scalars().all()
+            )
+            for account_id in sorted(trade_account_ids - known_accounts):
+                session.add(
+                    PortfolioPositionMeta(
+                        account_id=account_id,
+                        symbol=symbol,
+                        market="cn",
+                        industry=industry,
+                    )
+                )
+            updated = 0
+            for row in rows:
+                if row.industry != industry:
+                    row.industry = industry
+                    updated += 1
+            session.commit()
+            return updated + len(trade_account_ids - known_accounts)
+
+    def account_has_qmt_trades(self, account_id: int) -> bool:
+        """账户是否有过 QMT 同步交易（trade_uid 以 ``qmt:`` 开头）。"""
+        with self.db.get_session() as session:
+            row = session.execute(
+                select(func.count()).select_from(PortfolioTrade).where(
+                    and_(
+                        PortfolioTrade.account_id == account_id,
+                        PortfolioTrade.trade_uid.like("qmt:%"),
+                    )
+                ).limit(1)
+            ).scalar_one_or_none()
+            return bool(row)
 
     # ------------------------------------------------------------------
     # Price / FX

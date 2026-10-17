@@ -154,6 +154,15 @@ class PortfolioPositionItem(BaseModel):
     symbol_name: Optional[str] = None
     market: str
     currency: str
+    industry: Optional[str] = None
+    category: Optional[str] = Field(
+        None, description="stock/etf/fund/convertible_bond；人工覆盖值，缺省自动推导"
+    )
+    buy_logic: Optional[str] = Field(
+        None,
+        description="dividend/index_tracking/automated/undefined；人工覆盖值，缺省按账户来源默认",
+    )
+    note: Optional[str] = None
     quantity: float
     avg_cost: float
     total_cost: float
@@ -169,6 +178,37 @@ class PortfolioPositionItem(BaseModel):
     price_available: bool = True
     data_quality: str = "ok"
     limitations: List[str] = Field(default_factory=list)
+
+
+class PortfolioPositionMetaUpdateRequest(BaseModel):
+    account_id: int
+    symbol: str = Field(..., min_length=1, max_length=16)
+    industry: Optional[str] = Field(None, max_length=64)
+    category: Optional[str] = Field(None, max_length=16)
+    buy_logic: Optional[str] = Field(None, max_length=16)
+    note: Optional[str] = Field(None, max_length=255)
+
+
+class PortfolioPositionMetaItem(BaseModel):
+    account_id: int
+    symbol: str
+    market: str
+    industry: Optional[str] = None
+    category: Optional[str] = None
+    buy_logic: Optional[str] = None
+    note: Optional[str] = None
+
+
+class PortfolioPositionMetaAutofillRequest(BaseModel):
+    account_id: Optional[int] = None
+
+
+class PortfolioPositionMetaAutofillResponse(BaseModel):
+    accounts_scanned: int
+    positions_scanned: int
+    industry_candidates: int
+    industry_filled: int
+    failed: List[str] = Field(default_factory=list)
 
 
 class PortfolioPositionAnalysisRequest(BaseModel):

@@ -24,10 +24,17 @@ import {
   buildRotationParameters,
   type RotationFormState,
 } from './backtest/rotationForm';
+import { SignalParamsForm } from './backtest/SignalParamsForm';
+import {
+  DEFAULT_SIGNAL_FORM,
+  applySignalParameters,
+  buildSignalParameters,
+  type SignalFormState,
+} from './backtest/signalForm';
 
 const today = new Date().toISOString().slice(0, 10);
 
-type BenchmarkMode = 'equal_weight' | 'csi300' | 'custom';
+type BenchmarkMode = 'equal_weight' | 'csi300' | 'custom' | 'buy_hold';
 
 export const StrategyResearchPanel: React.FC = () => {
   const [strategies, setStrategies] = useState<StrategyLabStrategyItem[]>([]);
@@ -45,6 +52,7 @@ export const StrategyResearchPanel: React.FC = () => {
   const [benchmarkMode, setBenchmarkMode] = useState<BenchmarkMode>('equal_weight');
   const [benchmarkCustom, setBenchmarkCustom] = useState('');
   const [rotationForm, setRotationForm] = useState<RotationFormState>(DEFAULT_ROTATION_FORM);
+  const [signalForm, setSignalForm] = useState<SignalFormState>(DEFAULT_SIGNAL_FORM);
   const [saveModalOpen, setSaveModalOpen] = useState(false);
   const [saveName, setSaveName] = useState('');
   const [saveDescription, setSaveDescription] = useState('');
@@ -54,6 +62,9 @@ export const StrategyResearchPanel: React.FC = () => {
     [strategies, strategyId],
   );
   const isRotation = strategyId === 'rotation';
+  const isSignal = strategyId === 'signal';
+  // instrument_type 跟随策略元数据（signal=etf，其余=可转债），不再写死
+  const instrumentType = selectedStrategy?.instrument_types?.[0] ?? 'convertible_bond';
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -99,11 +110,14 @@ export const StrategyResearchPanel: React.FC = () => {
   const benchmarkSymbol = (): string | undefined => {
     if (benchmarkMode === 'csi300') return '000300';
     if (benchmarkMode === 'custom') return benchmarkCustom.trim() || undefined;
+    // 长持基准仅 signal 引擎支持；切到其他策略后残留状态回落等权池
+    if (benchmarkMode === 'buy_hold') return isSignal ? 'buy_hold' : undefined;
     return undefined; // 标的池等权（后端缺省）
   };
 
   const buildParameters = (): Record<string, unknown> => {
     if (isRotation) return buildRotationParameters(rotationForm);
+    if (isSignal) return buildSignalParameters(signalForm);
     return { max_positions: Number(runForm.maxPositions) };
   };
 
@@ -114,6 +128,8 @@ export const StrategyResearchPanel: React.FC = () => {
     setRunForm((prev) => ({ ...prev, symbols: (config.symbols ?? []).join(',') }));
     if (config.strategy_id === 'rotation') {
       setRotationForm(applyRotationParameters(config.parameters));
+    } else if (config.strategy_id === 'signal') {
+      setSignalForm(applySignalParameters(config.parameters));
     } else if (config.parameters?.max_positions != null) {
       setRunForm((prev) => ({ ...prev, maxPositions: String(config.parameters.max_positions) }));
     }
@@ -127,7 +143,7 @@ export const StrategyResearchPanel: React.FC = () => {
         description: saveDescription.trim() || undefined,
         strategy_id: strategyId,
         market: 'cn',
-        instrument_type: 'convertible_bond',
+        instrument_type: instrumentType,
         parameters: buildParameters(),
         symbols: parseSymbols(runForm.symbols),
       });
@@ -176,6 +192,11 @@ export const StrategyResearchPanel: React.FC = () => {
       const interval = parameters.rebalance_interval ?? 1;
       return `${preset} · ${positions ?? '?'}只 · 每${interval}${unit}`;
     }
+    if (run.strategy_id === 'signal') {
+      const entryRules = Array.isArray(parameters.entry_rules) ? parameters.entry_rules.length : 1;
+      const exitRules = Array.isArray(parameters.exit_rules) ? parameters.exit_rules.length : 1;
+      return `MA${parameters.ma_window ?? '?'} · 入${entryRules}出${exitRules}`;
+    }
     return positions ? `${positions}只` : '--';
   };
 
@@ -189,7 +210,7 @@ export const StrategyResearchPanel: React.FC = () => {
 
   const runColumns: ColumnsType<StrategyLabRunItem> = [
     { title: '运行', dataIndex: 'id', width: 120, render: (id: number, record) => (<span className="whitespace-nowrap">#{id} <span className="text-xs text-secondary-text">{fmtTime(record.created_at)}</span></span>) },
-    { title: '策略', dataIndex: 'strategy_name', width: 130, ellipsis: true, render: (_, record) => (<span className="whitespace-nowrap">{record.strategy_name}{record.strategy_id === 'rotation' ? <Tag className="ml-1" color="cyan">轮动</Tag> : null}</span>) },
+    { title: '策略', dataIndex: 'strategy_name', width: 130, ellipsis: true, render: (_, record) => (<span className="whitespace-nowrap">{record.strategy_name}{record.strategy_id === 'rotation' ? <Tag className="ml-1" color="cyan">轮动</Tag> : null}{record.strategy_id === 'signal' ? <Tag className="ml-1" color="geekblue">信号</Tag> : null}</span>) },
     { title: '回测区间', key: 'range', width: 175, render: (_, record) => (<span className="whitespace-nowrap text-xs">{record.start_date} ~ {record.end_date}</span>) },
     { title: '总收益率', key: 'total', width: 92, align: 'right', render: (_, record) => pctSpan(record.metrics?.total_return_pct) },
     { title: '基准', dataIndex: 'benchmark_return_pct', width: 92, align: 'right', render: (value: number | null) => pctSpan(value) },
@@ -217,7 +238,7 @@ export const StrategyResearchPanel: React.FC = () => {
             const run = await strategyLabApi.createRun({
               strategy_id: strategyId,
               market: 'cn',
-              instrument_type: 'convertible_bond',
+              instrument_type: instrumentType,
               start_date: runForm.startDate,
               end_date: dateMode === 'single' ? runForm.startDate : runForm.endDate,
               initial_cash: Number(runForm.initialCash),
@@ -312,26 +333,34 @@ export const StrategyResearchPanel: React.FC = () => {
               options={[
                 { label: '标的池等权', value: 'equal_weight' },
                 { label: '沪深300', value: 'csi300' },
-                { label: '指定转债', value: 'custom' },
+                ...(isSignal ? [{ label: '长持·买入持有', value: 'buy_hold' }] : []),
+                { label: isSignal ? '指定ETF' : '指定转债', value: 'custom' },
               ]}
               onChange={(mode) => setBenchmarkMode(mode as BenchmarkMode)}
             />
           </label>
           {benchmarkMode === 'custom' ? (
             <label className="text-sm">
-              基准转债代码
-              <input aria-label="基准转债代码" className={`${SL_INPUT_CLASS} mt-1`} value={benchmarkCustom} onChange={(event) => setBenchmarkCustom(event.target.value)} placeholder="例如 113001" />
+              基准{isSignal ? 'ETF' : '转债'}代码
+              <input aria-label={isSignal ? '基准ETF代码' : '基准转债代码'} className={`${SL_INPUT_CLASS} mt-1`} value={benchmarkCustom} onChange={(event) => setBenchmarkCustom(event.target.value)} placeholder={isSignal ? '例如 510880' : '例如 113001'} />
             </label>
           ) : null}
-          {!isRotation ? (
+          {!isRotation && !isSignal ? (
             <label className="text-sm">
               最大持仓
               <input aria-label="最大持仓" className={`${SL_INPUT_CLASS} mt-1`} type="number" min="1" value={runForm.maxPositions} onChange={(event) => setRunForm({ ...runForm, maxPositions: event.target.value })} />
             </label>
           ) : null}
           <label className={isRotation ? 'text-sm lg:col-span-4' : 'text-sm sm:col-span-2'}>
-            标的筛选
-            <input aria-label="标的筛选" className={`${SL_INPUT_CLASS} mt-1`} value={runForm.symbols} onChange={(event) => setRunForm({ ...runForm, symbols: event.target.value })} placeholder="逗号分隔，留空使用全部同步标的" />
+            {isSignal ? 'ETF 标的' : '标的筛选'}
+            <input
+              aria-label={isSignal ? 'ETF标的' : '标的筛选'}
+              className={`${SL_INPUT_CLASS} mt-1`}
+              value={runForm.symbols}
+              onChange={(event) => setRunForm({ ...runForm, symbols: event.target.value })}
+              placeholder={isSignal ? '逗号分隔 ETF 代码（必填），如 510880,159915' : '逗号分隔，留空使用全部同步标的'}
+              required={isSignal}
+            />
           </label>
         </div>
 
@@ -341,6 +370,14 @@ export const StrategyResearchPanel: React.FC = () => {
             onChange={setRotationForm}
             factors={selectedStrategy?.factors ?? []}
             scorePresets={selectedStrategy?.score_presets ?? []}
+          />
+        ) : null}
+
+        {isSignal ? (
+          <SignalParamsForm
+            value={signalForm}
+            onChange={setSignalForm}
+            factors={selectedStrategy?.factors ?? []}
           />
         ) : null}
 

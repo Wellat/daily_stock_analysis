@@ -37,6 +37,9 @@ _COMPARATORS = {
     "==": lambda a, b: a == b,
 }
 
+# 公开别名：时序信号规则（signal_params）与横截面排除规则共用同一比较器语义
+COMPARATORS = _COMPARATORS
+
 
 @dataclass(frozen=True)
 class FactorSpec:

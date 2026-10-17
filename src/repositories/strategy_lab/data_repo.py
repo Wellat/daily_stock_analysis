@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import and_, desc, func, or_, select, update
@@ -19,6 +19,7 @@ from src.storage import (
     StrategyLabCbDailyFactor,
     StrategyLabCbEvent,
     StrategyLabCbTerms,
+    StrategyLabEtfDaily,
     StrategyLabIndexDaily,
     StrategyLabSyncRun,
 )
@@ -553,6 +554,24 @@ class StrategyLabDataRepository:
                 )
             ).all()
             return {str(code).lower(): str(name) for code, name in rows if name}
+
+    def get_cb_underlying_stocks(self, *, market: str, codes: List[str]) -> Dict[str, str]:
+        """Map bond codes (lowercased) to underlying stock codes for industry lookup."""
+        normalized = {str(code).strip().lower() for code in codes if str(code).strip()}
+        if not normalized:
+            return {}
+        with self.db.get_session() as session:
+            rows = session.execute(
+                select(StrategyLabCbBasic.bond_code, StrategyLabCbBasic.stock_code).where(
+                    StrategyLabCbBasic.market == market,
+                    func.lower(StrategyLabCbBasic.bond_code).in_(sorted(normalized)),
+                )
+            ).all()
+            return {
+                str(code).lower(): str(stock).strip()
+                for code, stock in rows
+                if str(stock or "").strip()
+            }
 
     def get_cb_ohlc_latest_date(
         self, *, code: str, instrument_type: str = "convertible_bond"
@@ -1175,6 +1194,110 @@ class StrategyLabDataRepository:
             ).scalars().all()
             return [
                 {"symbol": row.symbol, "trade_date": row.trade_date, "close": row.close, "source": row.source}
+                for row in rows
+            ]
+
+    def upsert_etf_daily(self, rows: List[Dict[str, Any]]) -> int:
+        """按 (symbol, trade_date) upsert ETF 日线（沿用 select-then-update 模式）。
+
+        只覆写行内出现的列：``dividend_yield`` 缺省时保留库内已有值，
+        避免日线同步清空预留的股息率数据。
+        """
+        if not rows:
+            return 0
+        upserted = 0
+        with self.db.get_session() as session:
+            for item in rows:
+                row = session.execute(
+                    select(StrategyLabEtfDaily).where(
+                        and_(
+                            StrategyLabEtfDaily.symbol == str(item["symbol"]),
+                            StrategyLabEtfDaily.trade_date == item["trade_date"],
+                        )
+                    )
+                ).scalar_one_or_none()
+                if row is None:
+                    row = StrategyLabEtfDaily(
+                        symbol=str(item["symbol"]),
+                        trade_date=item["trade_date"],
+                    )
+                    session.add(row)
+                row.close = float(item["close"])
+                if item.get("dividend_yield") is not None:
+                    row.dividend_yield = float(item["dividend_yield"])
+                row.source = str(item.get("source") or "baostock")
+                row.updated_at = datetime.now()
+                upserted += 1
+            session.commit()
+        return upserted
+
+    def load_etf_daily(
+        self,
+        *,
+        symbols: List[str],
+        start_date: Any,
+        end_date: Any,
+    ) -> List[Dict[str, Any]]:
+        with self.db.get_session() as session:
+            rows = session.execute(
+                select(StrategyLabEtfDaily)
+                .where(
+                    StrategyLabEtfDaily.symbol.in_([str(symbol) for symbol in symbols]),
+                    StrategyLabEtfDaily.trade_date >= start_date,
+                    StrategyLabEtfDaily.trade_date <= end_date,
+                )
+                .order_by(StrategyLabEtfDaily.symbol.asc(), StrategyLabEtfDaily.trade_date.asc())
+            ).scalars().all()
+            return [
+                {
+                    "symbol": row.symbol,
+                    "trade_date": row.trade_date,
+                    "close": row.close,
+                    "dividend_yield": row.dividend_yield,
+                    "source": row.source,
+                }
+                for row in rows
+            ]
+
+    def load_etf_signal_rows(
+        self,
+        *,
+        symbols: List[str],
+        start_date: Any,
+        end_date: Any,
+        lookback_days: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """信号引擎数据装载：``[start_date - lookback_days, end_date]`` 全量行。
+
+        lookback 用于均线类时序因子的预热（引擎只在 ``[start_date, end_date]``
+        内产生信号与快照，预热段仅参与因子计算）。
+        """
+        normalized = sorted({str(symbol).strip().lower().split(".")[-1] for symbol in symbols if str(symbol).strip()})
+        if not normalized:
+            return []
+        lookback_start = (
+            date.fromisoformat(str(start_date)[:10]) - timedelta(days=max(0, lookback_days))
+            if lookback_days > 0
+            else start_date
+        )
+        with self.db.get_session() as session:
+            rows = session.execute(
+                select(StrategyLabEtfDaily)
+                .where(
+                    StrategyLabEtfDaily.symbol.in_(normalized),
+                    StrategyLabEtfDaily.trade_date >= lookback_start,
+                    StrategyLabEtfDaily.trade_date <= end_date,
+                )
+                .order_by(StrategyLabEtfDaily.symbol.asc(), StrategyLabEtfDaily.trade_date.asc())
+            ).scalars().all()
+            return [
+                {
+                    "symbol": row.symbol,
+                    "trade_date": row.trade_date,
+                    "close": row.close,
+                    "dividend_yield": row.dividend_yield,
+                    "source": row.source,
+                }
                 for row in rows
             ]
 

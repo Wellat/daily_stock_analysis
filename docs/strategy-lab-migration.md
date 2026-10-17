@@ -492,3 +492,40 @@ cd apps/dsa-desktop && npm install && npm run build
 - 历史转股溢价率 2013 年起才有且早期稀疏（约 26 万 / 79.6 万行）：引擎按缺失策略处理（默认 skip），建议回测区间从 2021 年之后开始；diagnostics 提供 `premium_coverage_pct` 供排查。
 - 退市转债主数据基本未同步（opencli 仅 25 只 delisted）：长区间回测存在幸存者偏差，数据补齐为后续独立工作。
 - backtrader 锁定 `1.9.78.123`，只用核心回测能力（不使用其 plotting，无 matplotlib 依赖）。
+
+## 15. ETF 信号策略回测（2026-10）
+
+策略实验室首个非转债品种：`signal` 策略（`instrument_types: ["etf"]`，命名留通用性，未来可扩 stock）。以 510880 红利ETF「低于 182 日均线买入、高于均线 7% 卖出」为首个用例。
+
+### 15.1 数据层
+
+- 新表 `strategy_lab_etf_daily`（`symbol / trade_date / close / dividend_yield 可空 / source / updated_at`，unique(symbol, trade_date)），`create_all` 自动建表，纯 additive。
+- 新同步类型 `sync_type=etf_daily`（数据同步页「ETF日线·后复权」入口，`symbols` 必填 ETF 代码）：主源 **baostock**（`adjustflag=1` 后复权，2016 年起全深度、免费无 token；实测东财 `fund_etf_hist_em` 在本机环境持续断连）；**腾讯 qfq 仅作冷启动兜底**（该 symbol 库内无存量时，`source='tencent_qfq'`，避免与 hfq 存量混拼接缝跳价）。增量逻辑仿 `index_daily`：缺省起点 = 库内最新日期次日，全量回看 10 年。
+- **复权口径：后复权（hfq）**。序列只追加不重写，回测跨分红日可复现（qfq 每次分红会重排历史，重跑旧回测结果会漂移）；显示价与行情软件不同属预期，信号阈值均为比率（乖离率）不受复权基准影响。
+- `dividend_yield` 列已预留但**无同步来源**（当前恒 NULL）：引用该因子的规则按缺失处理当日不触发（策略空仓等待），diagnostics 的 `factor_coverage_pct` 显式展示 0%；数据落库后规则即刻生效，引擎无需改动。
+
+### 15.2 引擎：`signal_v1`（`src/core/strategy_lab/signal_engine.py`）
+
+- 纯 Python 逐标的状态机（不运行 backtrader；指标组装复用 `backtest/analyzers.py` 纯函数，与轮动引擎同口径）：每标的独立「空仓 → 全部买入规则成立 → 持有 → 任一卖出规则成立 → 全仓卖出」，标的间共享现金池。
+- **规则 = 因子行** `{factor, op, value}`（复用横截面框架的比较器语义）；进出场规则分开两张表：买入 = 全部成立（AND），卖出 = 任一成立（OR）。规则引用因子缺失（预热/数据未同步）当日不触发。
+- **时序因子注册表** `series_factors.py`（与横截面 `FACTORSpec` 并列的 `SeriesFactorSpec`：单标的日子行序列 → 等长值序列）：`close` / `ma_gap_pct`（均线乖离率，`ma_window` 参数化，默认 182）/ `roc_pct`（`roc_window`）/ `dividend_yield`（前值填充直通）。metadata 形状与横截面兼容，经 `GET /strategies` 的 `factors` 下发前端因子下拉。
+- 执行语义与轮动引擎对齐：信号 T 日收盘确认、T 日收盘成交（cheat-on-close）、双边佣金、整手 100 股、sizing 预留佣金余量；买入预算 = 当日总权益 ÷ 标的数 × 单标的仓位上限，存量持仓不修剪；期末不强平（持仓按市值计入 final_equity，胜率只统计已完成回合）。
+- 预热：服务层按 `max(ma_window, roc_window) × 1.6` 自然日提前取数，均线因子在回测窗口首日即可就绪（数据足够时）；快照/信号严格限制在 `[start_date, end_date]`。
+- 基准四模式：标的池等权（缺省，每日再平衡）/ 沪深300（`index_daily`）/ 指定 universe 内 ETF 自身买入持有（`symbol:xxxx`）/ **长持·买入持有**（`buy_hold`：回测首日等权买入 universe、固定份额持有到期末——与等权池的每日再平衡语义不同；理想化对比线，无费用不取整手；前端基准下拉 signal 时提供该选项，切换到其他策略后残留状态自动回落等权池）。
+- **参数双轨**（沿用 `score_preset` vs `score_factors` 先例）：扁平标量 `ma_window / entry_gap_max / dividend_yield_min / exit_gap_min`（缺省构建默认规则，且是批量网格的寻优轴）+ 显式 `entry_rules / exit_rules` 列表（存在则优先，表单提交用）；前端提交时两轨同时落库。
+
+### 15.3 API / 服务 / Web
+
+- `StrategyLabInstrumentType` Literal 增加 `"etf"`（runs / batches / configs 三个请求共用，一处解锁）；`_resolve_engine` 在转债早退前增加 etf 分支（`_resolve_signal_engine`：必填 symbols 校验 + 带预热取数 + 指数基准行）；`list_trades` 名称富化收窄到转债行（ETF 无名称主数据，交易表显示代码）。
+- Web：新增 `SignalParamsForm`（均线窗口 / 涨跌幅窗口 / 仓位上限 / 费率 / 整手 + 买入/卖出两张规则行表，复用排除因子行的「因子/比较符/值」模式）；`instrument_type` 从策略元数据派生（替换两处 `convertible_bond` 硬编码）；引用 `dividend_yield` 因子时表单内联提示「数据未同步，规则将不触发」；参数搜索新增 signal 网格轴（均线窗口候选 × 卖出乖离率候选）；数据同步页新增 etf_daily 入口（symbols 必填）。
+- 批量寻优：后端网格本就策略无关（`parameter_grid` 任意键笛卡尔积），signal 的扁平标量键可直接进网格。
+
+### 15.4 首个用例结果（510880 红利ETF，2024-01-02 ~ 2026-10-16）
+
+- 默认规则（MA182 / 入<0 / 出>7）：**+54.30%**（年化 16.83%，最大回撤 -9.02%，夏普 1.38，胜率 100%），vs 自身买入持有 +32.53%；4 个完整回合。
+- 网格 ma_window∈{60,120,182,250} × exit_gap∈{5,7}（8/8 成功）：最优 MA250×出7 +75.65%（回撤 -6.68%）；窗口越长回撤越小、收益不单调——符合均线类策略的常见形态。
+
+### 15.5 已知边界
+
+- 股息率数据源未接入（用户已决策暂缓）：加了 `dividend_yield > 3` 条件的策略将持续空仓，属预期行为（诊断与表单双重提示）；后续接入按「ETF→跟踪指数映射 + funddb 指数股息率」方案另行落地。
+- ETF 名称富化二期（v1 交易表显示代码）；腾讯兜底为 qfq 前复权口径（仅冷启动使用，source 列可甄别）。

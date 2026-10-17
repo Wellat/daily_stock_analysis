@@ -34,6 +34,10 @@ export interface PortfolioPositionItem {
   symbolName?: string | null;
   market: string;
   currency: string;
+  industry?: string | null;
+  category?: string | null;
+  buyLogic?: string | null;
+  note?: string | null;
   quantity: number;
   avgCost: number;
   totalCost: number;
@@ -49,6 +53,36 @@ export interface PortfolioPositionItem {
   priceAvailable?: boolean;
   dataQuality?: 'ok' | 'partial' | string;
   limitations?: string[];
+}
+
+export type PortfolioPositionCategory = 'stock' | 'etf' | 'fund' | 'convertible_bond';
+export type PortfolioBuyLogic = 'dividend' | 'index_tracking' | 'automated' | 'undefined';
+
+export interface PortfolioPositionMetaUpdateRequest {
+  accountId: number;
+  symbol: string;
+  industry?: string;
+  category?: PortfolioPositionCategory | string;
+  buyLogic?: PortfolioBuyLogic | string;
+  note?: string;
+}
+
+export interface PortfolioPositionMetaItem {
+  accountId: number;
+  symbol: string;
+  market: string;
+  industry?: string | null;
+  category?: string | null;
+  buyLogic?: string | null;
+  note?: string | null;
+}
+
+export interface PortfolioPositionMetaAutofillResponse {
+  accountsScanned: number;
+  positionsScanned: number;
+  industryCandidates: number;
+  industryFilled: number;
+  failed: string[];
 }
 
 export interface PortfolioTrendPoint {

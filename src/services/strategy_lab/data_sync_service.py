@@ -8,7 +8,7 @@ import json
 import threading
 from datetime import date, timedelta
 import time
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 from uuid import uuid4
 
 from src.repositories.portfolio_repo import PortfolioRepository
@@ -1171,6 +1171,127 @@ class StrategyLabDataSyncService:
             for record in frame.to_dict(orient="records")
         ]
 
+    def sync_etf_daily(
+        self,
+        *,
+        market: str = "cn",
+        symbols: Optional[List[str]] = None,
+        start_date: Optional[date] = None,
+        end_date: Optional[date] = None,
+        _run_id: Optional[int] = None,
+        _complete_on_success: bool = True,
+    ) -> Dict[str, Any]:
+        """同步 ETF 后复权日线到 ``strategy_lab_etf_daily``（信号策略回测用）。
+
+        ``symbols`` 必填（ETF 无默认全集）。主源 baostock（``adjustflag=1``
+        后复权，2016 年起全深度、免费无 token）；腾讯 K 线为**冷启动兜底**
+        （仅该 symbol 库内无任何存量时使用，qfq 前复权口径，``source``
+        标记 ``tencent_qfq``，避免与 baostock hfq 存量混拼接缝）。
+        增量逻辑：缺省 start 时取该 symbol 库内最新日期的次日。
+        """
+        normalized = sorted({
+            str(symbol).strip().lower().split(".")[-1]
+            for symbol in (symbols or [])
+            if str(symbol).strip()
+        })
+        if not normalized:
+            raise ValueError("etf_daily 同步需要在 symbols 中提供 ETF 代码（如 510880）")
+        resolved_end = end_date or date.today()
+
+        import baostock as bs
+
+        from src.services.strategy_lab.cb_providers import _a_share_etf_market_prefix, _fetch_tencent_kline
+
+        login = bs.login()
+        if login.error_code != "0":
+            raise ValueError(f"baostock login failed: {login.error_msg}")
+        per_symbol: Dict[str, Dict[str, Any]] = {}
+        try:
+            for symbol in normalized:
+                if _run_id is not None:
+                    self._raise_if_cancel_requested(_run_id)
+                prefix = _a_share_etf_market_prefix(symbol)
+                if not prefix:
+                    per_symbol[symbol] = {"status": "skipped", "reason": "非沪深 ETF 代码"}
+                    continue
+                existing = self.repository.load_etf_daily(
+                    symbols=[symbol], start_date=date(1990, 1, 1), end_date=resolved_end
+                )
+                if start_date is None:
+                    sym_start = (
+                        existing[-1]["trade_date"] + timedelta(days=1)
+                        if existing
+                        else resolved_end - timedelta(days=3650)
+                    )
+                else:
+                    sym_start = start_date
+                if existing and sym_start > resolved_end:
+                    per_symbol[symbol] = {"status": "up_to_date", "rows_fetched": 0, "rows_upserted": 0}
+                    continue
+                rows, source = self._fetch_etf_daily_baostock(
+                    f"{prefix}.{symbol}", symbol, sym_start, resolved_end
+                )
+                if not rows and not existing:
+                    frame = _fetch_tencent_kline(
+                        f"{prefix}{symbol}", start_date=sym_start, end_date=resolved_end, timeout=30.0
+                    )
+                    rows = [
+                        {"symbol": symbol, "trade_date": record["date"], "close": float(record["close"])}
+                        for record in frame.to_dict(orient="records")
+                    ]
+                    source = "tencent_qfq"
+                if not rows:
+                    per_symbol[symbol] = {
+                        "status": "failed",
+                        "reason": "主源与兜底均未取到数据",
+                        "range": [sym_start.isoformat(), resolved_end.isoformat()],
+                    }
+                    continue
+                upserted = self.repository.upsert_etf_daily(
+                    [{**row, "source": source} for row in rows]
+                )
+                per_symbol[symbol] = {
+                    "status": "completed",
+                    "source": source,
+                    "rows_fetched": len(rows),
+                    "rows_upserted": upserted,
+                }
+        finally:
+            bs.logout()
+        failed = sorted(s for s, r in per_symbol.items() if r.get("status") == "failed")
+        result = {
+            "status": "completed" if not failed else "partial",
+            "symbols": per_symbol,
+            "failed_symbols": failed,
+            "rows_upserted": sum(r.get("rows_upserted", 0) for r in per_symbol.values()),
+        }
+        if _run_id is not None and _complete_on_success:
+            self.repository.complete_sync_run(_run_id, result=result)
+        return result
+
+    @staticmethod
+    def _fetch_etf_daily_baostock(
+        bs_code: str, symbol: str, start_date: date, end_date: date
+    ) -> Tuple[List[Dict[str, Any]], str]:
+        """baostock 后复权日线（adjustflag=1）；空列表表示该源无数据。"""
+        import baostock as bs
+
+        rs = bs.query_history_k_data_plus(
+            bs_code,
+            "date,close",
+            start_date=start_date.strftime("%Y-%m-%d"),
+            end_date=end_date.strftime("%Y-%m-%d"),
+            frequency="d",
+            adjustflag="1",
+        )
+        rows: List[Dict[str, Any]] = []
+        while rs.error_code == "0" and rs.next():
+            record = rs.get_row_data()
+            if not record[0] or not record[1]:
+                continue
+            rows.append({"symbol": symbol, "trade_date": date.fromisoformat(record[0]), "close": float(record[1])})
+        return rows, "baostock"
+
     def start_data_sync(
         self,
         *,
@@ -1190,13 +1311,14 @@ class StrategyLabDataSyncService:
         ``run_kind='after_close'``）/
         ``portfolio_holdings``（Portfolio 持仓中股票 / ETF 的日线行情）/
         ``index_daily``（指数日线，基准用；``symbols`` 传指数代码，缺省 000300）/
+        ``etf_daily``（ETF 后复权日线，信号策略回测用；``symbols`` 必传 ETF 代码）/
         ``all``（先基础后行情）。
         后台任务复用 ``_PROVIDER_SYNC_LOCK`` 互斥，
         进度通过 ``list_sync_runs`` 轮询。
         """
         if sync_type not in (
             "cb_basic", "cb_ohlc", "cb_premium_history", "cb_factors", "cb_scheduled",
-            "portfolio_holdings", "index_daily", "all",
+            "portfolio_holdings", "index_daily", "etf_daily", "all",
         ):
             raise ValueError(f"Unsupported sync_type: {sync_type}")
         if not _PROVIDER_SYNC_LOCK.acquire(blocking=False):
@@ -1291,6 +1413,17 @@ class StrategyLabDataSyncService:
                         _run_id=run.id,
                         _complete_on_success=True,
                     )
+                if sync_type == "etf_daily":
+                    result["etf_daily"] = self.sync_etf_daily(
+                        market=market,
+                        symbols=symbols,
+                        start_date=start_date,
+                        end_date=end_date,
+                        _run_id=run.id,
+                        _complete_on_success=True,
+                    )
+                    if result["etf_daily"].get("status") == "cancelled":
+                        return
                 if sync_type == "cb_scheduled":
                     # 手动触发调度链路；run 的 complete/cancel 由
                     # run_scheduled_sync 统一处理（共享 run.id）

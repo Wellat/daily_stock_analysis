@@ -17,6 +17,9 @@ import type {
   PortfolioImportCommitResponse,
   PortfolioImportParseResponse,
   PortfolioPositionAnalysisRequest,
+  PortfolioPositionMetaAutofillResponse,
+  PortfolioPositionMetaItem,
+  PortfolioPositionMetaUpdateRequest,
   PortfolioQmtSyncRequest,
   PortfolioQmtSyncResponse,
   PortfolioRiskResponse,
@@ -212,6 +215,35 @@ export const portfolioApi = {
       note: payload.note,
     });
     return toCamelCase<PortfolioEventCreatedResponse>(response.data);
+  },
+
+  async updatePositionMeta(payload: PortfolioPositionMetaUpdateRequest): Promise<PortfolioPositionMetaItem> {
+    const body: Record<string, unknown> = {
+      account_id: payload.accountId,
+      symbol: payload.symbol,
+    };
+    if (payload.industry !== undefined) {
+      body.industry = payload.industry;
+    }
+    if (payload.category !== undefined) {
+      body.category = payload.category;
+    }
+    if (payload.buyLogic !== undefined) {
+      body.buy_logic = payload.buyLogic;
+    }
+    if (payload.note !== undefined) {
+      body.note = payload.note;
+    }
+    const response = await apiClient.put<Record<string, unknown>>('/api/v1/portfolio/position-meta', body);
+    return toCamelCase<PortfolioPositionMetaItem>(response.data);
+  },
+
+  async autofillPositionMeta(accountId?: number): Promise<PortfolioPositionMetaAutofillResponse> {
+    const response = await apiClient.post<Record<string, unknown>>(
+      '/api/v1/portfolio/position-meta/autofill',
+      { account_id: accountId ?? null },
+    );
+    return toCamelCase<PortfolioPositionMetaAutofillResponse>(response.data);
   },
 
   async deleteTrade(tradeId: number): Promise<PortfolioDeleteResponse> {

@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 
 
 StrategyLabMarket = Literal["cn", "hk", "us"]
-StrategyLabInstrumentType = Literal["convertible_bond", "stock", "hk_stock", "us_stock"]
+StrategyLabInstrumentType = Literal["convertible_bond", "stock", "hk_stock", "us_stock", "etf"]
 StrategyLabRunStatus = Literal["pending", "running", "completed", "failed"]
 StrategyLabTradeSide = Literal["buy", "sell"]
 

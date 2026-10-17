@@ -568,6 +568,31 @@ class PortfolioTrade(Base):
     )
 
 
+class PortfolioPositionMeta(Base):
+    """Per-(account, symbol) editable display attributes for held positions.
+
+    行业/分类/买入逻辑/备注的人工维护层；NULL 字段表示未维护，展示时回退
+    到自动推导（分类按代码规则、买入逻辑按账户交易来源、行业为空）。
+    """
+
+    __tablename__ = 'portfolio_position_meta'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    account_id = Column(Integer, ForeignKey('portfolio_accounts.id'), nullable=False, index=True)
+    symbol = Column(String(16), nullable=False, index=True)
+    market = Column(String(8), nullable=False, default='cn')
+    industry = Column(String(64))
+    category = Column(String(16))   # stock/etf/fund/convertible_bond；NULL=自动推导
+    buy_logic = Column(String(16))  # dividend/index_tracking/automated/undefined；NULL=默认
+    note = Column(String(255))
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    __table_args__ = (
+        UniqueConstraint('account_id', 'symbol', name='uix_portfolio_position_meta_account_symbol'),
+    )
+
+
 class PortfolioCashLedger(Base):
     """Cash in/out events."""
 
@@ -969,6 +994,30 @@ class StrategyLabIndexDaily(Base):
 
     __table_args__ = (
         UniqueConstraint('symbol', 'trade_date', name='uix_strategy_lab_index_daily'),
+    )
+
+
+class StrategyLabEtfDaily(Base):
+    """ETF daily close for Strategy Lab signal backtests (hfq adjusted).
+
+    ``close`` 为后复权价（baostock adjustflag=1）：序列只追加不重写，
+    回测跨分红日可复现；信号阈值均为比率（如均线乖离率），不受复权基准影响。
+    ``dividend_yield`` 预留列（当前无同步来源，恒为 NULL），规则引用该因子时
+    按缺失处理（当日不触发），diagnostics 会展示因子覆盖率。
+    """
+
+    __tablename__ = 'strategy_lab_etf_daily'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    symbol = Column(String(32), nullable=False, index=True)
+    trade_date = Column(Date, nullable=False, index=True)
+    close = Column(Float, nullable=False)
+    dividend_yield = Column(Float, nullable=True)
+    source = Column(String(32), nullable=False, default='baostock', index=True)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, index=True)
+
+    __table_args__ = (
+        UniqueConstraint('symbol', 'trade_date', name='uix_strategy_lab_etf_daily'),
     )
 
 

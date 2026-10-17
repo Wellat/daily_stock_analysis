@@ -26,6 +26,7 @@ type SummaryRow = MetricSource & {
 const BENCHMARK_MODE_LABELS: Record<string, string> = {
   equal_weight_pool: '标的池等权',
   'index:000300': '沪深300',
+  buy_hold: '长持·买入持有',
 };
 
 /** 负值绿色、正值红色（A 股惯例）。 */

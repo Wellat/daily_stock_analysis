@@ -37,6 +37,8 @@ PARTIAL_VALUATION_MARKETS = {"jp", "kr", "tw"}
 VALID_COST_METHODS = {"fifo", "avg"}
 VALID_SIDES = {"buy", "sell"}
 VALID_CASH_DIRECTIONS = {"in", "out"}
+VALID_POSITION_CATEGORIES = {"stock", "etf", "fund", "convertible_bond"}
+VALID_BUY_LOGICS = {"dividend", "index_tracking", "automated", "undefined", "value"}
 VALID_CORPORATE_ACTIONS = {"cash_dividend", "split_adjustment"}
 PORTFOLIO_FX_REFRESH_DISABLED_REASON = "portfolio_fx_update_disabled"
 PORTFOLIO_REALTIME_QUOTE_MAX_WORKERS = 4
@@ -329,6 +331,165 @@ class PortfolioService:
                 note=(note or "").strip() or None,
             )
             return {"id": int(row.id)}
+
+    # ------------------------------------------------------------------
+    # Position meta (industry / category / buy logic / note)
+    # ------------------------------------------------------------------
+    def update_position_meta(
+        self,
+        *,
+        account_id: int,
+        symbol: str,
+        updates: Dict[str, Optional[str]],
+    ) -> Dict[str, Any]:
+        """人工更新持仓元数据；``updates`` 只含要改的键（值空串/None 表示清除）。
+
+        行业更新会同步到其他账户同代码的元数据行（行业按代码全局共享）。
+        """
+        if not updates:
+            raise ValueError("No fields provided for update")
+        allowed = {"industry", "category", "buy_logic", "note"}
+        unknown = set(updates) - allowed
+        if unknown:
+            raise ValueError(f"Unknown position meta fields: {sorted(unknown)}")
+        if "category" in updates and updates["category"] not in (None, ""):
+            if updates["category"] not in VALID_POSITION_CATEGORIES:
+                raise ValueError(
+                    f"category must be one of {sorted(VALID_POSITION_CATEGORIES)}"
+                )
+        if "buy_logic" in updates and updates["buy_logic"] not in (None, ""):
+            if updates["buy_logic"] not in VALID_BUY_LOGICS:
+                raise ValueError(f"buy_logic must be one of {sorted(VALID_BUY_LOGICS)}")
+        symbol_norm = self._normalize_symbol_for_storage(symbol)
+        if not symbol_norm:
+            raise ValueError("symbol is required")
+        fields: Dict[str, Any] = {}
+        for key, value in updates.items():
+            text = (value or "").strip()
+            limit = 255 if key == "note" else 64
+            if len(text) > limit:
+                raise ValueError(f"{key} exceeds {limit} characters")
+            fields[key] = text or None
+        with self.repo.portfolio_write_session() as session:
+            account = self._require_active_account_in_session(
+                session=session, account_id=account_id
+            )
+            market_norm = self._normalize_market(account.market)
+        row = self.repo.upsert_position_meta(
+            account_id=account_id,
+            symbol=symbol_norm,
+            market=market_norm,
+            fields=fields,
+        )
+        if "industry" in fields:
+            self.repo.propagate_position_industry(
+                symbol=symbol_norm, industry=fields["industry"]
+            )
+        return {
+            "account_id": account_id,
+            "symbol": symbol_norm,
+            "market": market_norm,
+            "industry": row.industry,
+            "category": row.category,
+            "buy_logic": row.buy_logic,
+            "note": row.note,
+        }
+
+    def autofill_position_meta(self, *, account_id: Optional[int] = None) -> Dict[str, Any]:
+        """为当前持仓自动补全元数据空字段（只填空，绝不覆盖人工值）。
+
+        - 行业：普通股票直接拉板块，可转债按正股代码拉；ETF / 场外基金
+          无行业数据源，跳过留待人工维护。
+        - 分类 / 买入逻辑由展示层自动推导，不落库。
+        """
+        from src.services.portfolio_risk_service import fetch_industry_name
+
+        snapshot = self.get_portfolio_snapshot(include_realtime=False, account_id=account_id)
+        cb_stocks: Dict[str, str] = {}
+        cn_symbols = sorted(
+            {
+                str(pos.get("symbol") or "").strip()
+                for account in snapshot.get("accounts", [])
+                for pos in account.get("positions", [])
+                if str(pos.get("market") or "").strip().lower() == "cn"
+            }
+        )
+        if cn_symbols:
+            try:
+                cb_stocks = StrategyLabDataRepository(self.repo.db).get_cb_underlying_stocks(
+                    market="cn", codes=cn_symbols
+                )
+            except Exception as exc:
+                logger.warning("Failed to resolve CB underlying stocks for autofill: %s", exc)
+
+        positions_scanned = 0
+        pending: Dict[str, Tuple[str, str]] = {}  # lower symbol -> (symbol, lookup_symbol)
+        targets: List[Tuple[int, str]] = []  # (account_id, symbol) rows to fill
+        for account in snapshot.get("accounts", []):
+            acct_id = int(account["account_id"])
+            try:
+                meta_map = self.repo.get_position_meta_map(acct_id)
+            except Exception as exc:
+                logger.warning("Failed to load position meta for autofill: %s", exc)
+                meta_map = {}
+            for pos in account.get("positions", []):
+                positions_scanned += 1
+                symbol = str(pos.get("symbol") or "").strip()
+                if not symbol:
+                    continue
+                meta = meta_map.get(symbol.lower())
+                if meta is not None and (meta.industry or "").strip():
+                    continue
+                category = (pos.get("category") or "").strip()
+                if category in ("fund", "etf"):
+                    continue  # 基金/ETF 无行业数据源，人工维护
+                if symbol.lower() not in pending:
+                    pending[symbol.lower()] = (symbol, cb_stocks.get(symbol.lower()) or symbol)
+                targets.append((acct_id, symbol))
+
+        industry_filled = 0
+        failed: List[str] = []
+        if pending:
+            with ThreadPoolExecutor(max_workers=min(8, len(pending))) as executor:
+                future_map = {
+                    executor.submit(fetch_industry_name, lookup, "cn"): symbol
+                    for symbol, lookup in pending.values()
+                }
+                for future in as_completed(future_map):
+                    symbol = future_map[future]
+                    try:
+                        industry = future.result()
+                    except Exception as exc:  # noqa: BLE001 - 单标的失败不阻断
+                        logger.warning("Industry autofill failed for %s: %s", symbol, exc)
+                        failed.append(symbol)
+                        continue
+                    if not industry:
+                        continue
+                    industry_filled += 1
+                    for acct_id, target_symbol in targets:
+                        if target_symbol.lower() != symbol.lower():
+                            continue
+                        try:
+                            self.repo.upsert_position_meta(
+                                account_id=acct_id,
+                                symbol=target_symbol,
+                                market="cn",
+                                fields={"industry": industry},
+                            )
+                        except Exception as exc:  # noqa: BLE001 - 单行失败不阻断
+                            logger.warning(
+                                "Position meta upsert failed for %s/%s: %s",
+                                acct_id,
+                                target_symbol,
+                                exc,
+                            )
+        return {
+            "accounts_scanned": len(snapshot.get("accounts", [])),
+            "positions_scanned": positions_scanned,
+            "industry_candidates": len(pending),
+            "industry_filled": industry_filled,
+            "failed": sorted(set(failed)),
+        }
 
     def delete_trade_event(self, trade_id: int) -> bool:
         with self.repo.portfolio_write_session() as session:
@@ -1085,6 +1246,79 @@ class PortfolioService:
             logger.warning("Failed to resolve QMT position names: %s", exc)
         return names
 
+    @staticmethod
+    def _derive_position_category(symbol: str, cb_symbols: Set[str]) -> str:
+        """按代码规则推导持仓分类：场外基金 / 可转债 / ETF / 普通股票。
+
+        ETF 判定与盘后行情同步的 instrument_type 规则一致（cn 代码 1/5 开头
+        为场内基金）；港股、美股与北交所归普通股票。
+        """
+        text = str(symbol or "").strip().upper()
+        if text.endswith(".OF"):
+            return "fund"
+        if text.lower() in cb_symbols:
+            return "convertible_bond"
+        if text[:2] == "HK" and text[2:].isdigit():
+            return "stock"
+        if text and text[0] in ("1", "5") and text[0].isdigit():
+            return "etf"
+        return "stock"
+
+    def _position_meta_overlay(
+        self,
+        keys: Iterable[Tuple[str, str, str]],
+        *,
+        account_id: int,
+    ) -> Dict[str, Dict[str, Any]]:
+        """解析持仓展示元数据：人工维护行优先，空字段回退自动推导。
+
+        返回以小写代码为键的 {industry, category, buy_logic, note} 映射；
+        行业无自动来源（由 autofill/人工落库），分类与买入逻辑总有兜底值。
+        买入逻辑默认值：账户存在 QMT 同步交易（trade_uid ``qmt:`` 前缀）
+        记 ``automated``，否则 ``undefined``。
+        """
+        overlay: Dict[str, Dict[str, Any]] = {}
+        try:
+            meta_map = self.repo.get_position_meta_map(account_id)
+        except Exception as exc:
+            logger.warning("Failed to load position meta for overlay: %s", exc)
+            meta_map = {}
+        cb_symbols: Set[str] = set()
+        cn_symbols = sorted({symbol for symbol, market, _ in keys if market == "cn" and symbol})
+        if cn_symbols:
+            try:
+                cb_symbols = set(
+                    StrategyLabDataRepository(self.repo.db).get_cb_names(
+                        market="cn", codes=cn_symbols
+                    )
+                )
+            except Exception as exc:
+                logger.warning("Failed to resolve CB codes for position meta: %s", exc)
+        try:
+            default_logic = (
+                "automated" if self.repo.account_has_qmt_trades(account_id) else "undefined"
+            )
+        except Exception as exc:
+            logger.warning("Failed to detect QMT trades for position meta: %s", exc)
+            default_logic = "undefined"
+        for symbol, _, _ in keys:
+            key = str(symbol or "").strip().lower()
+            if not key or key in overlay:
+                continue
+            meta = meta_map.get(key)
+            overlay[key] = {
+                "industry": ((meta.industry or "").strip() or None) if meta else None,
+                "category": ((meta.category or "").strip() or None) if meta else None,
+                "buy_logic": ((meta.buy_logic or "").strip() or None) if meta else None,
+                "note": ((meta.note or "").strip() or None) if meta else None,
+            }
+        for key, fields in overlay.items():
+            if not fields["category"]:
+                fields["category"] = self._derive_position_category(key, cb_symbols)
+            if not fields["buy_logic"]:
+                fields["buy_logic"] = default_logic
+        return overlay
+
     def _build_positions(
         self,
         *,
@@ -1127,6 +1361,7 @@ class PortfolioService:
             else None
         )
         symbol_names = self._position_symbol_names(keys, account_id=account.id)
+        meta_overlay = self._position_meta_overlay(keys, account_id=account.id)
 
         for key in sorted(keys):
             symbol, market, currency = key
@@ -1192,12 +1427,17 @@ class PortfolioService:
             if abs(cost_base) > EPS:
                 unrealized_pct = unrealized_base / cost_base * 100.0
 
+            position_meta = meta_overlay.get(str(symbol).lower()) or {}
             position_rows.append(
                 {
                     "symbol": symbol,
                     "symbol_name": symbol_names.get(str(symbol).lower()),
                     "market": market,
                     "currency": currency,
+                    "industry": position_meta.get("industry"),
+                    "category": position_meta.get("category"),
+                    "buy_logic": position_meta.get("buy_logic"),
+                    "note": position_meta.get("note"),
                     "quantity": round(qty, 8),
                     "avg_cost": round(avg_cost, 8),
                     "total_cost": round(total_cost, 8),

@@ -51,6 +51,31 @@ def _rotation_strategy_entry() -> Dict[str, Any]:
     }
 
 
+def _signal_strategy_entry() -> Dict[str, Any]:
+    """ETF 信号策略的注册条目（时序进出场规则，含因子元数据供前端动态渲染）。"""
+    from src.core.strategy_lab import series_factors as SF
+
+    parameters = [
+        {"key": "ma_window", "label": "均线窗口(日)", "type": "integer", "default": 182, "min": 2},
+        {"key": "roc_window", "label": "涨跌幅窗口(日)", "type": "integer", "default": 20, "min": 1},
+        {"key": "entry_gap_max", "label": "买入乖离率上限(%)", "type": "number", "default": 0, "min": -100},
+        {"key": "dividend_yield_min", "label": "买入股息率下限(%)", "type": "number", "default": 0, "min": 0},
+        {"key": "exit_gap_min", "label": "卖出乖离率下限(%)", "type": "number", "default": 7, "min": -100},
+        {"key": "max_position_pct", "label": "单标的最大仓位(%)", "type": "number", "default": 100, "min": 1, "max": 100},
+        {"key": "commission", "label": "单边手续费率", "type": "number", "default": 0.0002, "min": 0},
+        {"key": "lot_size", "label": "最小交易单位(股)", "type": "integer", "default": 100, "min": 1},
+    ]
+    return {
+        "strategy_id": "signal",
+        "name": "ETF Signal",
+        "instrument_types": ["etf"],
+        "markets": ["cn"],
+        "description": "Per-symbol time-series entry/exit rules on daily bars (e.g. MA deviation with optional dividend-yield filter).",
+        "parameters": parameters,
+        "factors": SF.list_series_factor_metadata(),
+    }
+
+
 def list_builtin_strategies() -> List[dict]:
     """Return strategies exposed by the Strategy Lab backend."""
     # The new strategy registry is the source of truth for migrated strategies;
@@ -109,4 +134,7 @@ def list_builtin_strategies() -> List[dict]:
     rotation = _rotation_strategy_entry()
     if rotation["strategy_id"] not in {x["strategy_id"] for x in result}:
         result.insert(0, rotation)  # rotation 为推荐的默认策略，置顶展示
+    signal = _signal_strategy_entry()
+    if signal["strategy_id"] not in {x["strategy_id"] for x in result}:
+        result.insert(1, signal)  # ETF 信号策略紧随其后
     return result

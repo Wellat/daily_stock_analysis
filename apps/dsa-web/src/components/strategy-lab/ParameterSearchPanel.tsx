@@ -30,7 +30,12 @@ export const ParameterSearchPanel: React.FC = () => {
   const [runForm, setRunForm] = useState({ startDate: '2024-01-02', endDate: today, initialCash: '100000', symbols: '' });
   const [batchPositions, setBatchPositions] = useState('1,2,3');
   const [batchIntervals, setBatchIntervals] = useState('');
+  const [batchMaWindows, setBatchMaWindows] = useState('60,120,182,250');
+  const [batchExitGaps, setBatchExitGaps] = useState('');
   const [runBatchAsync, setRunBatchAsync] = useState(true);
+
+  const isSignal = strategyId === 'signal';
+  const instrumentType = strategies.find((item) => item.strategy_id === strategyId)?.instrument_types?.[0] ?? 'convertible_bond';
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -98,9 +103,12 @@ export const ParameterSearchPanel: React.FC = () => {
         onSubmit={(event) => {
           event.preventDefault();
           void runAction('batch', async () => {
-            const parameter_grid: Record<string, unknown[]> = {
-              max_positions: parsePositiveNumbers(batchPositions),
-            };
+            const parameter_grid: Record<string, unknown[]> = isSignal
+              ? {
+                  ma_window: parsePositiveNumbers(batchMaWindows).map(Math.round),
+                  ...(parsePositiveNumbers(batchExitGaps).length ? { exit_gap_min: parsePositiveNumbers(batchExitGaps) } : {}),
+                }
+              : { max_positions: parsePositiveNumbers(batchPositions) };
             const intervalCandidates = parsePositiveNumbers(batchIntervals);
             if (strategyId === 'rotation' && intervalCandidates.length) {
               parameter_grid.rebalance_interval = intervalCandidates;
@@ -108,11 +116,11 @@ export const ParameterSearchPanel: React.FC = () => {
             const batch = await strategyLabApi.createBatch({
               strategy_id: strategyId,
               market: 'cn',
-              instrument_type: 'convertible_bond',
+              instrument_type: instrumentType,
               base_config: {
                 strategy_id: strategyId,
                 market: 'cn',
-                instrument_type: 'convertible_bond',
+                instrument_type: instrumentType,
                 start_date: runForm.startDate,
                 end_date: runForm.endDate,
                 initial_cash: Number(runForm.initialCash),
@@ -133,14 +141,27 @@ export const ParameterSearchPanel: React.FC = () => {
               {strategies.map((strategy) => <option key={strategy.strategy_id} value={strategy.strategy_id}>{strategy.name}</option>)}
             </select>
           </label>
-          <label className="text-sm">
-            最大持仓候选
-            <input aria-label="最大持仓候选" className={`${SL_INPUT_CLASS} mt-1`} value={batchPositions} onChange={(event) => setBatchPositions(event.target.value)} />
-          </label>
+          {isSignal ? (
+            <label className="text-sm">
+              均线窗口候选
+              <input aria-label="均线窗口候选" className={`${SL_INPUT_CLASS} mt-1`} value={batchMaWindows} onChange={(event) => setBatchMaWindows(event.target.value)} placeholder="例如 60,120,182,250" />
+            </label>
+          ) : (
+            <label className="text-sm">
+              最大持仓候选
+              <input aria-label="最大持仓候选" className={`${SL_INPUT_CLASS} mt-1`} value={batchPositions} onChange={(event) => setBatchPositions(event.target.value)} />
+            </label>
+          )}
           {strategyId === 'rotation' ? (
             <label className="text-sm">
               换仓频率候选
               <input aria-label="换仓频率候选" className={`${SL_INPUT_CLASS} mt-1`} value={batchIntervals} onChange={(event) => setBatchIntervals(event.target.value)} placeholder="例如 1,3,5；留空不参与网格" />
+            </label>
+          ) : null}
+          {isSignal ? (
+            <label className="text-sm">
+              卖出乖离率候选(%)
+              <input aria-label="卖出乖离率候选" className={`${SL_INPUT_CLASS} mt-1`} value={batchExitGaps} onChange={(event) => setBatchExitGaps(event.target.value)} placeholder="例如 5,7,10；留空不参与网格" />
             </label>
           ) : null}
           <label className="text-sm">
@@ -156,15 +177,22 @@ export const ParameterSearchPanel: React.FC = () => {
             <input aria-label="初始资金" className={`${SL_INPUT_CLASS} mt-1`} type="number" min="1" value={runForm.initialCash} onChange={(event) => setRunForm({ ...runForm, initialCash: event.target.value })} required />
           </label>
           <label className="text-sm">
-            标的筛选
-            <input aria-label="标的筛选" className={`${SL_INPUT_CLASS} mt-1`} value={runForm.symbols} onChange={(event) => setRunForm({ ...runForm, symbols: event.target.value })} placeholder="逗号分隔，留空使用全部同步标的" />
+            {isSignal ? 'ETF 标的（必填）' : '标的筛选'}
+            <input
+              aria-label={isSignal ? 'ETF标的' : '标的筛选'}
+              className={`${SL_INPUT_CLASS} mt-1`}
+              value={runForm.symbols}
+              onChange={(event) => setRunForm({ ...runForm, symbols: event.target.value })}
+              placeholder={isSignal ? '逗号分隔 ETF 代码，如 510880,159915' : '逗号分隔，留空使用全部同步标的'}
+              required={isSignal}
+            />
           </label>
         </div>
         <label className="mt-3 flex items-center gap-2 text-sm text-secondary-text">
           <input aria-label="后台执行批次" type="checkbox" checked={runBatchAsync} onChange={(event) => setRunBatchAsync(event.target.checked)} />
           后台执行并显示进度
         </label>
-        <Button type="primary" htmlType="submit" className="mt-4" loading={actionLoading === 'batch'} disabled={parsePositiveNumbers(batchPositions).length === 0}>运行参数批次</Button>
+        <Button type="primary" htmlType="submit" className="mt-4" loading={actionLoading === 'batch'} disabled={isSignal ? parsePositiveNumbers(batchMaWindows).length === 0 : parsePositiveNumbers(batchPositions).length === 0}>运行参数批次</Button>
       </form>
 
       <div className={`${SL_PANEL_CLASS}`}>
