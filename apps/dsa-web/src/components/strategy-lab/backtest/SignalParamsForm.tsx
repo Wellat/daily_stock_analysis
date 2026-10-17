@@ -26,6 +26,8 @@ export const SignalParamsForm: React.FC<Props> = ({ value, onChange, factors }) 
   );
   const usesDividendYield = [...value.entryRules, ...value.exitRules].some((row) => row.factor === 'dividend_yield');
   const usesRocPct = [...value.entryRules, ...value.exitRules].some((row) => row.factor === 'roc_pct');
+  const usesMaGap = [...value.entryRules, ...value.exitRules].some((row) => row.factor === 'ma_gap_pct');
+  const usesMacd = [...value.entryRules, ...value.exitRules].some((row) => row.factor.startsWith('macd_'));
 
   const patch = (partial: Partial<SignalFormState>) => onChange({ ...value, ...partial });
 
@@ -99,17 +101,19 @@ export const SignalParamsForm: React.FC<Props> = ({ value, onChange, factors }) 
   return (
     <div className="mt-3 grid gap-4">
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <label className="text-sm">
-          均线窗口(日)
-          <input
-            aria-label="均线窗口"
-            className={`${SL_INPUT_CLASS} mt-1`}
-            type="number"
-            min="2"
-            value={value.maWindow}
-            onChange={(event) => patch({ maWindow: event.target.value })}
-          />
-        </label>
+        {usesMaGap ? (
+          <label className="text-sm">
+            均线窗口(日)
+            <input
+              aria-label="均线窗口"
+              className={`${SL_INPUT_CLASS} mt-1`}
+              type="number"
+              min="2"
+              value={value.maWindow}
+              onChange={(event) => patch({ maWindow: event.target.value })}
+            />
+          </label>
+        ) : null}
         {usesRocPct ? (
           <label className="text-sm">
             涨跌幅窗口(日)
@@ -122,6 +126,43 @@ export const SignalParamsForm: React.FC<Props> = ({ value, onChange, factors }) 
               onChange={(event) => patch({ rocWindow: event.target.value })}
             />
           </label>
+        ) : null}
+        {usesMacd ? (
+          <>
+            <label className="text-sm">
+              MACD 快线EMA(日)
+              <input
+                aria-label="MACD快线"
+                className={`${SL_INPUT_CLASS} mt-1`}
+                type="number"
+                min="2"
+                value={value.macdFast}
+                onChange={(event) => patch({ macdFast: event.target.value })}
+              />
+            </label>
+            <label className="text-sm">
+              MACD 慢线EMA(日)
+              <input
+                aria-label="MACD慢线"
+                className={`${SL_INPUT_CLASS} mt-1`}
+                type="number"
+                min="3"
+                value={value.macdSlow}
+                onChange={(event) => patch({ macdSlow: event.target.value })}
+              />
+            </label>
+            <label className="text-sm">
+              MACD 信号线EMA(日)
+              <input
+                aria-label="MACD信号线"
+                className={`${SL_INPUT_CLASS} mt-1`}
+                type="number"
+                min="2"
+                value={value.macdSignal}
+                onChange={(event) => patch({ macdSignal: event.target.value })}
+              />
+            </label>
+          </>
         ) : null}
         <label className="text-sm">
           单标的最大仓位(%)

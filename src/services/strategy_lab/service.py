@@ -115,8 +115,8 @@ class StrategyLabService:
                 "ETF 回测需要在「标的」中提供 ETF 代码（如 510880），并先完成 etf_daily 数据同步"
             )
         params = SignalParams.from_parameters(config.parameters or {})
-        # 均线类因子预热：按窗口大小回看（交易日×1.6 ≈ 自然日），从库里多取一段
-        lookback_days = int(max(params.ma_window, params.roc_window) * 1.6)
+        # 时序因子预热（均线/MACD）：按窗口大小回看（交易日×1.6 ≈ 自然日），从库里多取一段
+        lookback_days = int(params.warmup_trading_days() * 1.6)
         rows = self.data_repository.load_etf_signal_rows(
             symbols=config.symbols,
             start_date=config.start_date,

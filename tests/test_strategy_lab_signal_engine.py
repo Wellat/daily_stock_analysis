@@ -276,3 +276,96 @@ class TestValidation:
     def test_ma_window_minimum_enforced(self):
         with pytest.raises(ValueError):
             SignalParams.from_parameters({"ma_window": 1})
+
+
+class TestMacdStrategy:
+    """MACD 因子与金叉/死叉信号策略。"""
+
+    MACD = {"macd_fast": 5, "macd_slow": 12, "macd_signal": 4}
+
+    # 横盘 → 深跌 → 拉升 → 回落：产生一次金叉与一次死叉
+    WAVE = (
+        [5.0] * 10
+        + [5.0 - 0.05 * i for i in range(1, 21)]
+        + [4.0 + 0.09 * i for i in range(1, 26)]
+        + [6.25 - 0.07 * i for i in range(1, 26)]
+    )
+
+    @classmethod
+    def _crosses(cls, closes):
+        from src.core.strategy_lab.series_factors import SERIES_FACTOR_REGISTRY
+        rows = _rows(closes)
+        spec = SERIES_FACTOR_REGISTRY["macd_cross"]
+        return spec.compute(rows, dict(cls.MACD))
+
+    def test_cross_detection_golden_then_dead(self):
+        cross = self._crosses(self.WAVE)
+        events = [(i, v) for i, v in enumerate(cross) if v not in (None, 0.0)]
+        assert events, "波浪序列应产生交叉事件"
+        golden = next((i, v) for i, v in events if v == 1.0)
+        dead = next((i, v) for i, v in events if v == -1.0 and i > golden[0])
+        assert dead[0] > golden[0]
+        # 预热期（slow+signal 根内）无值，非事件日为 0
+        warm = self.MACD["macd_slow"] + self.MACD["macd_signal"]
+        assert all(v is None for v in cross[:warm])
+        assert set(v for i, v in enumerate(cross) if i >= warm) <= {0.0, 1.0, -1.0}
+
+    def test_default_macd_rules_roundtrip(self):
+        # default_rules=macd_cross 构建金叉买/死叉卖；买入日=金叉日、卖出日=死叉日
+        wave_dates = _dates(len(self.WAVE))
+        result = SignalEngine(_rows(self.WAVE)).run(_config({
+            "default_rules": "macd_cross", **self.MACD,
+        }))
+        cross = self._crosses(self.WAVE)
+        golden_idx = next(i for i, v in enumerate(cross) if v == 1.0)
+        dead_idx = next(i for i, v in enumerate(cross) if v == -1.0 and i > golden_idx)
+        golden_day, dead_day = wave_dates[golden_idx], wave_dates[dead_idx]
+        buy = next(t for t in result.trades if t.side == "buy")
+        sell = next(t for t in result.trades if t.side == "sell")
+        assert buy.trade_date == golden_day
+        assert sell.trade_date == dead_day
+        assert sell.trade_date > buy.trade_date
+        assert result.metrics.win_rate_pct == 100.0
+
+    def test_zero_line_filter_blocks_below_zero_golden_cross(self):
+        # 长跌后小幅反弹：金叉发生在零轴下方，DIF>0 过滤应阻止入场
+        drift = [6.0 - 0.06 * i for i in range(0, 45)] + [3.3 + 0.03 * i for i in range(1, 16)]
+        cross = self._crosses(drift)
+        assert any(v == 1.0 for v in cross), "构造序列应存在金叉"
+        result = SignalEngine(_rows(drift)).run(_config({
+            **self.MACD,
+            "entry_rules": [
+                {"factor": "macd_cross", "op": ">", "value": 0},
+                {"factor": "macd_dif", "op": ">", "value": 0},
+            ],
+            "exit_rules": [{"factor": "macd_cross", "op": "<", "value": 0}],
+        }))
+        assert result.trades == []
+        assert result.final_equity == pytest.approx(100000.0)
+
+    def test_macd_default_vs_explicit_rules_equivalent(self):
+        by_default = SignalEngine(_rows(self.WAVE)).run(_config({
+            "default_rules": "macd_cross", **self.MACD,
+        }))
+        by_explicit = SignalEngine(_rows(self.WAVE)).run(_config({
+            **self.MACD,
+            "entry_rules": [{"factor": "macd_cross", "op": ">", "value": 0.0}],
+            "exit_rules": [{"factor": "macd_cross", "op": "<", "value": 0.0}],
+        }))
+        assert [(t.trade_date, t.side, t.quantity) for t in by_default.trades] == [
+            (t.trade_date, t.side, t.quantity) for t in by_explicit.trades
+        ]
+        assert [p.equity for p in by_default.equity_curve] == [p.equity for p in by_explicit.equity_curve]
+
+    def test_macd_param_validation(self):
+        with pytest.raises(ValueError, match="macd_slow"):
+            SignalParams.from_parameters({"macd_fast": 26, "macd_slow": 12})
+        with pytest.raises(ValueError):
+            SignalParams.from_parameters({"macd_fast": 1})
+
+    def test_warmup_covers_macd_ema_convergence(self):
+        params = SignalParams.from_parameters({
+            "ma_window": 10, "roc_window": 5, "macd_slow": 120, "macd_signal": 40,
+        })
+        assert params.warmup_trading_days() == (120 + 40) * 2
+        assert SignalParams.from_parameters({}).warmup_trading_days() == 182

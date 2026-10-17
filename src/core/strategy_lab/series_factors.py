@@ -85,6 +85,50 @@ def _sma_series(closes: Sequence[float], window: int) -> List[Optional[float]]:
     return values
 
 
+def _ema_series(closes: Sequence[float], period: int) -> List[float]:
+    """标准 EMA：以首值为种子，k = 2/(period+1)。"""
+    k = 2.0 / (period + 1.0)
+    values: List[float] = []
+    last = float(closes[0]) if closes else 0.0
+    for close in closes:
+        last = last + k * (float(close) - last)
+        values.append(last)
+    return values
+
+
+def _macd_series(
+    closes: Sequence[float], fast: int, slow: int, signal: int
+) -> tuple[List[Optional[float]], List[Optional[float]], List[Optional[float]], List[Optional[float]]]:
+    """返回 (DIF, DEA, 柱, 交叉事件)；前 slow+signal 根为种子预热期，输出 None。
+
+    事件序列：上穿（金叉）当日 +1，下穿（死叉）当日 -1，其余 0；预热期 None。
+    """
+    ema_fast = _ema_series(closes, fast)
+    ema_slow = _ema_series(closes, slow)
+    # DEA：对 DIF 再做 EMA；DIF 的种子即首日 DIF
+    dif_raw = [f - s for f, s in zip(ema_fast, ema_slow)]
+    dea_raw = _ema_series(dif_raw, signal)
+    hist_raw = [d - e for d, e in zip(dif_raw, dea_raw)]
+    warm = slow + signal
+    dif = [None] * min(warm, len(dif_raw)) + dif_raw[warm:]
+    dea = [None] * min(warm, len(dea_raw)) + dea_raw[warm:]
+    hist = [None] * min(warm, len(hist_raw)) + hist_raw[warm:]
+    cross: List[Optional[float]] = [None] * len(closes)
+    for i in range(len(closes)):
+        if dif[i] is None:
+            continue
+        if i == 0 or dif[i - 1] is None:
+            cross[i] = 0.0  # 首个就绪日无前值可比，视为无事件
+            continue
+        if dif[i - 1] <= dea[i - 1] and dif[i] > dea[i]:
+            cross[i] = 1.0
+        elif dif[i - 1] >= dea[i - 1] and dif[i] < dea[i]:
+            cross[i] = -1.0
+        else:
+            cross[i] = 0.0
+    return dif, dea, hist, cross
+
+
 def _ffill(values: Sequence[Optional[float]]) -> List[Optional[float]]:
     filled: List[Optional[float]] = []
     last: Optional[float] = None
@@ -123,6 +167,25 @@ def _register_builtin_series_factors() -> None:
         # 数据落库后规则即刻生效（引擎无需改动）。
         return _ffill([row.get("dividend_yield") for row in rows])
 
+    def _macd(rows: Sequence[Row], params: Dict[str, Any]) -> tuple:
+        fast = max(2, int(params.get("macd_fast", 12)))
+        slow = max(3, int(params.get("macd_slow", 26)))
+        signal = max(2, int(params.get("macd_signal", 9)))
+        closes = [float(row["close"]) for row in rows]
+        return _macd_series(closes, fast, slow, signal)
+
+    def _macd_dif(rows: Sequence[Row], params: Dict[str, Any]) -> List[Optional[float]]:
+        return _macd(rows, params)[0]
+
+    def _macd_dea(rows: Sequence[Row], params: Dict[str, Any]) -> List[Optional[float]]:
+        return _macd(rows, params)[1]
+
+    def _macd_hist(rows: Sequence[Row], params: Dict[str, Any]) -> List[Optional[float]]:
+        return _macd(rows, params)[2]
+
+    def _macd_cross(rows: Sequence[Row], params: Dict[str, Any]) -> List[Optional[float]]:
+        return _macd(rows, params)[3]
+
     register_series_factor(SeriesFactorSpec(
         factor_id="close",
         label="收盘价",
@@ -152,6 +215,40 @@ def _register_builtin_series_factors() -> None:
         compute=_dividend_yield,
         description="股息率（%）。当前版本未同步该数据，恒为缺失——引用该因子的规则不会触发",
         unit="%",
+    ))
+    macd_window_params = ("macd_fast", "macd_slow", "macd_signal")
+    register_series_factor(SeriesFactorSpec(
+        factor_id="macd_dif",
+        label="MACD DIF",
+        compute=_macd_dif,
+        window_params=macd_window_params,
+        description="MACD 快线 DIF = EMA(fast) - EMA(slow)；可用于零轴过滤等规则（如 DIF > 0）",
+        unit="元",
+    ))
+    register_series_factor(SeriesFactorSpec(
+        factor_id="macd_dea",
+        label="MACD DEA",
+        compute=_macd_dea,
+        window_params=macd_window_params,
+        description="MACD 信号线 DEA = DIF 的 EMA(signal)",
+        unit="元",
+    ))
+    register_series_factor(SeriesFactorSpec(
+        factor_id="macd_hist",
+        label="MACD 柱",
+        compute=_macd_hist,
+        window_params=macd_window_params,
+        description="MACD 柱 = DIF - DEA（未乘 2，国内软件柱高为 2 倍；符号与软件一致，"
+                    "用于「柱转正买入 / 柱转负卖出」类规则）",
+        unit="元",
+    ))
+    register_series_factor(SeriesFactorSpec(
+        factor_id="macd_cross",
+        label="MACD 交叉事件",
+        compute=_macd_cross,
+        window_params=macd_window_params,
+        description="事件因子：DIF 上穿 DEA（金叉）当日 = +1，下穿（死叉）当日 = -1，其余交易日 = 0。"
+                    "典型规则：买入 macd_cross > 0，卖出 macd_cross < 0",
     ))
 
 

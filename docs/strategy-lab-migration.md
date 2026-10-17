@@ -525,7 +525,14 @@ cd apps/dsa-desktop && npm install && npm run build
 - 默认规则（MA182 / 入<0 / 出>7）：**+54.30%**（年化 16.83%，最大回撤 -9.02%，夏普 1.38，胜率 100%），vs 自身买入持有 +32.53%；4 个完整回合。
 - 网格 ma_window∈{60,120,182,250} × exit_gap∈{5,7}（8/8 成功）：最优 MA250×出7 +75.65%（回撤 -6.68%）；窗口越长回撤越小、收益不单调——符合均线类策略的常见形态。
 
-### 15.5 已知边界
+### 15.5 MACD 变体策略：`signal_macd`（同一 signal_v1 引擎）
+
+- 新增 4 个时序因子（`series_factors.py`）：`macd_dif`（EMA(fast)-EMA(slow)）、`macd_dea`（DIF 的 EMA(signal)）、`macd_hist`（柱=DIF-DEA，未乘 2，符号与国内软件一致）、`macd_cross`（**事件因子**：金叉日 +1 / 死叉日 -1 / 其余 0，预热期 None；前 slow+signal 根为 EMA 种子预热）。参数 `macd_fast/macd_slow/macd_signal`（默认 12/26/9，校验 slow > fast），均可作批量网格轴；预热按 `(slow+signal)×2` 交易日估计（`SignalParams.warmup_trading_days`，服务层 ×1.6 换算自然日）。
+- 策略 `signal_macd`（ETF Signal · MACD）：默认规则族由 `default_rules="macd_cross"` 选择（买入 macd_cross > 0，卖出 macd_cross < 0）；因子下拉只暴露 MACD 族 + 收盘价。零轴过滤等组合通过显式规则表达（买入加一条 `macd_dif > 0`）。
+- Web：切换 signal 族策略时表单重置为该策略默认规则；均线窗口/MACD 参数输入框按规则实际引用的因子条件显示；参数搜索新增 MACD 慢线/快线/信号线候选轴（批次 base_config 自动带 `default_rules`）。
+- **510880 实测结论（2018-01-02 ~ 2026-10-16，基准长持 +61.08%）**：默认 MACD(12,26,9) 金叉/死叉 **+52.38%，跑输长持**（155 笔、胜率 42.9%）；零轴上金叉 +0.50%（该资产最佳买点恰在零轴下）；21 组 slow×signal 网格最优 MACD(12,34,5) **+93.64%**（回撤 -12.59%、183 笔、夏普 0.73）——能赢长持但显著逊于同期 MA210（+210.17%、26 笔、夏普 1.14）。低波动慢趋势的红利类 ETF 上，MACD 的信号频率（~20 次/年）本身就是收益损耗来源；若需中频+浅回撤可选 MACD(12,34,5)，收益优先仍推荐 MA205~220。
+
+### 15.6 已知边界
 
 - 股息率数据源未接入（用户已决策暂缓）：加了 `dividend_yield > 3` 条件的策略将持续空仓，属预期行为（诊断与表单双重提示）；后续接入按「ETF→跟踪指数映射 + funddb 指数股息率」方案另行落地。
 - ETF 名称富化二期（v1 交易表显示代码）；腾讯兜底为 qfq 前复权口径（仅冷启动使用，source 列可甄别）。

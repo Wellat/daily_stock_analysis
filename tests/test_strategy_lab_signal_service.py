@@ -136,3 +136,16 @@ def test_signal_strategy_registered_in_metadata(db_manager: DatabaseManager) -> 
     assert signal["instrument_types"] == ["etf"]
     factor_ids = {factor["factor"] for factor in signal["factors"]}
     assert {"close", "ma_gap_pct", "roc_pct", "dividend_yield"} <= factor_ids
+
+
+def test_signal_macd_strategy_registered_in_metadata(db_manager: DatabaseManager) -> None:
+    service = StrategyLabService(db_manager)
+    strategies = {item["strategy_id"]: item for item in service.list_strategies()}
+    macd = strategies.get("signal_macd")
+    assert macd is not None
+    assert macd["instrument_types"] == ["etf"]
+    factor_ids = {factor["factor"] for factor in macd["factors"]}
+    assert {"macd_cross", "macd_dif", "macd_dea", "macd_hist", "close"} <= factor_ids
+    assert "ma_gap_pct" not in factor_ids  # MACD 策略因子下拉只暴露 MACD 族
+    param_keys = {item["key"] for item in macd["parameters"]}
+    assert {"macd_fast", "macd_slow", "macd_signal"} <= param_keys

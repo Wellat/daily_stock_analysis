@@ -4,8 +4,9 @@
 参数以平铺 dict 进入（API ``parameters`` 字段），归一化为
 :class:`SignalParams`。规则双轨（沿用 ``score_preset`` vs ``score_factors``
 先例）：显式 ``entry_rules`` / ``exit_rules`` 列表优先；缺失时由扁平标量
-（``entry_gap_max`` / ``dividend_yield_min`` / ``exit_gap_min``）构建默认
-规则——扁平键同时是批量参数网格的寻优轴。
+构建默认规则——扁平键同时是批量参数网格的寻优轴。默认规则族由
+``default_rules`` 选择：``ma_gap``（缺省，均线乖离）或 ``macd_cross``
+（金叉买入 / 死叉卖出，供 MACD 策略与批量直跑使用）。
 """
 
 from __future__ import annotations
@@ -53,6 +54,9 @@ class SignalParams:
 
     ma_window: int = 182
     roc_window: int = 20
+    macd_fast: int = 12
+    macd_slow: int = 26
+    macd_signal: int = 9
     entry_rules: List[SignalRule] = field(default_factory=list)
     exit_rules: List[SignalRule] = field(default_factory=list)
     max_position_pct: float = 100.0
@@ -82,15 +86,25 @@ class SignalParams:
             return value
 
         ma_window = _int("ma_window", 182, minimum=2)
+        macd_fast = _int("macd_fast", 12, minimum=2)
+        macd_slow = _int("macd_slow", 26, minimum=3)
+        macd_signal = _int("macd_signal", 9, minimum=2)
+        if macd_slow <= macd_fast:
+            raise ValueError("parameter macd_slow must be greater than macd_fast")
+        if str(parameters.get("default_rules", "")).strip() == "macd_cross":
+            default_entry = [SignalRule("macd_cross", ">", 0.0)]
+            default_exit = [SignalRule("macd_cross", "<", 0.0)]
+        else:
+            default_entry = cls._default_entry_rules(parameters)
+            default_exit = [SignalRule("ma_gap_pct", ">", _float("exit_gap_min", 7.0, minimum=-100.0))]
         params = cls(
             ma_window=ma_window,
             roc_window=_int("roc_window", 20, minimum=1),
-            entry_rules=cls._resolve_rules(
-                parameters, "entry_rules", cls._default_entry_rules(parameters)
-            ),
-            exit_rules=cls._resolve_rules(
-                parameters, "exit_rules", [SignalRule("ma_gap_pct", ">", _float("exit_gap_min", 7.0, minimum=-100.0))]
-            ),
+            macd_fast=macd_fast,
+            macd_slow=macd_slow,
+            macd_signal=macd_signal,
+            entry_rules=cls._resolve_rules(parameters, "entry_rules", default_entry),
+            exit_rules=cls._resolve_rules(parameters, "exit_rules", default_exit),
             max_position_pct=_float("max_position_pct", 100.0),
             commission=_float("commission", 0.0002, minimum=0.0, maximum=0.01),
             lot_size=_int("lot_size", 100, minimum=1),
@@ -138,12 +152,33 @@ class SignalParams:
 
     def window_params(self) -> Dict[str, int]:
         """时序因子计算所需的窗口标量（键名与因子 window_params 对齐）。"""
-        return {"ma_window": self.ma_window, "roc_window": self.roc_window}
+        return {
+            "ma_window": self.ma_window,
+            "roc_window": self.roc_window,
+            "macd_fast": self.macd_fast,
+            "macd_slow": self.macd_slow,
+            "macd_signal": self.macd_signal,
+        }
+
+    def warmup_trading_days(self) -> int:
+        """因子预热所需交易日估计（服务层再按 ×1.6 换算自然日提前取数）。
+
+        MACD 按 (slow + signal) × 2 估计：除就绪门槛外，EMA 种子遗忘
+        需约 3~4 倍周期，取 2 倍合计作为保守预热。
+        """
+        return max(
+            self.ma_window,
+            self.roc_window,
+            (self.macd_slow + self.macd_signal) * 2,
+        )
 
     def summary(self) -> Dict[str, Any]:
         return {
             "ma_window": self.ma_window,
             "roc_window": self.roc_window,
+            "macd_fast": self.macd_fast,
+            "macd_slow": self.macd_slow,
+            "macd_signal": self.macd_signal,
             "entry_rules": [rule.to_dict() for rule in self.entry_rules],
             "exit_rules": [rule.to_dict() for rule in self.exit_rules],
             "max_position_pct": self.max_position_pct,

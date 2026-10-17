@@ -29,6 +29,7 @@ import {
   DEFAULT_SIGNAL_FORM,
   applySignalParameters,
   buildSignalParameters,
+  defaultSignalForm,
   type SignalFormState,
 } from './backtest/signalForm';
 
@@ -62,7 +63,7 @@ export const StrategyResearchPanel: React.FC = () => {
     [strategies, strategyId],
   );
   const isRotation = strategyId === 'rotation';
-  const isSignal = strategyId === 'signal';
+  const isSignal = strategyId === 'signal' || strategyId === 'signal_macd';
   // instrument_type 跟随策略元数据（signal=etf，其余=可转债），不再写死
   const instrumentType = selectedStrategy?.instrument_types?.[0] ?? 'convertible_bond';
 
@@ -107,6 +108,13 @@ export const StrategyResearchPanel: React.FC = () => {
     });
   };
 
+  // 切换信号族策略时重置为该策略的默认规则（signal=均线乖离；signal_macd=金叉/死叉）
+  useEffect(() => {
+    if (strategyId === 'signal' || strategyId === 'signal_macd') {
+      setSignalForm(defaultSignalForm(strategyId));
+    }
+  }, [strategyId]);
+
   const benchmarkSymbol = (): string | undefined => {
     if (benchmarkMode === 'csi300') return '000300';
     if (benchmarkMode === 'custom') return benchmarkCustom.trim() || undefined;
@@ -117,7 +125,12 @@ export const StrategyResearchPanel: React.FC = () => {
 
   const buildParameters = (): Record<string, unknown> => {
     if (isRotation) return buildRotationParameters(rotationForm);
-    if (isSignal) return buildSignalParameters(signalForm);
+    if (isSignal) {
+      return buildSignalParameters(
+        signalForm,
+        strategyId === 'signal_macd' ? { default_rules: 'macd_cross' } : {},
+      );
+    }
     return { max_positions: Number(runForm.maxPositions) };
   };
 
@@ -128,7 +141,7 @@ export const StrategyResearchPanel: React.FC = () => {
     setRunForm((prev) => ({ ...prev, symbols: (config.symbols ?? []).join(',') }));
     if (config.strategy_id === 'rotation') {
       setRotationForm(applyRotationParameters(config.parameters));
-    } else if (config.strategy_id === 'signal') {
+    } else if (config.strategy_id === 'signal' || config.strategy_id === 'signal_macd') {
       setSignalForm(applySignalParameters(config.parameters));
     } else if (config.parameters?.max_positions != null) {
       setRunForm((prev) => ({ ...prev, maxPositions: String(config.parameters.max_positions) }));
@@ -192,6 +205,11 @@ export const StrategyResearchPanel: React.FC = () => {
       const interval = parameters.rebalance_interval ?? 1;
       return `${preset} · ${positions ?? '?'}只 · 每${interval}${unit}`;
     }
+    if (run.strategy_id === 'signal_macd') {
+      const entryRules = Array.isArray(parameters.entry_rules) ? parameters.entry_rules.length : 1;
+      const exitRules = Array.isArray(parameters.exit_rules) ? parameters.exit_rules.length : 1;
+      return `MACD(${parameters.macd_fast ?? 12},${parameters.macd_slow ?? 26},${parameters.macd_signal ?? 9}) · 入${entryRules}出${exitRules}`;
+    }
     if (run.strategy_id === 'signal') {
       const entryRules = Array.isArray(parameters.entry_rules) ? parameters.entry_rules.length : 1;
       const exitRules = Array.isArray(parameters.exit_rules) ? parameters.exit_rules.length : 1;
@@ -210,7 +228,7 @@ export const StrategyResearchPanel: React.FC = () => {
 
   const runColumns: ColumnsType<StrategyLabRunItem> = [
     { title: '运行', dataIndex: 'id', width: 120, render: (id: number, record) => (<span className="whitespace-nowrap">#{id} <span className="text-xs text-secondary-text">{fmtTime(record.created_at)}</span></span>) },
-    { title: '策略', dataIndex: 'strategy_name', width: 130, ellipsis: true, render: (_, record) => (<span className="whitespace-nowrap">{record.strategy_name}{record.strategy_id === 'rotation' ? <Tag className="ml-1" color="cyan">轮动</Tag> : null}{record.strategy_id === 'signal' ? <Tag className="ml-1" color="geekblue">信号</Tag> : null}</span>) },
+    { title: '策略', dataIndex: 'strategy_name', width: 130, ellipsis: true, render: (_, record) => (<span className="whitespace-nowrap">{record.strategy_name}{record.strategy_id === 'rotation' ? <Tag className="ml-1" color="cyan">轮动</Tag> : null}{record.strategy_id === 'signal' ? <Tag className="ml-1" color="geekblue">信号</Tag> : null}{record.strategy_id === 'signal_macd' ? <Tag className="ml-1" color="purple">MACD</Tag> : null}</span>) },
     { title: '回测区间', key: 'range', width: 175, render: (_, record) => (<span className="whitespace-nowrap text-xs">{record.start_date} ~ {record.end_date}</span>) },
     { title: '总收益率', key: 'total', width: 92, align: 'right', render: (_, record) => pctSpan(record.metrics?.total_return_pct) },
     { title: '基准', dataIndex: 'benchmark_return_pct', width: 92, align: 'right', render: (value: number | null) => pctSpan(value) },

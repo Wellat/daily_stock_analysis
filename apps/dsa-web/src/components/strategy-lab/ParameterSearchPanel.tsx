@@ -32,9 +32,13 @@ export const ParameterSearchPanel: React.FC = () => {
   const [batchIntervals, setBatchIntervals] = useState('');
   const [batchMaWindows, setBatchMaWindows] = useState('60,120,182,250');
   const [batchExitGaps, setBatchExitGaps] = useState('');
+  const [batchMacdSlow, setBatchMacdSlow] = useState('20,26,34');
+  const [batchMacdFast, setBatchMacdFast] = useState('');
+  const [batchMacdSignal, setBatchMacdSignal] = useState('');
   const [runBatchAsync, setRunBatchAsync] = useState(true);
 
-  const isSignal = strategyId === 'signal';
+  const isSignal = strategyId === 'signal' || strategyId === 'signal_macd';
+  const isMacd = strategyId === 'signal_macd';
   const instrumentType = strategies.find((item) => item.strategy_id === strategyId)?.instrument_types?.[0] ?? 'convertible_bond';
 
   const refresh = useCallback(async () => {
@@ -103,11 +107,18 @@ export const ParameterSearchPanel: React.FC = () => {
         onSubmit={(event) => {
           event.preventDefault();
           void runAction('batch', async () => {
-            const parameter_grid: Record<string, unknown[]> = isSignal
+            const signalGrid = isMacd
               ? {
+                  macd_slow: parsePositiveNumbers(batchMacdSlow).map(Math.round),
+                  ...(parsePositiveNumbers(batchMacdFast).length ? { macd_fast: parsePositiveNumbers(batchMacdFast).map(Math.round) } : {}),
+                  ...(parsePositiveNumbers(batchMacdSignal).length ? { macd_signal: parsePositiveNumbers(batchMacdSignal).map(Math.round) } : {}),
+                }
+              : {
                   ma_window: parsePositiveNumbers(batchMaWindows).map(Math.round),
                   ...(parsePositiveNumbers(batchExitGaps).length ? { exit_gap_min: parsePositiveNumbers(batchExitGaps) } : {}),
-                }
+                };
+            const parameter_grid: Record<string, unknown[]> = isSignal
+              ? signalGrid
               : { max_positions: parsePositiveNumbers(batchPositions) };
             const intervalCandidates = parsePositiveNumbers(batchIntervals);
             if (strategyId === 'rotation' && intervalCandidates.length) {
@@ -125,6 +136,8 @@ export const ParameterSearchPanel: React.FC = () => {
                 end_date: runForm.endDate,
                 initial_cash: Number(runForm.initialCash),
                 symbols: parseSymbols(runForm.symbols),
+                // MACD 策略网格走扁平标量轴，需声明默认规则族构建金叉/死叉规则
+                ...(isMacd ? { parameters: { default_rules: 'macd_cross' } } : {}),
               },
               parameter_grid,
               run_async: runBatchAsync,
@@ -141,24 +154,43 @@ export const ParameterSearchPanel: React.FC = () => {
               {strategies.map((strategy) => <option key={strategy.strategy_id} value={strategy.strategy_id}>{strategy.name}</option>)}
             </select>
           </label>
-          {isSignal ? (
+          {isSignal && !isMacd ? (
             <label className="text-sm">
               均线窗口候选
               <input aria-label="均线窗口候选" className={`${SL_INPUT_CLASS} mt-1`} value={batchMaWindows} onChange={(event) => setBatchMaWindows(event.target.value)} placeholder="例如 60,120,182,250" />
             </label>
-          ) : (
+          ) : null}
+          {isMacd ? (
+            <label className="text-sm">
+              MACD 慢线EMA候选
+              <input aria-label="MACD慢线候选" className={`${SL_INPUT_CLASS} mt-1`} value={batchMacdSlow} onChange={(event) => setBatchMacdSlow(event.target.value)} placeholder="例如 20,26,34" />
+            </label>
+          ) : null}
+          {isMacd ? (
+            <label className="text-sm">
+              MACD 快线EMA候选
+              <input aria-label="MACD快线候选" className={`${SL_INPUT_CLASS} mt-1`} value={batchMacdFast} onChange={(event) => setBatchMacdFast(event.target.value)} placeholder="例如 8,12；留空不参与网格" />
+            </label>
+          ) : null}
+          {isMacd ? (
+            <label className="text-sm">
+              MACD 信号线EMA候选
+              <input aria-label="MACD信号线候选" className={`${SL_INPUT_CLASS} mt-1`} value={batchMacdSignal} onChange={(event) => setBatchMacdSignal(event.target.value)} placeholder="例如 7,9；留空不参与网格" />
+            </label>
+          ) : null}
+          {!isSignal ? (
             <label className="text-sm">
               最大持仓候选
               <input aria-label="最大持仓候选" className={`${SL_INPUT_CLASS} mt-1`} value={batchPositions} onChange={(event) => setBatchPositions(event.target.value)} />
             </label>
-          )}
+          ) : null}
           {strategyId === 'rotation' ? (
             <label className="text-sm">
               换仓频率候选
               <input aria-label="换仓频率候选" className={`${SL_INPUT_CLASS} mt-1`} value={batchIntervals} onChange={(event) => setBatchIntervals(event.target.value)} placeholder="例如 1,3,5；留空不参与网格" />
             </label>
           ) : null}
-          {isSignal ? (
+          {isSignal && !isMacd ? (
             <label className="text-sm">
               卖出乖离率候选(%)
               <input aria-label="卖出乖离率候选" className={`${SL_INPUT_CLASS} mt-1`} value={batchExitGaps} onChange={(event) => setBatchExitGaps(event.target.value)} placeholder="例如 5,7,10；留空不参与网格" />
@@ -192,7 +224,7 @@ export const ParameterSearchPanel: React.FC = () => {
           <input aria-label="后台执行批次" type="checkbox" checked={runBatchAsync} onChange={(event) => setRunBatchAsync(event.target.checked)} />
           后台执行并显示进度
         </label>
-        <Button type="primary" htmlType="submit" className="mt-4" loading={actionLoading === 'batch'} disabled={isSignal ? parsePositiveNumbers(batchMaWindows).length === 0 : parsePositiveNumbers(batchPositions).length === 0}>运行参数批次</Button>
+        <Button type="primary" htmlType="submit" className="mt-4" loading={actionLoading === 'batch'} disabled={isMacd ? parsePositiveNumbers(batchMacdSlow).length === 0 : isSignal ? parsePositiveNumbers(batchMaWindows).length === 0 : parsePositiveNumbers(batchPositions).length === 0}>运行参数批次</Button>
       </form>
 
       <div className={`${SL_PANEL_CLASS}`}>
