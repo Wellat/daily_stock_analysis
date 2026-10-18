@@ -43,6 +43,7 @@ class StrategyLabRunCreateRequest(BaseModel):
     symbols: List[str] = Field(default_factory=list, description="可选标的筛选")
     parameters: Dict[str, Any] = Field(default_factory=dict, description="策略参数")
     portfolio_account_id: Optional[int] = Field(None, description="关联的 Portfolio 账户 ID")
+    instance_id: Optional[int] = Field(None, description="来源策略实例 ID（从实例发起时携带）")
 
 
 class StrategyLabMetricItem(BaseModel):
@@ -93,6 +94,9 @@ class StrategyLabRunSummaryItem(BaseModel):
     benchmark_symbol: Optional[str] = None
     benchmark_return_pct: Optional[float] = None
     portfolio_account_id: Optional[int] = None
+    # 策略实例血缘（additive）：从实例发起的回测记录来源实例
+    instance_id: Optional[int] = None
+    instance_name: Optional[str] = None
     error_message: Optional[str] = None
     created_at: Optional[str] = None
     started_at: Optional[str] = None
@@ -406,43 +410,6 @@ class StrategyLabBatchListResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# 回测配置预设（保存/加载）
+# 回测配置预设 schemas 已下线：保存/加载统一走策略实例
+# （api/v1/schemas/live_strategy.py 的 LiveStrategyInstanceRequest/Response）
 # ---------------------------------------------------------------------------
-
-class StrategyLabConfigCreateRequest(BaseModel):
-    name: str = Field(..., min_length=1, max_length=100, description="配置名称")
-    description: Optional[str] = Field(None, max_length=500, description="配置说明")
-    strategy_id: str = Field("rotation", description="策略 ID")
-    market: StrategyLabMarket = Field("cn", description="市场")
-    instrument_type: StrategyLabInstrumentType = Field("convertible_bond", description="品种类型")
-    parameters: Dict[str, Any] = Field(default_factory=dict, description="策略参数（含打分/排除因子表）")
-    symbols: List[str] = Field(default_factory=list, description="标的筛选")
-
-
-class StrategyLabConfigUpdateRequest(BaseModel):
-    name: Optional[str] = Field(None, min_length=1, max_length=100)
-    description: Optional[str] = Field(None, max_length=500)
-    strategy_id: Optional[str] = None
-    market: Optional[StrategyLabMarket] = None
-    instrument_type: Optional[StrategyLabInstrumentType] = None
-    parameters: Optional[Dict[str, Any]] = None
-    symbols: Optional[List[str]] = None
-
-
-class StrategyLabConfigItem(BaseModel):
-    id: int
-    config_uid: str
-    name: str
-    description: Optional[str] = None
-    strategy_id: str
-    market: str
-    instrument_type: str
-    parameters: Dict[str, Any] = Field(default_factory=dict)
-    symbols: List[str] = Field(default_factory=list)
-    created_at: Optional[str] = None
-    updated_at: Optional[str] = None
-
-
-class StrategyLabConfigListResponse(BaseModel):
-    total: int
-    items: List[StrategyLabConfigItem] = Field(default_factory=list)

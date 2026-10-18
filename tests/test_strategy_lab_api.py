@@ -141,46 +141,6 @@ class StrategyLabApiTestCase(unittest.TestCase):
         self.assertIn("rebalance_unit", param_keys)
         self.assertIn("max_positions", param_keys)
 
-    def test_configs_crud_lifecycle(self) -> None:
-        created = self.client.post(
-            "/api/v1/strategy-lab/configs",
-            json={
-                "name": "双低月轮动",
-                "description": "月度换仓双低",
-                "strategy_id": "rotation",
-                "parameters": {
-                    "score_preset": "double_low",
-                    "rebalance_unit": "month",
-                    "max_positions": 5,
-                    "score_factors": [
-                        {"factor": "price", "direction": "asc", "weight": 1.0},
-                        {"factor": "premium_rate", "direction": "asc", "weight": 1.0},
-                    ],
-                },
-                "symbols": ["111AAA"],
-            },
-        )
-        self.assertEqual(created.status_code, 201, created.text)
-        config_id = created.json()["id"]
-        self.assertEqual(created.json()["parameters"]["rebalance_unit"], "month")
-
-        listed = self.client.get("/api/v1/strategy-lab/configs")
-        self.assertEqual(listed.status_code, 200, listed.text)
-        self.assertEqual(listed.json()["total"], 1)
-
-        updated = self.client.put(
-            f"/api/v1/strategy-lab/configs/{config_id}",
-            json={"name": "双低月轮动V2", "parameters": {"score_preset": "triple_low"}},
-        )
-        self.assertEqual(updated.status_code, 200, updated.text)
-        self.assertEqual(updated.json()["name"], "双低月轮动V2")
-        self.assertEqual(updated.json()["parameters"]["score_preset"], "triple_low")
-
-        deleted = self.client.delete(f"/api/v1/strategy-lab/configs/{config_id}")
-        self.assertEqual(deleted.status_code, 200, deleted.text)
-        missing = self.client.delete(f"/api/v1/strategy-lab/configs/{config_id}")
-        self.assertEqual(missing.status_code, 404, missing.text)
-
     def test_run_report_export_formats(self) -> None:
         run = self.client.post(
             "/api/v1/strategy-lab/runs",

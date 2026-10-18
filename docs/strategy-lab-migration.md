@@ -540,3 +540,30 @@ cd apps/dsa-desktop && npm install && npm run build
 ### 15.6 实盘信号通知已接入（2026-10，`live_mode=notify`）
 
 `signal` / `signal_macd` 的实盘信号通知已落地（此前「规划接入中」）：交易日按各行 `schedule_time` 由 runtime scheduler 触发 `EtfSignalNotifyService`，评估配置标的的进出场规则并直发飞书群机器人（复用 `FEISHU_WEBHOOK_URL`），每日汇总必发、不下单。当日 bar 由实时行情折算后复权口径拼接（优先 `现价/pre_close`、缺省用涨跌幅，皆缺或历史过期则该标的标注跳过）；信号评估与回测同一套 `series_factors` + signal_v1 规则语义；持仓状态从历史信号决策推导。配置入口在「策略管理」页（`PUT /live-strategy/configs/notify` 每策略一行 upsert），链路细节见 `docs/convertible-bond-trading.md` 调度与通知两节。
+
+## 16. 策略模板 / 策略实例产品模型（2026-10）
+
+### 16.1 两层概念
+
+- **策略模板**：代码注册表 `list_builtin_strategies()`——strategy_id、中文名、品种、`live_mode`（order 实盘交易 / notify 信号通知 / None 仅回测）、参数定义（表单元数据）。纯代码定义，不落库；UI 文案统一叫「策略模板」。
+- **策略实例**：`live_strategy_configs` 行（概念升级，表名不变）= 模板（strategy_id）+ 实例名/备注（name/description）+ 参数 + 标的 + 调度（enabled + schedule_time）+ QMT 账户（仅 order，其余 '-' 占位）。`live_mode` 由模板元数据派生、不落库（模板能力变更随发布生效，避免行内冗余漂移）。
+- 同一模板可建多个实例（不同参数/标的/时刻）；**多个 order 实例允许同时启用**（调度器逐实例分派，dedup key 含 config_id）——同 QMT 账户并发下单存在资金占用与持仓互扰，未做组合级协调，建议错开各实例 schedule_time（用户已确认接受该风险）。
+- `live_mode=None` 模板（rotation / ma-crossover 等）也可保存为实例：仅作回测复用载体，服务层强制 enabled=False，调度器对这类行直接跳过（即使误开）。
+
+### 16.2 实例 API 与兼容层
+
+- 新增：`POST /live-strategy/configs`（创建）、`PUT /configs/{id}`（更新；**strategy_id 创建后不可换**——换模板请新建实例，兼容层除外）、`DELETE /configs/{id}`（硬删；`strategy_lab_runs.instance_id` 与 `LiveStrategyRun.config_id` 不级联，展示层按 strategy_id 兜底）、`POST /configs/{id}/run`（order→`LiveStrategyService.run(config_id)` 真实下单 / notify→`EtfSignalNotifyService.run` / None→400）。
+- 校验按模板 live_mode 分支（`_validate_instance_payload`）：order 需 qmt_account ∈ LIVE_ACCOUNTS 与调仓/风控字段；notify 需非空标的；所有分支共用参数键白名单 + 布尔归一 + schedule_time HH:MM 校验；未提供的字段沿用现行值。
+- 兼容层：`GET /config` 语义不变（最新 order 实例）；`PUT /config` 固定更新最新 order 实例、允许 order 模板间切换（保留单配置时代语义，实盘页旧表单可用）；`POST /runs`、`/runs/preview` 增加可选 `config_id`（缺省回落最新 order 实例）。
+- 已下线：`PUT /configs/notify`、`POST /configs/{id}/notify/run`（校验并入通用分支）。
+
+### 16.3 presets 迁移与旧机制下线
+
+- 启动时 `_migrate_lab_presets_to_strategy_instances()`：遍历 `strategy_lab_strategy_configs`，同名同模板实例不存在则拷贝为未启用实例（qmt_account='-'）。**copy 不删**：旧表保留为只读历史（回滚后旧数据完整）；幂等（重复 init 跳过）；JSON 损坏行保留旧表、仅告警（避免毒化实例列表）。
+- `/strategy-lab/configs` 四个端点、schema 与 `config_repo` 移除；实验室「保存配置」改为创建实例、「加载已保存配置」改为「加载策略实例」。
+
+### 16.4 回测血缘与页面联动
+
+- `strategy_lab_runs.instance_id`（可空、有索引）：从实例发起的回测记录来源实例（`StrategyLabRunCreateRequest.instance_id`，服务层校验实例存在且 strategy_id 一致）；ad-hoc 回测为空。列表/详情回带 `instance_name`（实例删除后仅留 id）。
+- 策略管理页（实例为主）：新建策略抽屉（模板/实例名/备注/标的/元数据参数/调度区）+ 实例表格（状态/调度/最近运行/编辑/复制/删除/立即运行），模板总览折叠在下方；仅回测实例「去回测」跳 `/strategy-lab?instance=<id>` 预填。
+- 实盘交易页：配置卡顶部「实盘实例」选择器（order 实例列表），按实例编辑（`PUT /configs/{id}`）/预览/下单（`config_id` 透传）；实例模板创建后不可换（换模板在策略管理页新建）。

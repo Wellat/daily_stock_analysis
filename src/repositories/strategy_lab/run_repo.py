@@ -12,6 +12,7 @@ from sqlalchemy import desc, select
 from src.core.strategy_lab.models import StrategyLabRunConfig, StrategyLabRunResult
 from src.storage import (
     DatabaseManager,
+    LiveStrategyConfig,
     PortfolioAccount,
     StrategyLabRun,
     StrategyLabRunMetric,
@@ -33,6 +34,24 @@ class StrategyLabRepository:
                 .limit(1)
             ).scalar_one_or_none()
             return row is not None
+
+    def get_strategy_instance(self, instance_id: int) -> Optional[LiveStrategyConfig]:
+        """策略实例行（回测血缘校验用）；实例硬删后返回 None。"""
+        with self.db.get_session() as session:
+            return session.get(LiveStrategyConfig, instance_id)
+
+    def strategy_instance_names(self, instance_ids: List[Optional[int]]) -> Dict[int, str]:
+        """批量取实例名（运行记录列表展示用）；已删实例的 id 不出现在结果里。"""
+        ids = sorted({int(x) for x in instance_ids if x})
+        if not ids:
+            return {}
+        with self.db.get_session() as session:
+            rows = session.execute(
+                select(LiveStrategyConfig.id, LiveStrategyConfig.name).where(
+                    LiveStrategyConfig.id.in_(ids)
+                )
+            ).all()
+        return {row_id: name for row_id, name in rows}
 
     def create_pending_run(
         self,
@@ -57,6 +76,7 @@ class StrategyLabRepository:
                 initial_cash=config.initial_cash,
                 benchmark_symbol=config.benchmark_symbol,
                 portfolio_account_id=config.portfolio_account_id,
+                instance_id=config.instance_id,
                 parameters_json=json.dumps(config.parameters, ensure_ascii=False, sort_keys=True),
                 symbols_json=json.dumps(config.symbols, ensure_ascii=False),
                 created_at=now,

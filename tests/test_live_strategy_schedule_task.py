@@ -110,3 +110,27 @@ def test_live_task_skips_disabled_config(_patched_services):
     _FakeLiveStrategyService.configs = [{"id": 1, "enabled": False, "strategy_id": "low-premium", "schedule_time": "14:30"}]
     _first_task()()
     assert _FakeLiveStrategyService.order_calls == []
+
+
+def test_live_task_dispatches_multiple_order_instances(_patched_services):
+    """多实盘实例并存：各自按 config_id 分派、dedup 互不挤占。"""
+    _FakeLiveStrategyService.configs = [
+        {"id": 1, "enabled": True, "strategy_id": "low-premium", "schedule_time": "14:30"},
+        {"id": 5, "enabled": True, "strategy_id": "double-low", "schedule_time": "14:30"},
+    ]
+    task = _first_task()
+    task()
+    task()
+    assert sorted(_FakeLiveStrategyService.order_calls) == [(1, "2026-10-15"), (5, "2026-10-15")]
+
+
+def test_live_task_skips_backtest_only_instance(_patched_services):
+    """live_mode=None 实例（rotation/ma-crossover）即使 enabled 也不进任何分派。"""
+    _FakeLiveStrategyService.configs = [
+        {"id": 1, "enabled": True, "strategy_id": "low-premium", "schedule_time": "14:30"},
+        {"id": 9, "enabled": True, "strategy_id": "rotation", "schedule_time": "14:30"},
+        {"id": 10, "enabled": True, "strategy_id": "ma-crossover", "schedule_time": "14:30"},
+    ]
+    _first_task()()
+    assert _FakeLiveStrategyService.order_calls == [(1, "2026-10-15")]
+    assert _FakeNotifyService.notify_calls == []

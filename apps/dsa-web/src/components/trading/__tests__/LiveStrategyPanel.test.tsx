@@ -26,6 +26,7 @@ const strategiesBackend = {
     {
       strategy_id: 'double-low',
       name: '双低轮动',
+      live_mode: 'order',
       parameters: [
         { key: 'max_positions', label: '最大持仓数', type: 'integer', default: 2 },
         { key: 'per_position_cash', label: '单债目标资金', type: 'number', default: 10000 },
@@ -40,6 +41,7 @@ describe('LiveStrategyPanel 策略配置', () => {
     vi.clearAllMocks();
     client.get.mockImplementation(async (url: string) => {
       if (url.endsWith('/config')) return { data: backendConfig };
+      if (url.endsWith('/configs')) return { data: { items: [backendConfig] } };
       if (url.endsWith('/strategies')) return { data: strategiesBackend };
       if (url.endsWith('/runs') || url.endsWith('/batches')) return { data: { items: [] } };
       return { data: { trade_date: '2024-01-02' } };
@@ -139,6 +141,7 @@ describe('LiveStrategyPanel 运行记录与调仓批次', () => {
     vi.clearAllMocks();
     client.get.mockImplementation(async (url: string) => {
       if (url.endsWith('/config')) return { data: backendConfig };
+      if (url.endsWith('/configs')) return { data: { items: [backendConfig] } };
       if (url.endsWith('/strategies')) return { data: strategiesBackend };
       if (url.endsWith('/batches')) return { data: { items: [backendBatch] } };
       if (url.includes('/decisions')) return { data: backendDecisions };

@@ -33,6 +33,15 @@ class StrategyLabService:
             and not self.repository.portfolio_account_exists(config.portfolio_account_id)
         ):
             raise ValueError(f"Portfolio account not found: {config.portfolio_account_id}")
+        if config.instance_id is not None:
+            instance = self.repository.get_strategy_instance(config.instance_id)
+            if instance is None:
+                raise ValueError(f"Strategy instance not found: {config.instance_id}")
+            if instance.strategy_id != config.strategy_id:
+                raise ValueError(
+                    "instance_id does not match strategy_id: "
+                    f"instance {config.instance_id} uses {instance.strategy_id}"
+                )
 
         engine = self.engine or self._resolve_engine(config)
         run = self.repository.create_pending_run(
@@ -95,9 +104,9 @@ class StrategyLabService:
                 )
             )
         dataset = StrategyLabDataSet(instruments=list(instruments.values()), bars=bars)
-        if config.strategy_id == "low-premium":
-            from src.core.strategy_lab.unified_engine import UnifiedLowPremiumEngine
-            return UnifiedLowPremiumEngine(dataset)
+        # low-premium 不再特判到 unified_low_premium_v1（未完成：无持仓跨日、
+        # 持仓市值恒 0、永不卖出，现金烧完后停摆，9 月起的所有该策略回测结果
+        # 均失真）；回到 database 引擎，真实轮动回测走 rotation + score_preset。
         if config.strategy_id == "ma-crossover":
             return MovingAverageCrossoverEngine(dataset)
         return FixtureDoubleLowEngine(dataset, name="database_double_low_v1")
@@ -171,6 +180,9 @@ class StrategyLabService:
         offset = (page - 1) * limit
         rows, total = self.repository.list_runs(limit=limit, offset=offset)
         metrics_by_run = self.repository.list_run_metrics([row.id for row in rows])
+        instance_names = self.repository.strategy_instance_names(
+            [getattr(row, "instance_id", None) for row in rows]
+        )
         return {
             "total": total,
             "page": page,
@@ -180,6 +192,7 @@ class StrategyLabService:
                     row,
                     metric=metrics_by_run.get(row.id),
                     with_parameters=True,
+                    instance_names=instance_names,
                 )
                 for row in rows
             ],
@@ -207,7 +220,12 @@ class StrategyLabService:
         raise ValueError(f"Unsupported strategy_id: {strategy_id}")
 
     def _run_payload(self, run: StrategyLabRun, metric: Optional[StrategyLabRunMetric]) -> Dict[str, Any]:
-        payload = self._run_summary_payload(run, with_parameters=True)
+        instance_id = getattr(run, "instance_id", None)
+        payload = self._run_summary_payload(
+            run,
+            with_parameters=True,
+            instance_names=self.repository.strategy_instance_names([instance_id]),
+        )
         payload["symbols"] = json_list(run.symbols_json)
         payload["equity_curve"] = json_list(run.equity_curve_json)
         # 详情用完整指标（diagnostics / benchmark_metrics / 盈亏周期），覆盖摘要紧凑版
@@ -220,7 +238,9 @@ class StrategyLabService:
         *,
         metric: Optional[StrategyLabRunMetric] = None,
         with_parameters: bool = False,
+        instance_names: Optional[Dict[int, str]] = None,
     ) -> Dict[str, Any]:
+        instance_id = getattr(run, "instance_id", None)
         payload = {
             "id": run.id,
             "run_uid": run.run_uid,
@@ -237,6 +257,8 @@ class StrategyLabService:
             "benchmark_symbol": run.benchmark_symbol,
             "benchmark_return_pct": run.benchmark_return_pct,
             "portfolio_account_id": run.portfolio_account_id,
+            "instance_id": instance_id,
+            "instance_name": instance_names.get(instance_id) if instance_names and instance_id else None,
             "error_message": run.error_message,
             "created_at": run.created_at.isoformat() if run.created_at else None,
             "started_at": run.started_at.isoformat() if run.started_at else None,

@@ -11,10 +11,19 @@ const api = vi.hoisted(() => ({
   getRunReportUrl: vi.fn(),
 }));
 
+// 策略实例（live_strategy_configs）走 liveStrategyApi：加载实例与保存为实例
+const liveApi = vi.hoisted(() => ({
+  listConfigs: vi.fn(), createInstance: vi.fn(), updateInstance: vi.fn(),
+}));
+
 vi.mock('echarts', () => ({
   init: vi.fn(() => ({ setOption: vi.fn(), resize: vi.fn(), dispose: vi.fn() })),
 }));
 vi.mock('../../api/strategyLab', () => ({ strategyLabApi: api }));
+vi.mock('../../api/liveStrategy', () => ({
+  liveStrategyApi: liveApi,
+  LIVE_ACCOUNT_OPTIONS: [{ value: 'testS', label: 'testS（模拟）' }, { value: '135129739', label: '135129739' }],
+}));
 vi.mock('../../api/portfolio', () => ({ portfolioApi: { getAccounts: vi.fn().mockResolvedValue({ accounts: [] }) } }));
 
 const ROTATION_STRATEGY = {
@@ -57,6 +66,9 @@ describe('StrategyLabPage', () => {
     api.listRuns.mockResolvedValue([]);
     api.listBatches.mockResolvedValue([]);
     api.listConfigs.mockResolvedValue([]);
+    liveApi.listConfigs.mockResolvedValue([]);
+    liveApi.createInstance.mockResolvedValue({ id: 9, name: '双低月轮动', strategyId: 'rotation' });
+    liveApi.updateInstance.mockResolvedValue({ id: 7, name: '月度三低', strategyId: 'rotation' });
     api.createBatch.mockResolvedValue({ id: 1, status: 'completed', total_tasks: 2, completed_tasks: 2 });
     api.createRun.mockResolvedValue({ id: 1, strategy_name: '可转债轮动', engine_name: 'cb_rotation_v1', status: 'completed', start_date: '2024-01-02', end_date: '2024-01-31', metrics: null, equity_curve: [] });
     api.listRunTrades.mockResolvedValue([]);
@@ -135,7 +147,7 @@ describe('StrategyLabPage', () => {
   it('submits a legacy strategy run with max_positions only', async () => {
     render(<UiLanguageProvider><StrategyLabPage /></UiLanguageProvider>);
     await screen.findByRole('button', { name: '开始回测' });
-    fireEvent.change(screen.getByLabelText('策略'), { target: { value: 'ma-crossover' } });
+    fireEvent.change(screen.getByLabelText('策略模板'), { target: { value: 'ma-crossover' } });
     fireEvent.click(screen.getByRole('button', { name: '开始回测' }));
     await waitFor(() => expect(api.createRun).toHaveBeenCalledWith(expect.objectContaining({
       strategy_id: 'ma-crossover',
@@ -143,29 +155,29 @@ describe('StrategyLabPage', () => {
     })));
   }, 15000);
 
-  it('saves the current config through the modal', async () => {
-    api.createConfig.mockResolvedValue({ id: 9, name: '双低月轮动' });
+  it('saves the current form as a strategy instance through the modal', async () => {
     render(<UiLanguageProvider><StrategyLabPage /></UiLanguageProvider>);
     await screen.findByRole('button', { name: '开始回测' });
 
-    fireEvent.click(screen.getByRole('button', { name: '保存配置' }));
-    expect(await screen.findByLabelText('配置名称')).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText('配置名称'), { target: { value: '双低月轮动' } });
-    const saveButtons = screen.getAllByRole('button', { name: /保\s*存/ });
+    fireEvent.click(screen.getByRole('button', { name: '保存为策略实例' }));
+    expect(await screen.findByLabelText('实例名')).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('实例名'), { target: { value: '双低月轮动' } });
+    const saveButtons = screen.getAllByRole('button', { name: /创\s*建\s*实\s*例/ });
     fireEvent.click(saveButtons[saveButtons.length - 1]); // 模态框确认按钮在 body 末尾的 portal 中
 
-    await waitFor(() => expect(api.createConfig).toHaveBeenCalledWith(expect.objectContaining({
+    await waitFor(() => expect(liveApi.createInstance).toHaveBeenCalledWith(expect.objectContaining({
       name: '双低月轮动',
-      strategy_id: 'rotation',
+      strategyId: 'rotation',
+      enabled: false,
       parameters: expect.objectContaining({ rebalance_unit: 'trading_day' }),
     })));
   }, 15000);
 
-  it('loads a saved config and applies its parameters', async () => {
-    api.listConfigs.mockResolvedValue([
+  it('loads a strategy instance and applies its parameters', async () => {
+    liveApi.listConfigs.mockResolvedValue([
       {
-        id: 7, config_uid: 'u7', name: '月度三低', description: null,
-        strategy_id: 'rotation', market: 'cn', instrument_type: 'convertible_bond',
+        id: 7, name: '月度三低', description: null, strategyId: 'rotation', qmtAccount: '-',
+        enabled: false, scheduleTime: '14:35',
         parameters: {
           rebalance_unit: 'month', rebalance_interval: 1, max_positions: 10,
           score_preset: 'triple_low',
@@ -179,10 +191,11 @@ describe('StrategyLabPage', () => {
     render(<UiLanguageProvider><StrategyLabPage /></UiLanguageProvider>);
     await screen.findByRole('button', { name: '开始回测' });
 
-    const configSelects = screen.getAllByRole('combobox', { name: '加载已保存配置' });
+    const configSelects = screen.getAllByRole('combobox', { name: '加载策略实例' });
     const selector = configSelects[0].closest('.ant-select')?.querySelector('.ant-select-selector') as HTMLElement;
     fireEvent.mouseDown(selector);
-    fireEvent.click(await screen.findByText('月度三低'));
+    // 选项文案为「实例名（模板 id）」
+    fireEvent.click(await screen.findByText('月度三低（rotation）'));
 
     await waitFor(() => expect((screen.getByLabelText('换仓频率') as HTMLInputElement).value).toBe('1'));
     expect(screen.getByLabelText('最大持有数量')).toHaveValue(10);
@@ -190,6 +203,12 @@ describe('StrategyLabPage', () => {
     expect((screen.getByLabelText('价格五档仓位比例') as HTMLInputElement).value).toBe('20');
     expect(screen.getByLabelText('标的筛选')).toHaveValue('113001');
     expect(screen.getByText('转股溢价率')).toBeInTheDocument();
+    // 已加载实例后再回测：携带 instance_id 血缘
+    fireEvent.click(screen.getByRole('button', { name: '开始回测' }));
+    await waitFor(() => expect(api.createRun).toHaveBeenCalledWith(expect.objectContaining({
+      strategy_id: 'rotation',
+      instance_id: 7,
+    })));
   }, 15000);
 
   it('exports reports for a completed rotation run', async () => {
@@ -302,7 +321,7 @@ describe('StrategyLabPage', () => {
   it('submits an ETF signal run with entry/exit rules and etf instrument_type', async () => {
     render(<UiLanguageProvider><StrategyLabPage /></UiLanguageProvider>);
     await screen.findByRole('button', { name: '开始回测' });
-    fireEvent.change(screen.getByLabelText('策略'), { target: { value: 'signal' } });
+    fireEvent.change(screen.getByLabelText('策略模板'), { target: { value: 'signal' } });
     // signal 表单：均线窗口 + 买入/卖出条件表；ETF 标的必填
     expect(await screen.findByLabelText('均线窗口')).toHaveValue(182);
     expect(screen.getByText('买入条件')).toBeInTheDocument();

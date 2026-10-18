@@ -44,6 +44,8 @@ class StrategyLabRunConfig:
     symbols: List[str] = field(default_factory=list)
     parameters: Dict[str, Any] = field(default_factory=dict)
     portfolio_account_id: Optional[int] = None
+    # 策略实例血缘：从「策略管理/实验室」实例发起的回测记录来源实例，可空
+    instance_id: Optional[int] = None
 
 
 @dataclass(frozen=True)

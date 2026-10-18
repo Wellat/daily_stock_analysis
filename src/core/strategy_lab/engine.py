@@ -68,7 +68,7 @@ def _signal_strategy_entry() -> Dict[str, Any]:
     ]
     return {
         "strategy_id": "signal",
-        "name": "ETF 信号",
+        "name": "ETF简单均线",
         "instrument_types": ["etf"],
         "markets": ["cn"],
         "live_mode": "notify",
@@ -96,7 +96,7 @@ def _signal_macd_strategy_entry() -> Dict[str, Any]:
     ]
     return {
         "strategy_id": "signal_macd",
-        "name": "ETF 信号 · MACD",
+        "name": "ETF · MACD",
         "instrument_types": ["etf"],
         "markets": ["cn"],
         "live_mode": "notify",

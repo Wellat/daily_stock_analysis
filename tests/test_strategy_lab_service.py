@@ -108,3 +108,43 @@ def test_strategy_lab_service_uses_synchronized_convertible_bond_data(db_manager
     assert trades[0]["symbol"] == "123002"
     # 成交记录按主表补齐展示名称
     assert trades[0]["symbol_name"] == "样例二"
+
+
+def test_low_premium_run_routes_to_database_engine_and_closes_positions(db_manager: DatabaseManager) -> None:
+    """回归：low-premium 不走未完成的 unified_low_premium_v1（无持仓跨日、
+    持仓市值恒 0、永不卖出、现金烧完后停摆），回到 database 引擎按窗口平仓。"""
+    repo = StrategyLabDataSyncService(db_manager).repository
+    repo.upsert_cb_basic(
+        [
+            {"bond_code": "123001", "bond_name": "样例一", "stock_code": "600001"},
+            {"bond_code": "123002", "bond_name": "样例二", "stock_code": "600002"},
+        ],
+        source="sample",
+    )
+    repo.upsert_cb_daily_factors(
+        [
+            {"bond_code": "123001", "trade_date": date(2024, 1, 2), "close": 100, "premium_rate": 15},
+            {"bond_code": "123001", "trade_date": date(2024, 1, 3), "close": 105, "premium_rate": 14},
+            {"bond_code": "123002", "trade_date": date(2024, 1, 2), "close": 80, "premium_rate": 20},
+            {"bond_code": "123002", "trade_date": date(2024, 1, 3), "close": 81, "premium_rate": 19},
+        ],
+        source="sample",
+    )
+
+    payload = StrategyLabService(db_manager).create_run(
+        StrategyLabRunConfig(
+            strategy_id="low-premium",
+            market="cn",
+            instrument_type="convertible_bond",
+            start_date=date(2024, 1, 2),
+            end_date=date(2024, 1, 3),
+            initial_cash=100000,
+            parameters={"max_positions": 1},
+        )
+    )
+
+    assert payload["engine_name"] == "database_double_low_v1"
+    assert payload["metrics"]["diagnostics"]["score_mode"] == "low_premium"
+    trades = StrategyLabService(db_manager).list_trades(payload["id"])
+    assert {t["side"] for t in trades} == {"buy", "sell"}
+    assert payload["final_equity"] > 0

@@ -20,10 +20,6 @@ from api.v1.schemas.strategy_lab import (
     StrategyLabBatchCreateRequest,
     StrategyLabBatchItemResponse,
     StrategyLabBatchListResponse,
-    StrategyLabConfigCreateRequest,
-    StrategyLabConfigItem,
-    StrategyLabConfigListResponse,
-    StrategyLabConfigUpdateRequest,
     StrategyLabDataSyncRequest,
     StrategyLabDataSyncResponse,
     StrategyLabEventListResponse,
@@ -41,7 +37,6 @@ from api.v1.schemas.strategy_lab import (
     StrategyLabTradeListResponse,
 )
 from src.core.strategy_lab.models import StrategyLabRunConfig
-from src.repositories.strategy_lab.config_repo import StrategyLabConfigRepository, config_payload
 from src.services.strategy_lab.batch_service import (
     StrategyLabBatchService,
     add_batch_listener,
@@ -101,6 +96,7 @@ def create_run(
             symbols=request.symbols,
             parameters=request.parameters,
             portfolio_account_id=request.portfolio_account_id,
+            instance_id=request.instance_id,
         )
         return StrategyLabRunItem(**StrategyLabService(db_manager).create_run(config))
     except ValueError as exc:
@@ -647,103 +643,10 @@ def delete_batch(
 
 
 # ---------------------------------------------------------------------------
-# 回测配置预设（保存 / 加载）
+# 回测配置预设端点已下线：保存/加载统一走「策略实例」
+# （/api/v1/live-strategy/configs，见 live_strategy 端点）；旧 presets 表保留
+# 为迁移前只读历史（init 时一次性拷贝为未启用实例），不再提供读写入口。
 # ---------------------------------------------------------------------------
-
-@router.get(
-    "/configs",
-    response_model=StrategyLabConfigListResponse,
-    responses={500: {"model": ErrorResponse}},
-    summary="List saved Strategy Lab backtest configs",
-)
-def list_configs(
-    limit: int = Query(100, ge=1, le=500),
-    db_manager: DatabaseManager = Depends(get_database_manager),
-) -> StrategyLabConfigListResponse:
-    try:
-        rows, total = StrategyLabConfigRepository(db_manager).list_configs(limit=limit)
-        return StrategyLabConfigListResponse(
-            total=total,
-            items=[StrategyLabConfigItem(**config_payload(row)) for row in rows],
-        )
-    except Exception as exc:
-        logger.error("List Strategy Lab configs failed: %s", exc, exc_info=True)
-        raise HTTPException(status_code=500, detail={"error": "internal_error", "message": "List configs failed"})
-
-
-@router.post(
-    "/configs",
-    response_model=StrategyLabConfigItem,
-    status_code=201,
-    responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
-    summary="Save a Strategy Lab backtest config preset",
-)
-def create_config(
-    request: StrategyLabConfigCreateRequest,
-    db_manager: DatabaseManager = Depends(get_database_manager),
-) -> StrategyLabConfigItem:
-    try:
-        row = StrategyLabConfigRepository(db_manager).create_config(
-            name=request.name.strip(),
-            description=request.description,
-            strategy_id=request.strategy_id,
-            market=request.market,
-            instrument_type=request.instrument_type,
-            parameters=request.parameters,
-            symbols=request.symbols,
-        )
-        return StrategyLabConfigItem(**config_payload(row))
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail={"error": "invalid_params", "message": str(exc)})
-    except Exception as exc:
-        logger.error("Create Strategy Lab config failed: %s", exc, exc_info=True)
-        raise HTTPException(status_code=500, detail={"error": "internal_error", "message": "Create config failed"})
-
-
-@router.put(
-    "/configs/{config_id}",
-    response_model=StrategyLabConfigItem,
-    responses={404: {"model": ErrorResponse}, 400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
-    summary="Update a saved Strategy Lab backtest config",
-)
-def update_config(
-    config_id: int,
-    request: StrategyLabConfigUpdateRequest,
-    db_manager: DatabaseManager = Depends(get_database_manager),
-) -> StrategyLabConfigItem:
-    try:
-        updates = {key: value for key, value in request.model_dump().items() if value is not None}
-        row = StrategyLabConfigRepository(db_manager).update_config(config_id, updates)
-        if row is None:
-            raise HTTPException(status_code=404, detail={"error": "not_found", "message": "Strategy Lab config not found"})
-        return StrategyLabConfigItem(**config_payload(row))
-    except HTTPException:
-        raise
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail={"error": "invalid_params", "message": str(exc)})
-    except Exception as exc:
-        logger.error("Update Strategy Lab config failed: %s", exc, exc_info=True)
-        raise HTTPException(status_code=500, detail={"error": "internal_error", "message": "Update config failed"})
-
-
-@router.delete(
-    "/configs/{config_id}",
-    responses={404: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
-    summary="Delete a saved Strategy Lab backtest config",
-)
-def delete_config(
-    config_id: int,
-    db_manager: DatabaseManager = Depends(get_database_manager),
-) -> dict[str, bool]:
-    try:
-        if not StrategyLabConfigRepository(db_manager).delete_config(config_id):
-            raise HTTPException(status_code=404, detail={"error": "not_found", "message": "Strategy Lab config not found"})
-        return {"deleted": True}
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logger.error("Delete Strategy Lab config failed: %s", exc, exc_info=True)
-        raise HTTPException(status_code=500, detail={"error": "internal_error", "message": "Delete config failed"})
 
 
 # ---------------------------------------------------------------------------

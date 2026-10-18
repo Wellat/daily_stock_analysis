@@ -33,10 +33,10 @@ class QmtCbHoldingsService:
         self.data = StrategyLabDataRepository(self.db)
 
     def _resolve_account(self, account: Optional[str]) -> str:
-        """显式账户优先；缺省回落到实盘配置的 qmt_account，并校验白名单。
+        """显式账户优先；缺省回落到实盘实例的 qmt_account，并校验白名单。
 
-        回落时只认 live_mode=order 策略的配置行——notify 配置（ETF 信号
-        通知）的 qmt_account 是占位符，且可能成为最新行。
+        回落时只认 live_mode=order 策略的实例——notify/回测实例的 qmt_account
+        是占位符；多实盘实例并存时优先取已启用实例，其次最新 order 行。
         """
         resolved = (account or "").strip()
         if not resolved:
@@ -46,7 +46,9 @@ class QmtCbHoldingsService:
                 rows = session.execute(
                     select(LiveStrategyConfig).order_by(desc(LiveStrategyConfig.id))
                 ).scalars().all()
-            row = next((r for r in rows if r.strategy_id in order_ids), rows[0] if rows else None)
+            order_rows = [r for r in rows if r.strategy_id in order_ids]
+            enabled = next((r for r in order_rows if r.enabled), None)
+            row = enabled or (order_rows[0] if order_rows else None) or (rows[0] if rows else None)
             resolved = (row.qmt_account if row else "") or ""
         if resolved not in LIVE_ACCOUNTS:
             raise ValueError(f"account must be one of {', '.join(sorted(LIVE_ACCOUNTS))}")

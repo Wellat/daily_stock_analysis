@@ -139,12 +139,18 @@ def build_live_strategy_background_tasks(config: Config) -> List[Dict[str, Any]]
             key = f"{config_id}:{now.date().isoformat()}"
             if last_run_keys["value"].get(key):
                 continue
+            strategy_id = live_config.get("strategy_id")
+            live_mode = live_modes.get(strategy_id)
+            if live_mode is None:
+                # 仅回测实例不参与调度（模板无 live_mode），即使误开 enabled 也跳过
+                logger.warning("[LiveStrategySchedule] skip backtest-only instance config=%s strategy=%s", config_id, strategy_id)
+                continue
             # 仅 A 股交易日运行（exchange-calendars 不可用时 fail-open 视为交易日）
             if not _is_cn_trading_day(now.date()):
                 logger.info("Skip live strategy on non-trading day %s", now.date())
                 return
             try:
-                if live_modes.get(live_config.get("strategy_id")) == "notify":
+                if live_mode == "notify":
                     EtfSignalNotifyService().run(config_id=config_id, trade_date=now.date())
                 else:
                     service.run(trade_date=now.date(), config_id=config_id)

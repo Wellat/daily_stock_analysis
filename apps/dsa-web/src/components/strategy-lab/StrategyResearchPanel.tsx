@@ -1,15 +1,15 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Button, Input, Modal, Segmented, Select, Table, Tag } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import { FileDown, RefreshCcw, RefreshCw, Save, Trash2 } from 'lucide-react';
+import { FileDown, RefreshCcw, RefreshCw, Save } from 'lucide-react';
 import { ApiErrorAlert } from '../common';
 import {
   strategyLabApi,
-  type StrategyLabConfigItem,
   type StrategyLabRunItem,
   type StrategyLabStrategyItem,
   type StrategyLabTradeItem,
 } from '../../api/strategyLab';
+import { LIVE_ACCOUNT_OPTIONS, liveStrategyApi, type LiveStrategyConfig } from '../../api/liveStrategy';
 import type { ParsedApiError } from '../../api/error';
 import { getParsedApiError } from '../../api/error';
 import { SL_INPUT_CLASS, SL_PANEL_CLASS, formatNumber, formatPct, parseSymbols } from './utils';
@@ -40,7 +40,7 @@ type BenchmarkMode = 'equal_weight' | 'csi300' | 'custom' | 'buy_hold';
 export const StrategyResearchPanel: React.FC = () => {
   const [strategies, setStrategies] = useState<StrategyLabStrategyItem[]>([]);
   const [runs, setRuns] = useState<StrategyLabRunItem[]>([]);
-  const [configs, setConfigs] = useState<StrategyLabConfigItem[]>([]);
+  const [instances, setInstances] = useState<LiveStrategyConfig[]>([]);
   const [selectedRun, setSelectedRun] = useState<StrategyLabRunItem | null>(null);
   const [trades, setTrades] = useState<StrategyLabTradeItem[]>([]);
   const [loading, setLoading] = useState(false);
@@ -57,6 +57,15 @@ export const StrategyResearchPanel: React.FC = () => {
   const [saveModalOpen, setSaveModalOpen] = useState(false);
   const [saveName, setSaveName] = useState('');
   const [saveDescription, setSaveDescription] = useState('');
+  /**当前加载的策略实例（回测血缘 + 「更新当前实例」入口）；手动切模板后清空 */
+  const [loadedInstanceId, setLoadedInstanceId] = useState<number | null>(null);
+  const loadedRef = useRef(false);
+  // 策略管理页「去回测」跳转参数（?instance=<id>）；直接读 location，避免强依赖 Router 上下文
+  const instanceParam = useMemo(() => {
+    const raw = typeof window === 'undefined' ? null : new URLSearchParams(window.location.search).get('instance');
+    const id = raw ? Number(raw) : NaN;
+    return Number.isFinite(id) ? id : null;
+  }, []);
 
   const selectedStrategy = useMemo(
     () => strategies.find((item) => item.strategy_id === strategyId),
@@ -70,14 +79,14 @@ export const StrategyResearchPanel: React.FC = () => {
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const [strategyItems, runItems, configItems] = await Promise.all([
+      const [strategyItems, runItems, instanceItems] = await Promise.all([
         strategyLabApi.listStrategies(),
         strategyLabApi.listRuns(),
-        strategyLabApi.listConfigs().catch(() => []),
+        liveStrategyApi.listConfigs().catch(() => []),
       ]);
       setStrategies(strategyItems);
       setRuns(runItems);
-      setConfigs(configItems);
+      setInstances(instanceItems);
       setError(null);
     } catch (exc) {
       setError(getParsedApiError(exc));
@@ -134,42 +143,62 @@ export const StrategyResearchPanel: React.FC = () => {
     return { max_positions: Number(runForm.maxPositions) };
   };
 
-  const loadConfig = (configId: number) => {
-    const config = configs.find((item) => item.id === configId);
-    if (!config) return;
-    setStrategyId(config.strategy_id);
-    setRunForm((prev) => ({ ...prev, symbols: (config.symbols ?? []).join(',') }));
-    if (config.strategy_id === 'rotation') {
-      setRotationForm(applyRotationParameters(config.parameters));
-    } else if (config.strategy_id === 'signal' || config.strategy_id === 'signal_macd') {
-      setSignalForm(applySignalParameters(config.parameters));
-    } else if (config.parameters?.max_positions != null) {
-      setRunForm((prev) => ({ ...prev, maxPositions: String(config.parameters.max_positions) }));
+  const loadInstance = useCallback((instanceId: number) => {
+    const instance = instances.find((item) => item.id === instanceId);
+    if (!instance) return;
+    setStrategyId(instance.strategyId);
+    setRunForm((prev) => ({ ...prev, symbols: (instance.symbols ?? []).join(',') }));
+    if (instance.strategyId === 'rotation') {
+      setRotationForm(applyRotationParameters(instance.parameters));
+    } else if (instance.strategyId === 'signal' || instance.strategyId === 'signal_macd') {
+      setSignalForm(applySignalParameters(instance.parameters));
+    } else if (instance.parameters?.max_positions != null) {
+      setRunForm((prev) => ({ ...prev, maxPositions: String(instance.parameters.max_positions) }));
     }
-  };
+    setLoadedInstanceId(instance.id ?? null);
+  }, [instances]);
 
-  const saveCurrentConfig = async () => {
-    if (!saveName.trim()) return;
-    await runAction('save-config', async () => {
-      await strategyLabApi.createConfig({
-        name: saveName.trim(),
-        description: saveDescription.trim() || undefined,
-        strategy_id: strategyId,
-        market: 'cn',
-        instrument_type: instrumentType,
-        parameters: buildParameters(),
-        symbols: parseSymbols(runForm.symbols),
-      });
+  // 从策略管理页「去回测」跳转：?instance=<id> 预填一次（等实例列表就绪）
+  useEffect(() => {
+    if (!loadedRef.current && instanceParam != null && instances.length) {
+      loadedRef.current = true;
+      if (instances.some((item) => item.id === instanceParam)) loadInstance(instanceParam);
+    }
+  }, [instanceParam, instances, loadInstance]);
+
+  const loadedInstance = useMemo(
+    () => instances.find((item) => item.id === loadedInstanceId) ?? null,
+    [instances, loadedInstanceId],
+  );
+
+  const instancePayload = () => ({
+    strategyId,
+    qmtAccount: selectedStrategy?.live_mode === 'order' ? (LIVE_ACCOUNT_OPTIONS[0]?.value ?? null) : null,
+    enabled: false,
+    symbols: parseSymbols(runForm.symbols),
+    parameters: buildParameters(),
+  });
+
+  const saveAsInstance = async (updateCurrent: boolean) => {
+    if (!saveName.trim() && !updateCurrent) return;
+    await runAction('save-instance', async () => {
+      const payload = instancePayload();
+      if (updateCurrent && loadedInstanceId) {
+        await liveStrategyApi.updateInstance(loadedInstanceId, {
+          ...payload,
+          name: loadedInstance?.name || saveName.trim(),
+          description: loadedInstance?.description ?? null,
+        });
+      } else {
+        await liveStrategyApi.createInstance({
+          ...payload,
+          name: saveName.trim(),
+          description: saveDescription.trim() || null,
+        });
+      }
       setSaveModalOpen(false);
       setSaveName('');
       setSaveDescription('');
-      await refresh();
-    });
-  };
-
-  const deleteConfig = async (configId: number) => {
-    await runAction(`delete-config-${configId}`, async () => {
-      await strategyLabApi.deleteConfig(configId);
       await refresh();
     });
   };
@@ -229,6 +258,7 @@ export const StrategyResearchPanel: React.FC = () => {
   const runColumns: ColumnsType<StrategyLabRunItem> = [
     { title: '运行', dataIndex: 'id', width: 120, render: (id: number, record) => (<span className="whitespace-nowrap">#{id} <span className="text-xs text-secondary-text">{fmtTime(record.created_at)}</span></span>) },
     { title: '策略', dataIndex: 'strategy_name', width: 130, ellipsis: true, render: (_, record) => (<span className="whitespace-nowrap">{record.strategy_name}{record.strategy_id === 'rotation' ? <Tag className="ml-1" color="cyan">轮动</Tag> : null}{record.strategy_id === 'signal' ? <Tag className="ml-1" color="geekblue">信号</Tag> : null}{record.strategy_id === 'signal_macd' ? <Tag className="ml-1" color="purple">MACD</Tag> : null}</span>) },
+    { title: '实例', dataIndex: 'instance_name', width: 120, ellipsis: true, render: (_, record) => (record.instance_name ? <Tag color="blue">{record.instance_name}</Tag> : <span className="text-secondary-text">--</span>) },
     { title: '回测区间', key: 'range', width: 175, render: (_, record) => (<span className="whitespace-nowrap text-xs">{record.start_date} ~ {record.end_date}</span>) },
     { title: '总收益率', key: 'total', width: 92, align: 'right', render: (_, record) => pctSpan(record.metrics?.total_return_pct) },
     { title: '基准', dataIndex: 'benchmark_return_pct', width: 92, align: 'right', render: (value: number | null) => pctSpan(value) },
@@ -263,6 +293,7 @@ export const StrategyResearchPanel: React.FC = () => {
               benchmark_symbol: benchmarkSymbol(),
               symbols: parseSymbols(runForm.symbols),
               parameters: buildParameters(),
+              instance_id: loadedInstanceId ?? undefined,
             });
             setSelectedRun(run);
             setTrades(await strategyLabApi.listRunTrades(run.id));
@@ -274,29 +305,21 @@ export const StrategyResearchPanel: React.FC = () => {
           <h2 className="text-base font-semibold text-foreground">策略回测</h2>
           <div className="flex items-center gap-2">
             <Select
-              aria-label="加载已保存配置"
+              aria-label="加载策略实例"
               size="small"
-              className="min-w-40"
-              placeholder="加载已保存配置"
+              className="min-w-44"
+              placeholder="加载策略实例"
               value={undefined}
-              options={configs.map((config) => ({ label: config.name, value: config.id }))}
-              onSelect={(value) => { if (value != null) loadConfig(value); }}
-              notFoundContent="暂无保存的配置"
+              options={instances.map((instance) => ({
+                label: `${instance.name ?? `#${instance.id}`}（${instance.strategyId}）`,
+                value: instance.id,
+              }))}
+              onSelect={(value) => { if (value != null) loadInstance(value); }}
+              notFoundContent="暂无策略实例（策略管理页创建）"
             />
-            {configs.length ? (
-              <Button
-                size="small"
-                type="text"
-                aria-label="删除已保存配置"
-                icon={<Trash2 className="h-3.5 w-3.5" />}
-                onClick={() => {
-                  const latest = configs[0];
-                  if (latest) void deleteConfig(latest.id);
-                }}
-                title={`删除配置：${configs[0]?.name ?? ''}`}
-              />
-            ) : null}
-            <Button size="small" icon={<Save className="h-3.5 w-3.5" />} onClick={() => setSaveModalOpen(true)}>保存配置</Button>
+            <Button size="small" icon={<Save className="h-3.5 w-3.5" />} onClick={() => { setSaveName(loadedInstance?.name ?? ''); setSaveDescription(loadedInstance?.description ?? ''); setSaveModalOpen(true); }}>
+              保存为策略实例
+            </Button>
           </div>
         </div>
 
@@ -316,8 +339,13 @@ export const StrategyResearchPanel: React.FC = () => {
 
         <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <label className="text-sm">
-            策略
-            <select aria-label="策略" className={`${SL_INPUT_CLASS} mt-1`} value={strategyId} onChange={(event) => setStrategyId(event.target.value)}>
+            策略模板
+            <select
+              aria-label="策略模板"
+              className={`${SL_INPUT_CLASS} mt-1`}
+              value={strategyId}
+              onChange={(event) => { setStrategyId(event.target.value); setLoadedInstanceId(null); }}
+            >
               {strategies.map((strategy) => <option key={strategy.strategy_id} value={strategy.strategy_id}>{strategy.name}</option>)}
             </select>
           </label>
@@ -502,23 +530,36 @@ export const StrategyResearchPanel: React.FC = () => {
       )}
 
       <Modal
-        title="保存当前配置"
+        title="保存为策略实例"
         open={saveModalOpen}
         onCancel={() => setSaveModalOpen(false)}
-        onOk={() => void saveCurrentConfig()}
-        okButtonProps={{ loading: actionLoading === 'save-config', disabled: !saveName.trim() }}
-        okText="保存"
+        onOk={() => void saveAsInstance(false)}
+        okButtonProps={{ loading: actionLoading === 'save-instance', disabled: !saveName.trim() }}
+        okText="创建实例"
         cancelText="取消"
       >
         <div className="grid gap-3">
+          <p className="text-xs text-secondary-text">
+            以「{selectedStrategy?.name ?? strategyId}」模板 + 当前参数与标的创建策略实例（默认不启用定时运行），
+            可在策略管理页开启实盘/通知调度或继续回测复用。
+          </p>
           <label className="text-sm">
-            配置名称
-            <Input aria-label="配置名称" className="mt-1" value={saveName} onChange={(event) => setSaveName(event.target.value)} placeholder="例如：双低月轮动" maxLength={100} />
+            实例名
+            <Input aria-label="实例名" className="mt-1" value={saveName} onChange={(event) => setSaveName(event.target.value)} placeholder="例如：红利ETF均线回归" maxLength={100} />
           </label>
           <label className="text-sm">
-            说明（可选）
-            <Input aria-label="配置说明" className="mt-1" value={saveDescription} onChange={(event) => setSaveDescription(event.target.value)} placeholder="备注这组参数的意图" maxLength={200} />
+            备注（可选）
+            <Input aria-label="实例备注" className="mt-1" value={saveDescription} onChange={(event) => setSaveDescription(event.target.value)} placeholder="备注这组参数的意图" maxLength={200} />
           </label>
+          {loadedInstance ? (
+            <Button
+              size="small"
+              loading={actionLoading === 'save-instance'}
+              onClick={() => void saveAsInstance(true)}
+            >
+              用当前参数更新实例「{loadedInstance.name}」
+            </Button>
+          ) : null}
         </div>
       </Modal>
     </div>

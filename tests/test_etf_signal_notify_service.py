@@ -59,8 +59,8 @@ def _seed_etf_history(db: DatabaseManager, symbol: str, closes: list[float], dat
 
 def _make_notify_config(db: DatabaseManager, parameters: dict | None = None, strategy_id: str = "signal") -> int:
     service = LiveStrategyService(db)
-    payload = service.save_notify_config({
-        "strategy_id": strategy_id, "enabled": True, "symbols": ["510880"],
+    payload = service.create_instance({
+        "name": "ETF信号通知", "strategy_id": strategy_id, "enabled": True, "symbols": ["510880"],
         "parameters": parameters if parameters is not None else
         {"ma_window": 5, "roc_window": 3, "entry_gap_max": 0, "exit_gap_min": 7},
         "schedule_time": "14:25",
@@ -225,29 +225,52 @@ def test_notify_signal_macd_injects_default_rules(notify_env):
     assert sp.exit_rules[0].factor == "macd_cross" and sp.exit_rules[0].op == "<"
 
 
-def test_save_notify_config_validations_and_order_semantics(notify_env):
-    """notify 配置校验 + order 语义：get_config 不被 notify 行抢占。"""
+def test_instance_explicit_rules_survive_into_signal_params(notify_env):
+    """实验室「保存为策略实例」的显式规则经 create_instance 落库后被通知评估原样消费。"""
+    config_id = _make_notify_config(notify_env, parameters={
+        "ma_window": 210,
+        "entry_rules": [{"factor": "ma_gap_pct", "op": "<", "value": -1}],
+        "exit_rules": [{"factor": "ma_gap_pct", "op": ">", "value": 5}],
+    })
+    with notify_env.get_session() as session:
+        config = session.get(LiveStrategyConfig, config_id)
+    sp = EtfSignalNotifyService._signal_params(config)
+    assert [(r.factor, r.op, r.value) for r in sp.entry_rules] == [("ma_gap_pct", "<", -1.0)]
+    assert [(r.factor, r.op, r.value) for r in sp.exit_rules] == [("ma_gap_pct", ">", 5.0)]
+    # 显式规则优先生效，扁平键 entry_gap_max/exit_gap_min 不再构默认规则
+    assert sp.ma_window == 210
+
+
+def test_instance_validations_and_order_semantics(notify_env):
+    """实例校验 + order 语义：get_config 不被 notify 行抢占。"""
     service = LiveStrategyService(notify_env)
-    # 先建 order 配置
+    # 先建 order 实例（save_config 兼容层）
     service.save_config({"qmt_account": "testS", "enabled": True, "strategy_id": "low-premium",
                          "parameters": {"max_positions": 1}})
-    # 非 notify 策略拒绝
-    with pytest.raises(ValueError, match="notify-mode"):
-        service.save_notify_config({"strategy_id": "low-premium", "symbols": ["510880"], "parameters": {}})
-    # 空标的拒绝
+    # notify 实例空标的拒绝
     with pytest.raises(ValueError, match="symbol"):
-        service.save_notify_config({"strategy_id": "signal", "symbols": [], "parameters": {}})
+        service.create_instance({"name": "n", "strategy_id": "signal", "symbols": [], "parameters": {}})
     # 未知参数键拒绝
     with pytest.raises(ValueError, match="unknown strategy parameters"):
-        service.save_notify_config({"strategy_id": "signal", "symbols": ["510880"], "parameters": {"foo": 1}})
-    # 合法 upsert：qmt_account 占位 '-'，再保存一次复用同一行
-    first = service.save_notify_config({"strategy_id": "signal", "enabled": True, "symbols": ["510880.SH"],
-                                        "parameters": {"ma_window": 20}, "schedule_time": "14:25"})
-    second = service.save_notify_config({"strategy_id": "signal", "enabled": False, "symbols": ["510880"]})
+        service.create_instance({"name": "n", "strategy_id": "signal", "symbols": ["510880"], "parameters": {"foo": 1}})
+    # 实例名必填
+    with pytest.raises(ValueError, match="name is required"):
+        service.create_instance({"strategy_id": "signal", "symbols": ["510880"]})
+    # 合法 notify 实例：qmt_account 占位 '-'；更新复用同一行且不可换模板
+    first = service.create_instance({"name": "ETF信号", "strategy_id": "signal", "enabled": True,
+                                     "symbols": ["510880.SH"], "parameters": {"ma_window": 20},
+                                     "schedule_time": "14:25"})
+    second = service.update_instance(first["id"], {"name": "ETF信号", "strategy_id": "signal",
+                                                   "enabled": False, "symbols": ["510880"]})
     assert first["id"] == second["id"] and first["qmt_account"] == "-"
-    # order 语义：get_config 仍返回低溢价交易配置，list_configs 两行
+    with pytest.raises(ValueError, match="cannot be changed"):
+        service.update_instance(first["id"], {"name": "x", "strategy_id": "low-premium"})
+    # 仅回测实例：enabled 强制 False、不参与调度
+    backtest = service.create_instance({"name": "轮动", "strategy_id": "rotation", "enabled": True})
+    assert backtest["enabled"] is False
+    # order 语义：get_config 仍返回低溢价交易配置，list_configs 三行
     assert service.get_config()["strategy_id"] == "low-premium"
-    assert {c["strategy_id"] for c in service.list_configs()} == {"low-premium", "signal"}
+    assert {c["strategy_id"] for c in service.list_configs()} == {"low-premium", "signal", "rotation"}
 
 
 def test_notify_synthetic_bar_prefers_pre_close_then_change_pct(notify_env):

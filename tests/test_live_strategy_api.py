@@ -97,24 +97,50 @@ def test_run_orders_include_fill_report_fields(client_and_db):
     assert all("filled_price" in o and "filled_quantity" in o and "completed_at" in o for o in items)
 
 
-def test_notify_config_endpoints_roundtrip_and_validation(client_and_db):
-    """PUT /configs/notify 校验 + GET /configs 列表 + 手动运行对非 notify 配置报 400。"""
+def test_instance_config_endpoints_roundtrip_and_validation(client_and_db):
+    """POST/PUT/DELETE /configs 实例 CRUD 契约 + 通用 run 端点校验。"""
     client, db = client_and_db
-    # 非 notify 策略拒绝
-    bad = client.put("/api/v1/live-strategy/configs/notify",
-                     json={"strategy_id": "low-premium", "symbols": ["510880"], "parameters": {}})
-    assert bad.status_code == 400 and "notify" in bad.json()["message"]
-    # 空标的被 pydantic 拦截
-    empty = client.put("/api/v1/live-strategy/configs/notify",
-                       json={"strategy_id": "signal", "symbols": [], "parameters": {}})
-    assert empty.status_code == 422
-    # 合法保存 → 列表可见，qmt_account 占位 '-'
-    ok = client.put("/api/v1/live-strategy/configs/notify",
-                    json={"strategy_id": "signal", "enabled": False, "symbols": ["510880", "159307"],
-                          "parameters": {"ma_window": 20}, "schedule_time": "14:25"})
-    assert ok.status_code == 200 and ok.json()["qmt_account"] == "-"
+    # 未知参数键 → 400；空标的（notify 实例）→ 400；缺实例名 → 422；非法时刻 → 422
+    bad = client.post("/api/v1/live-strategy/configs",
+                      json={"name": "x", "strategy_id": "signal", "symbols": ["510880"], "parameters": {"foo": 1}})
+    assert bad.status_code == 400 and "unknown strategy parameters" in bad.json()["message"]
+    empty = client.post("/api/v1/live-strategy/configs",
+                        json={"name": "x", "strategy_id": "signal", "symbols": [], "parameters": {}})
+    assert empty.status_code == 400 and "symbol" in empty.json()["message"]
+    no_name = client.post("/api/v1/live-strategy/configs",
+                          json={"strategy_id": "signal", "symbols": ["510880"]})
+    assert no_name.status_code == 422
+    bad_time = client.post("/api/v1/live-strategy/configs",
+                           json={"name": "x", "strategy_id": "signal", "symbols": ["510880"], "schedule_time": "25:00"})
+    assert bad_time.status_code == 422
+    # 合法创建 → 201，qmt_account 占位 '-'；列表可见
+    ok = client.post("/api/v1/live-strategy/configs",
+                     json={"name": "ETF信号", "strategy_id": "signal", "enabled": False,
+                           "symbols": ["510880", "159307"], "parameters": {"ma_window": 20},
+                           "schedule_time": "14:25"})
+    assert ok.status_code == 201 and ok.json()["qmt_account"] == "-"
+    instance_id = ok.json()["id"]
     items = client.get("/api/v1/live-strategy/configs").json()["items"]
     assert [i["strategy_id"] for i in items] == ["signal"]
-    # 手动运行对不存在配置报 400
-    missing = client.post("/api/v1/live-strategy/configs/9999/notify/run")
-    assert missing.status_code == 400
+    assert items[0]["description"] is None and items[0]["last_run"] is None
+    # 更新：改名可用；换模板被拒
+    patched = client.put(f"/api/v1/live-strategy/configs/{instance_id}",
+                         json={"name": "ETF信号2", "strategy_id": "signal", "enabled": True,
+                               "symbols": ["510880"], "parameters": {"ma_window": 20}})
+    assert patched.status_code == 200 and patched.json()["name"] == "ETF信号2" and patched.json()["enabled"] is True
+    switched = client.put(f"/api/v1/live-strategy/configs/{instance_id}",
+                          json={"name": "x", "strategy_id": "low-premium"})
+    assert switched.status_code == 400 and "cannot be changed" in switched.json()["message"]
+    # 通用手动运行：仅回测实例 → 400；不存在实例 → 404
+    backtest = client.post("/api/v1/live-strategy/configs",
+                           json={"name": "轮动", "strategy_id": "rotation"})
+    assert backtest.status_code == 201 and backtest.json()["enabled"] is False
+    only_backtest = client.post(f"/api/v1/live-strategy/configs/{backtest.json()['id']}/run")
+    assert only_backtest.status_code == 400 and "backtest-only" in only_backtest.json()["message"]
+    missing = client.post("/api/v1/live-strategy/configs/9999/run")
+    assert missing.status_code == 404
+    # 删除后再删 → 404；列表只剩 signal 实例
+    deleted = client.delete(f"/api/v1/live-strategy/configs/{backtest.json()['id']}")
+    assert deleted.status_code == 200 and deleted.json()["deleted"] is True
+    assert client.delete(f"/api/v1/live-strategy/configs/{backtest.json()['id']}").status_code == 404
+    assert [i["strategy_id"] for i in client.get("/api/v1/live-strategy/configs").json()["items"]] == ["signal"]

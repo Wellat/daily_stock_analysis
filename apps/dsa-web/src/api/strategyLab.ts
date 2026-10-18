@@ -32,6 +32,8 @@ export type StrategyLabStrategyItem = {
   instrument_types: string[];
   markets: string[];
   description?: string | null;
+  /** live_mode：order=实盘交易；notify=信号通知；null/缺省=仅回测（策略实例调度分派依据） */
+  live_mode?: 'order' | 'notify' | null;
   parameters?: StrategyLabStrategyParamMeta[];
   factors?: StrategyLabFactorMeta[];
   score_presets?: StrategyLabScorePreset[];
@@ -108,6 +110,8 @@ export type StrategyLabRunItem = {
   benchmark_symbol?: string | null;
   benchmark_return_pct?: number | null;
   portfolio_account_id?: number | null;
+  instance_id?: number | null;
+  instance_name?: string | null;
   error_message?: string | null;
   created_at?: string | null;
   completed_at?: string | null;
@@ -117,29 +121,9 @@ export type StrategyLabRunItem = {
   equity_curve?: StrategyLabEquityPoint[];
 };
 
-export type StrategyLabConfigItem = {
-  id: number;
-  config_uid: string;
-  name: string;
-  description?: string | null;
-  strategy_id: string;
-  market: string;
-  instrument_type: string;
-  parameters: Record<string, unknown>;
-  symbols: string[];
-  created_at?: string | null;
-  updated_at?: string | null;
-};
-
-export type StrategyLabConfigCreateRequest = {
-  name: string;
-  description?: string;
-  strategy_id: string;
-  market?: string;
-  instrument_type?: string;
-  parameters: Record<string, unknown>;
-  symbols?: string[];
-};
+// 回测配置预设（保存/加载）已下线：统一走策略实例（api/liveStrategy.ts 的
+// listConfigs / createInstance / updateInstance），旧 presets 仅作为迁移前
+// 的只读历史保留在库表。
 
 export type StrategyLabTradeItem = {
   id: number;
@@ -276,6 +260,8 @@ export type StrategyLabRunRequest = {
   benchmark_symbol?: string;
   symbols?: string[];
   parameters?: Record<string, unknown>;
+  /** 来源策略实例 ID：从实例发起的回测携带，ad-hoc 回测省略 */
+  instance_id?: number;
 };
 
 export type StrategyLabBatchRequest = {
@@ -309,21 +295,6 @@ export const strategyLabApi = {
   async createRun(payload: StrategyLabRunRequest) {
     const { data } = await apiClient.post<StrategyLabRunItem>('/api/v1/strategy-lab/runs', payload);
     return data;
-  },
-  async listConfigs() {
-    const { data } = await apiClient.get<{ total: number; items: StrategyLabConfigItem[] }>('/api/v1/strategy-lab/configs');
-    return data.items;
-  },
-  async createConfig(payload: StrategyLabConfigCreateRequest) {
-    const { data } = await apiClient.post<StrategyLabConfigItem>('/api/v1/strategy-lab/configs', payload);
-    return data;
-  },
-  async updateConfig(configId: number, payload: Partial<StrategyLabConfigCreateRequest>) {
-    const { data } = await apiClient.put<StrategyLabConfigItem>(`/api/v1/strategy-lab/configs/${configId}`, payload);
-    return data;
-  },
-  async deleteConfig(configId: number) {
-    await apiClient.delete(`/api/v1/strategy-lab/configs/${configId}`);
   },
   getRunReportUrl(runId: number, format: 'md' | 'holdings-csv' | 'trades-csv') {
     const baseUrl = apiClient.defaults.baseURL || '';

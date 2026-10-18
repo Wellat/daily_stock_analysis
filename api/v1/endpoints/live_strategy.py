@@ -2,7 +2,8 @@ from __future__ import annotations
 from datetime import date
 from fastapi import APIRouter, Depends, HTTPException
 from api.deps import get_database_manager
-from api.v1.schemas.live_strategy import LiveStrategyConfigRequest, LiveStrategyNotifyConfigRequest, LiveStrategyRunRequest, LiveStrategyRunItem, LiveStrategyRunListResponse
+from api.v1.schemas.live_strategy import (LiveStrategyConfigRequest, LiveStrategyInstanceRequest,
+    LiveStrategyInstanceListResponse, LiveStrategyRunRequest, LiveStrategyRunItem, LiveStrategyRunListResponse)
 from sqlalchemy import desc, select
 from src.storage import LiveStrategyRun, LiveRebalanceBatch, StrategyDecisionRecord
 from src.services.live_strategy_service import LiveStrategyService
@@ -24,14 +25,14 @@ def save_config(request: LiveStrategyConfigRequest, db_manager: DatabaseManager 
 @router.post("/runs/preview")
 def preview_run(request: LiveStrategyRunRequest, db_manager: DatabaseManager = Depends(get_database_manager)):
     try:
-        return LiveStrategyService(db_manager).run(trade_date=request.trade_date or date.today(), preview=True, mode=request.mode)
+        return LiveStrategyService(db_manager).run(trade_date=request.trade_date or date.today(), preview=True, mode=request.mode, config_id=request.config_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail={"error": "invalid_params", "message": str(exc)})
 
 @router.post("/runs")
 def run_strategy(request: LiveStrategyRunRequest, db_manager: DatabaseManager = Depends(get_database_manager)):
     try:
-        return LiveStrategyService(db_manager).run(trade_date=request.trade_date or date.today(), mode=request.mode)
+        return LiveStrategyService(db_manager).run(trade_date=request.trade_date or date.today(), mode=request.mode, config_id=request.config_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail={"error": "invalid_params", "message": str(exc)})
 
@@ -68,24 +69,52 @@ def list_strategies():
     from src.core.strategy_lab.engine import list_builtin_strategies
     return {"items": list_builtin_strategies()}
 
-@router.get("/configs")
+@router.get("/configs", response_model=LiveStrategyInstanceListResponse)
 def list_configs(db_manager: DatabaseManager = Depends(get_database_manager)):
-    """全部实盘配置（order 交易配置 + notify 信号通知配置），策略管理页数据源。"""
+    """全部策略实例（order 交易 / notify 通知 / 仅回测），策略管理页数据源。"""
     return {"items": LiveStrategyService(db_manager).list_configs()}
 
-@router.put("/configs/notify")
-def save_notify_config(request: LiveStrategyNotifyConfigRequest, db_manager: DatabaseManager = Depends(get_database_manager)):
+@router.post("/configs", status_code=201)
+def create_config(request: LiveStrategyInstanceRequest, db_manager: DatabaseManager = Depends(get_database_manager)):
+    """新建策略实例（模板 + 参数 + 标的 + 调度）。"""
     try:
-        return LiveStrategyService(db_manager).save_notify_config(request.model_dump())
+        return LiveStrategyService(db_manager).create_instance(request.model_dump())
     except ValueError as exc:
         raise HTTPException(status_code=400, detail={"error": "invalid_params", "message": str(exc)})
 
-@router.post("/configs/{config_id}/notify/run")
-def run_notify_config(config_id: int, db_manager: DatabaseManager = Depends(get_database_manager)):
-    """手动立即运行一次信号通知（返回信号明细与发送结果）。"""
-    from src.services.etf_signal_notify_service import EtfSignalNotifyService
+@router.put("/configs/{config_id}")
+def update_config(config_id: int, request: LiveStrategyInstanceRequest, db_manager: DatabaseManager = Depends(get_database_manager)):
+    """更新策略实例；strategy_id 创建后不可换模板（新建实例代替）。"""
     try:
-        return EtfSignalNotifyService(db_manager).run(config_id=config_id, trade_date=date.today())
+        return LiveStrategyService(db_manager).update_instance(config_id, request.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail={"error": "invalid_params", "message": str(exc)})
+
+@router.delete("/configs/{config_id}")
+def delete_config(config_id: int, db_manager: DatabaseManager = Depends(get_database_manager)):
+    """删除策略实例；历史运行记录保留（按 strategy_id 兜底展示）。"""
+    try:
+        return LiveStrategyService(db_manager).delete_instance(config_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail={"error": "not_found", "message": str(exc)})
+
+@router.post("/configs/{config_id}/run")
+def run_config(config_id: int, db_manager: DatabaseManager = Depends(get_database_manager)):
+    """手动立即运行一次实例：order → 实盘交易（真实下单），notify → 信号通知。"""
+    from src.services.etf_signal_notify_service import EtfSignalNotifyService
+    service = LiveStrategyService(db_manager)
+    with db_manager.get_session() as session:
+        from src.storage import LiveStrategyConfig
+        row = session.get(LiveStrategyConfig, config_id)
+        strategy_id = row.strategy_id if row else None
+    if row is None:
+        raise HTTPException(status_code=404, detail={"error": "not_found", "message": f"strategy instance not found: {config_id}"})
+    try:
+        if service._live_mode_of(strategy_id) == "notify":
+            return EtfSignalNotifyService(db_manager).run(config_id=config_id, trade_date=date.today())
+        if service._live_mode_of(strategy_id) is None:
+            raise ValueError("backtest-only instance: run it in Strategy Lab instead")
+        return service.run(trade_date=date.today(), config_id=config_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail={"error": "invalid_params", "message": str(exc)})
 

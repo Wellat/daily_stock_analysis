@@ -4,12 +4,13 @@ import { MemoryRouter } from 'react-router-dom';
 import { StrategyManagementPanel } from '../StrategyManagementPanel';
 
 // mock 底层 axios 实例，让 toCamelCase 键名转换真实参与测试
-const client = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn(), put: vi.fn() }));
+const client = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn(), put: vi.fn(), delete: vi.fn() }));
 vi.mock('../../../api/index', () => ({ default: client }));
 
 const strategiesPayload = {
   items: [
-    { strategy_id: 'low-premium', name: '低溢价轮动', description: '按转股溢价率升序轮动。', instrument_types: ['convertible_bond'], markets: ['cn'], live_mode: 'order', parameters: [] },
+    { strategy_id: 'low-premium', name: '低溢价轮动', description: '按转股溢价率升序轮动。', instrument_types: ['convertible_bond'], markets: ['cn'], live_mode: 'order',
+      parameters: [{ key: 'max_positions', label: '最大持仓', type: 'integer', default: 10 }] },
     { strategy_id: 'double-low', name: '双低轮动', description: '按双低值升序轮动。', instrument_types: ['convertible_bond'], markets: ['cn'], live_mode: 'order', parameters: [] },
     { strategy_id: 'signal', name: 'ETF 信号', description: '时序进出场规则。', instrument_types: ['etf'], markets: ['cn'], live_mode: 'notify',
       parameters: [
@@ -20,12 +21,15 @@ const strategiesPayload = {
   ],
 };
 
-// order 交易配置 + 一条未启用的 notify 配置
+// 一条启用的 order 实例、一条未启用的 notify 实例、一条仅回测实例
 const configsPayload = {
   items: [
-    { id: 9, strategy_id: 'signal', strategy_version: 'v1', qmt_account: '-', enabled: false, symbols: ['510880'],
-      parameters: { ma_window: 20 }, rebalance_frequency_days: 1, schedule_time: '14:25' },
-    { id: 1, strategy_id: 'low-premium', strategy_version: 'v1', qmt_account: '135129739',
+    { id: 12, name: '轮动实验', description: null, strategy_id: 'rotation', strategy_version: 'v1', qmt_account: '-', enabled: false,
+      symbols: ['113050', '113062', '118000', '123001'], parameters: { rebalance_interval: 5 }, rebalance_frequency_days: 1, schedule_time: '14:35' },
+    { id: 9, name: 'ETF信号通知', description: '红利+纳指', strategy_id: 'signal', strategy_version: 'v1', qmt_account: '-', enabled: false, symbols: ['510880'],
+      parameters: { ma_window: 20, entry_rules: [{ factor: 'ma_gap_pct', op: '<', value: 0 }], exit_rules: [{ factor: 'ma_gap_pct', op: '>', value: 7 }] },
+      rebalance_frequency_days: 1, schedule_time: '14:25', last_run: { id: 77, trade_date: '2026-10-16', status: 'completed', mode: 'notify' } },
+    { id: 1, name: '低溢价主仓', description: null, strategy_id: 'low-premium', strategy_version: 'v1', qmt_account: '135129739',
       enabled: true, symbols: [], parameters: { max_positions: 10 },
       rebalance_frequency_days: 10, event_check_enabled: true, data_sync_before_run: true,
       last_trading_day_exit_enabled: true, last_trading_day_exit_buffer_days: 1,
@@ -39,7 +43,7 @@ const renderPanel = () => render(
   </MemoryRouter>,
 );
 
-describe('StrategyManagementPanel 策略管理', () => {
+describe('StrategyManagementPanel 策略管理（实例为主）', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     client.get.mockImplementation(async (url: string) => {
@@ -47,80 +51,89 @@ describe('StrategyManagementPanel 策略管理', () => {
       if (url === '/api/v1/live-strategy/configs') return { data: configsPayload };
       throw new Error(`unexpected GET ${url}`);
     });
-    client.put.mockResolvedValue({ data: configsPayload.items[0] });
-    client.post.mockResolvedValue({ data: { run_id: 9, trade_date: '2026-10-17', status: 'completed', feishu_sent: true, message: 'ETF 信号通知 · 2026-10-17\n- 红利ETF（510880）：→ 买入信号' } });
+    client.put.mockResolvedValue({ data: configsPayload.items[1] });
+    client.post.mockImplementation(async (url: string) => {
+      if (url.endsWith('/run')) {
+        return { data: { run_id: 9, trade_date: '2026-10-17', status: 'completed', feishu_sent: true, message: 'ETF 信号通知 · 2026-10-17\n- 红利ETF（510880）：→ 买入信号' } };
+      }
+      return { data: configsPayload.items[1] };
+    });
+    client.delete.mockResolvedValue({ data: { deleted: true, id: 1 } });
   });
 
-  it('展示中文名、品种与实盘能力标识、order/notify 实盘状态与调度', async () => {
+  it('实例表：模板/品种/能力/状态/调度/最近运行 + 实例口径汇总卡与模板折叠区', async () => {
     renderPanel();
-    expect(await screen.findByText('低溢价轮动')).toBeInTheDocument();
-    expect(screen.getByText('ETF 信号')).toBeInTheDocument();
-    expect(screen.getByText('转债轮动')).toBeInTheDocument();
-    // 品种标识
+    // 实例行（实例名 + 模板中文名）
+    expect(await screen.findByText('低溢价主仓')).toBeInTheDocument();
+    expect(screen.getByText('ETF信号通知')).toBeInTheDocument();
+    expect(screen.getByText('轮动实验')).toBeInTheDocument();
+    expect(screen.getAllByText('低溢价轮动').length).toBeGreaterThanOrEqual(1);
+    // 品种标识 + 能力三态（实例表内）
     expect(screen.getAllByText('可转债').length).toBeGreaterThanOrEqual(2);
     expect(screen.getByText('ETF')).toBeInTheDocument();
-    // 实盘能力三态（order 两行、「仅回测」同时出现在汇总卡与表格 Tag）
-    expect(screen.getAllByText('实盘交易').length).toBe(2);
-    expect(screen.getAllByText('信号通知').length).toBeGreaterThanOrEqual(2);
-    expect(screen.getAllByText('仅回测').length).toBeGreaterThanOrEqual(2);
-    // order 运行中、notify 已配置未启用
-    expect(screen.getByText('实盘运行中')).toBeInTheDocument();
-    expect(screen.getByText('通知已暂停')).toBeInTheDocument();
+    expect(screen.getAllByText('实盘交易').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText('信号通知').length).toBeGreaterThanOrEqual(1);
+    // 运行状态与调度
+    expect(screen.getAllByText('实盘运行中').length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText('14:35 · 交易日')).toBeInTheDocument();
     expect(screen.getByText('14:25 · 交易日')).toBeInTheDocument();
-    expect(screen.getByText(/低溢价轮动 · 14:35 · 运行中/)).toBeInTheDocument();
-    // 汇总：策略总数 4、信号通知 0/1
-    expect(screen.getByText('4')).toBeInTheDocument();
-    expect(screen.getByText('0/1')).toBeInTheDocument();
-  });
+    // 最近运行（notify 实例带 last_run）
+    expect(screen.getByText('2026-10-16')).toBeInTheDocument();
+    // 汇总卡：实例口径 + 模板数（汇总卡标签与实例状态 Tag 同文案，用 getAll）
+    expect(screen.getByText('策略实例')).toBeInTheDocument();
+    expect(screen.getAllByText('实盘运行中').length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText('策略模板')).toBeInTheDocument();
+    // 仅回测实例提供「去回测」入口（带实例血缘参数）
+    expect(screen.getByRole('link', { name: '去回测' })).toHaveAttribute('href', '/strategy-lab?instance=12');
+    // 展开模板总览折叠区：模板行与能力三态齐全
+    fireEvent.click(screen.getByText(/策略模板总览/));
+    expect(await screen.findByText('双低轮动')).toBeInTheDocument();
+    expect(screen.getAllByText('实盘交易').length).toBeGreaterThanOrEqual(2);
+    expect(screen.getAllByText('仅回测').length).toBeGreaterThanOrEqual(1);
+  }, 15000);
 
-  it('关闭自动实盘开关：提交完整配置 PUT（snake_case 含 schedule_time）', async () => {
+  it('新建策略：抽屉默认模板回填参数，创建提交 POST /configs（snake_case）', async () => {
     renderPanel();
-    await screen.findByText('低溢价轮动');
-    fireEvent.click(screen.getByRole('switch', { name: '自动实盘开关' }));
-    await waitFor(() => expect(client.put).toHaveBeenCalledWith('/api/v1/live-strategy/config', expect.objectContaining({
-      strategy_id: 'low-premium', qmt_account: '135129739', enabled: false, schedule_time: '14:35',
+    await screen.findByText('低溢价主仓'); // 等数据就绪（未就绪时按钮 disabled）
+    fireEvent.click(screen.getByRole('button', { name: '新建策略' }));
+    // 抽屉表单：实例名 + 模板默认参数（low-premium 为首个 order 模板）
+    const nameInput = await screen.findByRole('textbox', { name: '实例名' });
+    fireEvent.change(nameInput, { target: { value: '低溢价小仓' } });
+    fireEvent.change(screen.getByRole('spinbutton', { name: '实例参数-max_positions' }), { target: { value: '5' } });
+    // aria-label「保存策略实例」统一标注创建/更新两个动作，按可见文案断言角色名需用 aria-label
+    fireEvent.click(screen.getByRole('button', { name: '保存策略实例' }));
+    await waitFor(() => expect(client.post).toHaveBeenCalledWith('/api/v1/live-strategy/configs', expect.objectContaining({
+      name: '低溢价小仓', strategy_id: 'low-premium', qmt_account: 'testS', enabled: false,
+      parameters: expect.objectContaining({ max_positions: 5 }),
     })));
-  });
+  }, 15000);
 
-  it('修改自动运行时刻后保存，非法时刻禁用保存', async () => {
+  it('编辑 notify 实例：抽屉回填名称/标的/参数/时刻，保存提交 PUT /configs/{id}，显式规则原样保留', async () => {
     renderPanel();
-    const input = await screen.findByRole('textbox', { name: '自动运行时刻' });
-    // 未变化时保存禁用
-    expect(screen.getByRole('button', { name: '保存时刻' })).toBeDisabled();
-    fireEvent.change(input, { target: { value: '25:99' } });
-    expect(screen.getByRole('button', { name: '保存时刻' })).toBeDisabled();
-    fireEvent.change(input, { target: { value: '14:25' } });
-    fireEvent.click(screen.getByRole('button', { name: '保存时刻' }));
-    await waitFor(() => expect(client.put).toHaveBeenCalledWith('/api/v1/live-strategy/config', expect.objectContaining({
-      schedule_time: '14:25', enabled: true,
+    fireEvent.click(await screen.findByRole('button', { name: '编辑实例-ETF信号通知' }));
+    expect(await screen.findByRole('textbox', { name: '实例名' })).toHaveValue('ETF信号通知');
+    expect(screen.getByRole('textbox', { name: '实例标的' })).toHaveValue('510880');
+    expect(screen.getByRole('textbox', { name: '自动运行时刻' })).toHaveValue('14:25');
+    expect(screen.getByRole('spinbutton', { name: '实例参数-ma_window' })).toHaveValue(20);
+    // 编辑态模板不可换
+    expect(screen.getByRole('combobox', { name: '策略模板' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: '保存策略实例' }));
+    await waitFor(() => expect(client.put).toHaveBeenCalledWith('/api/v1/live-strategy/configs/9', expect.objectContaining({
+      name: 'ETF信号通知', strategy_id: 'signal', enabled: false, symbols: ['510880'],
+      parameters: expect.objectContaining({
+        ma_window: 20, entry_gap_max: 0,
+        // 未占参数面板的结构化键不能在编辑保存时被丢掉
+        entry_rules: [{ factor: 'ma_gap_pct', op: '<', value: 0 }],
+        exit_rules: [{ factor: 'ma_gap_pct', op: '>', value: 7 }],
+      }), schedule_time: '14:25',
     })));
-  });
+  }, 15000);
 
-  it('非实盘策略的操作：order 跳实盘页、仅回测无操作', async () => {
+  it('notify 实例立即运行：POST /configs/{id}/run 并展示运行结果', async () => {
     renderPanel();
-    await screen.findByText('低溢价轮动');
-    expect(screen.getByText('去实盘页配置')).toBeInTheDocument();
-  });
-
-  it('notify 策略：打开信号通知抽屉，保存 PUT /configs/notify，立即运行展示结果', async () => {
-    renderPanel();
-    fireEvent.click(await screen.findByRole('button', { name: '信号通知设置-signal' }));
-    // 抽屉：开关/时刻/标的/参数从已有配置回填
-    expect(await screen.findByRole('switch', { name: '自动通知开关' })).toBeInTheDocument();
-    expect(screen.getByRole('textbox', { name: '通知运行时刻' })).toHaveValue('14:25');
-    expect(screen.getByRole('textbox', { name: '监测标的' })).toHaveValue('510880');
-    expect(screen.getByRole('spinbutton', { name: '通知参数-ma_window' })).toHaveValue(20);
-    // 保存（含参数回填）→ PUT /configs/notify snake_case
-    fireEvent.click(screen.getByRole('button', { name: '保存信号通知配置' }));
-    await waitFor(() => expect(client.put).toHaveBeenCalledWith('/api/v1/live-strategy/configs/notify', expect.objectContaining({
-      strategy_id: 'signal', enabled: false, symbols: ['510880'],
-      parameters: expect.objectContaining({ ma_window: 20, entry_gap_max: 0 }), schedule_time: '14:25',
-    })));
-    // 立即运行 → POST 展示信号消息
-    fireEvent.click(screen.getByRole('button', { name: '立即运行信号通知' }));
-    await waitFor(() => expect(client.post).toHaveBeenCalledWith('/api/v1/live-strategy/configs/9/notify/run'));
+    fireEvent.click(await screen.findByRole('button', { name: '立即运行-ETF信号通知' }));
+    await waitFor(() => expect(client.post).toHaveBeenCalledWith('/api/v1/live-strategy/configs/9/run'));
     expect(await screen.findByText(/买入信号/)).toBeInTheDocument();
     expect(screen.getByText('飞书已发送')).toBeInTheDocument();
-  });
+  }, 15000);
 });

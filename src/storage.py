@@ -764,6 +764,9 @@ class StrategyLabRun(Base):
     benchmark_symbol = Column(String(32))
     benchmark_return_pct = Column(Float)
     portfolio_account_id = Column(Integer, ForeignKey('portfolio_accounts.id'), nullable=True, index=True)
+    # 策略实例血缘：从「策略管理/实验室」实例发起的回测记录来源实例；
+    # ad-hoc 回测为空。实例硬删后不做级联，展示层按 strategy_id 兜底
+    instance_id = Column(Integer, nullable=True, index=True)
     parameters_json = Column(Text)
     symbols_json = Column(Text)
     equity_curve_json = Column(Text)
@@ -1125,12 +1128,17 @@ class QmtPosition(Base):
 
 
 class LiveStrategyConfig(Base):
-    """Persisted configuration for the single-account live strategy instance."""
+    """策略实例：模板（strategy_id 指向注册表）+ 参数 + 标的 + 调度。
+
+    live_mode（order 下单 / notify 信号通知 / None 仅回测）由注册表元数据
+    派生，不落库；qmt_account 仅 order 实例使用，其余以 '-' 占位。
+    """
 
     __tablename__ = 'live_strategy_configs'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(100), nullable=False, default='default')
+    description = Column(String(500))
     strategy_id = Column(String(64), nullable=False, default='double-low')
     strategy_version = Column(String(64), nullable=False, default='v1')
     qmt_account = Column(String(64), nullable=False)
@@ -1863,6 +1871,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             self._ensure_decision_signal_profile_schema()
             self._ensure_strategy_lab_and_stock_type_columns()
             self._ensure_live_trading_columns()
+            self._migrate_lab_presets_to_strategy_instances()
             self._ensure_intelligence_item_scope_values()
             self._ensure_schema_migration_record()
             self._ensure_intelligence_items_unique_index()
@@ -1905,7 +1914,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                 if name not in run_columns:
                     conn.execute(text(f"ALTER TABLE live_strategy_runs ADD COLUMN {name} {ddl}"))
             config_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(live_strategy_configs)"))}
-            for name, ddl in {"rebalance_frequency_days": "INTEGER DEFAULT 1", "event_check_enabled": "BOOLEAN DEFAULT 1", "data_sync_before_run": "BOOLEAN DEFAULT 1", "last_trading_day_exit_enabled": "BOOLEAN DEFAULT 1", "last_trading_day_exit_buffer_days": "INTEGER DEFAULT 1", "schedule_time": "VARCHAR(5) DEFAULT '14:35'"}.items():
+            for name, ddl in {"rebalance_frequency_days": "INTEGER DEFAULT 1", "event_check_enabled": "BOOLEAN DEFAULT 1", "data_sync_before_run": "BOOLEAN DEFAULT 1", "last_trading_day_exit_enabled": "BOOLEAN DEFAULT 1", "last_trading_day_exit_buffer_days": "INTEGER DEFAULT 1", "schedule_time": "VARCHAR(5) DEFAULT '14:35'", "description": "VARCHAR(500)"}.items():
                 if name not in config_columns:
                     conn.execute(text(f"ALTER TABLE live_strategy_configs ADD COLUMN {name} {ddl}"))
 
@@ -1963,6 +1972,8 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             (StrategyLabRunMetric.__tablename__, "profit_periods", "INTEGER"),
             (StrategyLabRunMetric.__tablename__, "loss_periods", "INTEGER"),
             (StrategyLabRunMetric.__tablename__, "benchmark_metrics_json", "TEXT"),
+            # 策略实例血缘（实例发起的回测记录来源实例，可空）
+            (StrategyLabRun.__tablename__, "instance_id", "INTEGER"),
         ]
         for table_name, column_name, ddl in migrations:
             if not inspector.has_table(table_name):
@@ -1999,6 +2010,55 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                 "CREATE INDEX IF NOT EXISTS ix_strategy_lab_sync_runs_cancel_requested "
                 "ON strategy_lab_sync_runs (cancel_requested)"
             )
+            connection.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_strategy_lab_run_instance_id "
+                "ON strategy_lab_runs (instance_id)"
+            )
+
+    def _migrate_lab_presets_to_strategy_instances(self) -> None:
+        """实验室旧「保存配置」presets 一次性拷贝为策略实例（copy 不删，幂等）。
+
+        统一模板/实例产品模型后的数据迁移：preset（name + strategy_id +
+        parameters + symbols）逐行拷贝为未启用实例（qmt_account 以 '-' 占位）。
+        同名同模板实例已存在则跳过，重复 init 无副作用；旧表保留为只读历史，
+        回滚后旧 UI 仍可读。单行失败仅告警、不影响其余行与其余启动流程。
+        """
+        try:
+            with self._SessionLocal() as session:
+                presets = session.execute(select(StrategyLabStrategyConfig)).scalars().all()
+                if not presets:
+                    return
+                existing = set(
+                    session.execute(select(LiveStrategyConfig.name, LiveStrategyConfig.strategy_id)).all()
+                )
+                migrated = 0
+                for preset in presets:
+                    key = (preset.name, preset.strategy_id)
+                    if key in existing:
+                        continue
+                    try:
+                        # 先验 JSON 完整性，损坏行留在旧表不迁移（避免毒化实例列表）
+                        json.loads(preset.parameters_json or "null")
+                        json.loads(preset.symbols_json or "null")
+                        session.add(LiveStrategyConfig(
+                            name=preset.name,
+                            description=preset.description,
+                            strategy_id=preset.strategy_id,
+                            qmt_account="-",
+                            enabled=False,
+                            symbols_json=preset.symbols_json,
+                            parameters_json=preset.parameters_json,
+                        ))
+                        session.commit()
+                        existing.add(key)
+                        migrated += 1
+                    except Exception as exc:
+                        session.rollback()
+                        logger.warning("实验室配置 %s(%s) 迁移为策略实例失败: %s", preset.name, preset.strategy_id, exc)
+                if migrated:
+                    logger.info("已将 %s 条实验室保存配置迁移为策略实例（默认未启用）", migrated)
+        except Exception as exc:
+            logger.warning("实验室配置迁移为策略实例被跳过: %s", exc)
 
     def _ensure_decision_signal_profile_schema(self) -> None:
         """Add and backfill nullable decision_profile for existing SQLite DBs."""
