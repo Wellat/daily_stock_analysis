@@ -122,7 +122,9 @@ class SignalParams:
             "ma_gap_pct", "<", SignalParams._scalar(parameters, "entry_gap_max", 0.0, minimum=-100.0)
         )]
         dividend_min = SignalParams._scalar(parameters, "dividend_yield_min", None, minimum=-100.0)
-        if dividend_min is not None:
+        # 股息率过滤 0=关闭（与本仓库 stop_loss_pct / account_capital 等口径一致）：
+        # 股息率当前无数据源，0 值默认若激活过滤会让买入规则持续不成立。
+        if dividend_min is not None and float(dividend_min) > 0:
             rules.append(SignalRule("dividend_yield", ">", dividend_min))
         return rules
 

@@ -1756,11 +1756,14 @@ class DataFetcherManager:
         # Normalize code (strip SH/SZ prefix etc.)
         stock_code = normalize_stock_code(stock_code)
 
-        from .akshare_fetcher import _is_us_code
+        from .akshare_fetcher import _is_etf_code, _is_us_code
         from .us_index_mapping import is_us_index_code
         from src.config import get_config
 
         config = get_config()
+
+        # ETF 补字段只看量比/换手/振幅（无 PE/PB/市值），首个源给齐即返回
+        is_etf = _is_etf_code(stock_code)
 
         # 如果实时行情功能被禁用，直接返回 None
         if not config.enable_realtime_quote:
@@ -1922,7 +1925,7 @@ class DataFetcherManager:
                         operation="get_realtime_quote",
                         success=True,
                         latency_ms=int((time.time() - attempt_start) * 1000),
-                        fallback_to=fallback_to if primary_quote is None and self._quote_needs_supplement(quote) else None,
+                        fallback_to=fallback_to if primary_quote is None and self._quote_needs_supplement(quote, etf=is_etf) else None,
                         record_count=1,
                     )
                     if primary_quote is None:
@@ -1931,7 +1934,7 @@ class DataFetcherManager:
                         primary_fallback_from = failed_sources[0] if failed_sources else None
                         logger.info(f"[实时行情] {stock_code} 成功获取 (来源: {source})")
                         # If all key supplementary fields are present, return early
-                        if not self._quote_needs_supplement(primary_quote):
+                        if not self._quote_needs_supplement(primary_quote, etf=is_etf):
                             return self._enrich_realtime_quote(
                                 primary_quote,
                                 fallback_from=primary_fallback_from,
@@ -1946,11 +1949,11 @@ class DataFetcherManager:
                         if supplement_attempts > 1:
                             logger.debug(f"[实时行情] {stock_code} 补充尝试已达上限，停止继续")
                             break
-                        merged = self._merge_quote_fields(primary_quote, quote)
+                        merged = self._merge_quote_fields(primary_quote, quote, etf=is_etf)
                         if merged:
                             logger.info(f"[实时行情] {stock_code} 从 {source} 补充了缺失字段: {merged}")
                         # Stop supplementing once all key fields are filled
-                        if not self._quote_needs_supplement(primary_quote):
+                        if not self._quote_needs_supplement(primary_quote, etf=is_etf):
                             break
                 else:
                     record_provider_run(
@@ -2010,23 +2013,30 @@ class DataFetcherManager:
         'pe_ratio', 'pb_ratio', 'total_mv', 'circ_mv',
         'amplitude',
     ]
+    # ETF 无 PE/PB/市值字段（任何源都补不上），补字段只看这三项——
+    # 否则首个源成功后仍会对后续源发起注定失败的补充请求（东财断连时
+    # 每只 ETF 白等约 30s 重试超时）
+    _ETF_SUPPLEMENT_FIELDS = [
+        'volume_ratio', 'turnover_rate',
+        'amplitude',
+    ]
 
     @classmethod
-    def _quote_needs_supplement(cls, quote) -> bool:
+    def _quote_needs_supplement(cls, quote, *, etf: bool = False) -> bool:
         """Check if any key supplementary field is still None."""
-        for f in cls._SUPPLEMENT_FIELDS:
+        for f in (cls._ETF_SUPPLEMENT_FIELDS if etf else cls._SUPPLEMENT_FIELDS):
             if getattr(quote, f, None) is None:
                 return True
         return False
 
     @classmethod
-    def _merge_quote_fields(cls, primary, secondary) -> list:
+    def _merge_quote_fields(cls, primary, secondary, *, etf: bool = False) -> list:
         """
         Copy non-None fields from *secondary* into *primary* where
         *primary* has None. Returns list of field names that were filled.
         """
         filled = []
-        for f in cls._SUPPLEMENT_FIELDS:
+        for f in (cls._ETF_SUPPLEMENT_FIELDS if etf else cls._SUPPLEMENT_FIELDS):
             if getattr(primary, f, None) is None:
                 val = getattr(secondary, f, None)
                 if val is not None:

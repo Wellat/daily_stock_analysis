@@ -60,7 +60,7 @@ def _signal_strategy_entry() -> Dict[str, Any]:
         {"key": "ma_window", "label": "均线窗口(日)", "type": "integer", "default": 182, "min": 2},
         {"key": "roc_window", "label": "涨跌幅窗口(日)", "type": "integer", "default": 20, "min": 1},
         {"key": "entry_gap_max", "label": "买入乖离率上限(%)", "type": "number", "default": 0, "min": -100},
-        {"key": "dividend_yield_min", "label": "买入股息率下限(%)", "type": "number", "default": 0, "min": 0},
+        {"key": "dividend_yield_min", "label": "买入股息率下限（0=关闭）", "type": "number", "default": 0, "min": 0},
         {"key": "exit_gap_min", "label": "卖出乖离率下限(%)", "type": "number", "default": 7, "min": -100},
         {"key": "max_position_pct", "label": "单标的最大仓位(%)", "type": "number", "default": 100, "min": 1, "max": 100},
         {"key": "commission", "label": "单边手续费率", "type": "number", "default": 0.0002, "min": 0},

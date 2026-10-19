@@ -947,6 +947,16 @@ class AkshareFetcher(BaseFetcher):
         elif _is_hk_code(stock_code):
             return self._get_hk_realtime_quote(stock_code)
         elif _is_etf_code(stock_code):
+            # ETF 行情源必须尊重 source 参数：此前无论配置腾讯/新浪一律落到
+            # _get_etf_realtime_quote（东财 fund_etf_spot_em），东财断连时整条
+            # fallback 链全部打到同一死接口。腾讯直连（qt.gtimg.cn）对 ETF 同样
+            # 适用；新浪全量接口不覆盖 ETF，维持东财一路不变。
+            if source == "tencent":
+                source_key = "akshare_tencent"
+                if not circuit_breaker.is_available(source_key):
+                    logger.info(f"[熔断] 数据源 {source_key} 处于熔断状态，跳过")
+                    return None
+                return self._get_stock_realtime_quote_tencent(stock_code)
             source_key = "akshare_etf"
             if not circuit_breaker.is_available(source_key):
                 logger.info(f"[熔断] 数据源 {source_key} 处于熔断状态，跳过")

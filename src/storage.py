@@ -1038,6 +1038,8 @@ class StrategyLabStrategyConfig(Base):
     instrument_type = Column(String(32), nullable=False, default='convertible_bond', index=True)
     parameters_json = Column(Text)
     symbols_json = Column(Text)
+    # 一次性迁移标记：置位后该行不再拷贝为策略实例（实例删除不复活）
+    migrated_to_instance = Column(Boolean, nullable=False, default=False, server_default="0")
     created_at = Column(DateTime, default=datetime.now, index=True)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, index=True)
 
@@ -1974,6 +1976,8 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             (StrategyLabRunMetric.__tablename__, "benchmark_metrics_json", "TEXT"),
             # 策略实例血缘（实例发起的回测记录来源实例，可空）
             (StrategyLabRun.__tablename__, "instance_id", "INTEGER"),
+            # presets 一次性迁移标记（旧表行级，置位后不再拷贝为实例）
+            (StrategyLabStrategyConfig.__tablename__, "migrated_to_instance", "BOOLEAN NOT NULL DEFAULT 0"),
         ]
         for table_name, column_name, ddl in migrations:
             if not inspector.has_table(table_name):
@@ -2016,47 +2020,51 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             )
 
     def _migrate_lab_presets_to_strategy_instances(self) -> None:
-        """实验室旧「保存配置」presets 一次性拷贝为策略实例（copy 不删，幂等）。
+        """实验室旧「保存配置」presets 一次性拷贝为策略实例（每行只迁一次）。
 
         统一模板/实例产品模型后的数据迁移：preset（name + strategy_id +
         parameters + symbols）逐行拷贝为未启用实例（qmt_account 以 '-' 占位）。
-        同名同模板实例已存在则跳过，重复 init 无副作用；旧表保留为只读历史，
-        回滚后旧 UI 仍可读。单行失败仅告警、不影响其余行与其余启动流程。
+        每行带 migrated_to_instance 标记——拷贝成功、或同名同模板实例已存在
+        （历史迁移过的回填）都置标记，之后不再处理：用户删除实例不会在下次
+        重启时被复活。旧表保留为只读历史，回滚后旧 UI 仍可读。单行失败仅
+        告警（标记不置位，数据修好后下次启动重试）、不影响其余启动流程。
         """
         try:
             with self._SessionLocal() as session:
                 presets = session.execute(select(StrategyLabStrategyConfig)).scalars().all()
-                if not presets:
+                pending = [p for p in presets if not getattr(p, "migrated_to_instance", False)]
+                if not pending:
                     return
                 existing = set(
                     session.execute(select(LiveStrategyConfig.name, LiveStrategyConfig.strategy_id)).all()
                 )
-                migrated = 0
-                for preset in presets:
+                copied = flagged = 0
+                for preset in pending:
                     key = (preset.name, preset.strategy_id)
-                    if key in existing:
-                        continue
                     try:
-                        # 先验 JSON 完整性，损坏行留在旧表不迁移（避免毒化实例列表）
-                        json.loads(preset.parameters_json or "null")
-                        json.loads(preset.symbols_json or "null")
-                        session.add(LiveStrategyConfig(
-                            name=preset.name,
-                            description=preset.description,
-                            strategy_id=preset.strategy_id,
-                            qmt_account="-",
-                            enabled=False,
-                            symbols_json=preset.symbols_json,
-                            parameters_json=preset.parameters_json,
-                        ))
+                        if key not in existing:
+                            # 先验 JSON 完整性，损坏行留在旧表不迁移（避免毒化实例列表）
+                            json.loads(preset.parameters_json or "null")
+                            json.loads(preset.symbols_json or "null")
+                            session.add(LiveStrategyConfig(
+                                name=preset.name,
+                                description=preset.description,
+                                strategy_id=preset.strategy_id,
+                                qmt_account="-",
+                                enabled=False,
+                                symbols_json=preset.symbols_json,
+                                parameters_json=preset.parameters_json,
+                            ))
+                            existing.add(key)
+                            copied += 1
+                        preset.migrated_to_instance = True
                         session.commit()
-                        existing.add(key)
-                        migrated += 1
+                        flagged += 1
                     except Exception as exc:
                         session.rollback()
                         logger.warning("实验室配置 %s(%s) 迁移为策略实例失败: %s", preset.name, preset.strategy_id, exc)
-                if migrated:
-                    logger.info("已将 %s 条实验室保存配置迁移为策略实例（默认未启用）", migrated)
+                if copied or flagged:
+                    logger.info("实验室保存配置迁移完成：新建实例 %s 条，标记已处理 %s 条", copied, flagged)
         except Exception as exc:
             logger.warning("实验室配置迁移为策略实例被跳过: %s", exc)
 

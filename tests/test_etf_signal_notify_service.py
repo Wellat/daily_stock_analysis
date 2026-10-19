@@ -241,6 +241,50 @@ def test_instance_explicit_rules_survive_into_signal_params(notify_env):
     assert sp.ma_window == 210
 
 
+def test_dividend_zero_does_not_block_notify_entry(notify_env):
+    """dividend_yield_min=0=关闭：管理页按模板默认创建的信号实例（带 0 值）
+    买入信号不再被无数据源的股息率条件永久堵死。"""
+    dates = _weekdays_before(TRADE_DATE, 75)
+    _seed_etf_history(notify_env, "510880", [100.0] * 75, dates)
+    config_id = _make_notify_config(notify_env, parameters={
+        "ma_window": 5, "roc_window": 3, "entry_gap_max": 0, "exit_gap_min": 7,
+        "dividend_yield_min": 0,
+    })
+
+    service = EtfSignalNotifyService(notify_env)
+    service.notifier = _Notifier()
+    service._fetcher = _Fetcher(_Quote(price=99.0, pre_close=100.0, change_pct=-1.0))
+
+    result = service.run(config_id=config_id, trade_date=TRADE_DATE)
+    signals = {s["symbol"]: s for s in result["signals"]}
+    assert signals["510880"]["signal"] == "buy"
+
+
+def test_notify_message_lists_only_effective_params(notify_env):
+    """通知「参数」行只显示当前规则实际引用的参数，不再罗列 macd_* / roc_window 等无关字段。"""
+    with notify_env.get_session() as session:
+        cfg_signal = LiveStrategyConfig(name="均线信号", qmt_account="-", strategy_id="signal", enabled=True,
+                                        symbols_json='["510880"]',
+                                        parameters_json='{"ma_window": 210, "roc_window": 20}')
+        cfg_macd = LiveStrategyConfig(name="MACD信号", qmt_account="-", strategy_id="signal_macd", enabled=True,
+                                      symbols_json='["510880"]',
+                                      parameters_json='{"macd_fast": 12, "macd_slow": 34, "macd_signal": 5}')
+        session.add_all([cfg_signal, cfg_macd])
+        session.commit()
+        signal_id, macd_id = cfg_signal.id, cfg_macd.id
+    service = EtfSignalNotifyService(notify_env)
+    with notify_env.get_session() as session:
+        cfg_signal = session.get(LiveStrategyConfig, signal_id)
+        cfg_macd = session.get(LiveStrategyConfig, macd_id)
+        msg_signal = service._build_message(cfg_signal, EtfSignalNotifyService._signal_params(cfg_signal), TRADE_DATE, [])
+        msg_macd = service._build_message(cfg_macd, EtfSignalNotifyService._signal_params(cfg_macd), TRADE_DATE, [])
+
+    assert "ma_window=210" in msg_signal
+    assert "macd_slow" not in msg_signal and "roc_window" not in msg_signal
+    assert "macd_slow=34" in msg_macd and "macd_signal=5" in msg_macd
+    assert "ma_window" not in msg_macd
+
+
 def test_instance_validations_and_order_semantics(notify_env):
     """实例校验 + order 语义：get_config 不被 notify 行抢占。"""
     service = LiveStrategyService(notify_env)

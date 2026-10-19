@@ -1,5 +1,5 @@
 {
-  "generated": "2026-10-17",
+  "generated": "2026-10-18",
   "grid": {
     "ma_windows": [
       20,
@@ -110,21 +110,21 @@
           "start": "2024-04-25",
           "end": "2026-10-16",
           "label": "全区间 2024~2026",
-          "batch_id": 5,
+          "batch_id": 12,
           "n_days": 599
         },
         "C_early": {
           "start": "2024-04-25",
           "end": "2025-07-18",
           "label": "前半段（早期）",
-          "batch_id": 6,
+          "batch_id": 13,
           "n_days": 299
         },
         "B_recent": {
           "start": "2025-07-21",
           "end": "2026-10-16",
           "label": "后半段（近期）",
-          "batch_id": 7,
+          "batch_id": 14,
           "n_days": 300
         }
       }
@@ -140,21 +140,21 @@
           "start": "2023-12-08",
           "end": "2026-10-16",
           "label": "全区间 2023~2026",
-          "batch_id": 8,
+          "batch_id": 15,
           "n_days": 689
         },
         "C_early": {
           "start": "2023-12-08",
           "end": "2025-05-15",
           "label": "前半段（早期）",
-          "batch_id": 9,
+          "batch_id": 16,
           "n_days": 344
         },
         "B_recent": {
           "start": "2025-05-16",
           "end": "2026-10-16",
           "label": "后半段（近期）",
-          "batch_id": 10,
+          "batch_id": 17,
           "n_days": 345
         }
       }

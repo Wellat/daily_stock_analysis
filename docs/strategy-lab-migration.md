@@ -534,7 +534,7 @@ cd apps/dsa-desktop && npm install && npm run build
 
 ### 15.6 已知边界
 
-- 股息率数据源未接入（用户已决策暂缓）：加了 `dividend_yield > 3` 条件的策略将持续空仓，属预期行为（诊断与表单双重提示）；后续接入按「ETF→跟踪指数映射 + funddb 指数股息率」方案另行落地。
+- 股息率数据源未接入（用户已决策暂缓）：加了 `dividend_yield > 3` 条件的策略将持续空仓，属预期行为（诊断与表单双重提示）；`dividend_yield_min` 语义与本仓库「0=关闭」口径一致——仅正数阈值激活该过滤，0 值（含管理页按模板默认创建信号实例时带入的默认 0）不再堵死买入规则；后续接入按「ETF→跟踪指数映射 + funddb 指数股息率」方案另行落地。
 - ETF 名称富化二期（v1 交易表显示代码）；腾讯兜底为 qfq 前复权口径（仅冷启动使用，source 列可甄别）。
 
 ### 15.6 实盘信号通知已接入（2026-10，`live_mode=notify`）
@@ -559,7 +559,7 @@ cd apps/dsa-desktop && npm install && npm run build
 
 ### 16.3 presets 迁移与旧机制下线
 
-- 启动时 `_migrate_lab_presets_to_strategy_instances()`：遍历 `strategy_lab_strategy_configs`，同名同模板实例不存在则拷贝为未启用实例（qmt_account='-'）。**copy 不删**：旧表保留为只读历史（回滚后旧数据完整）；幂等（重复 init 跳过）；JSON 损坏行保留旧表、仅告警（避免毒化实例列表）。
+- 启动时 `_migrate_lab_presets_to_strategy_instances()`：遍历 `strategy_lab_strategy_configs`，**每行只迁移一次**（`migrated_to_instance` 标记）——拷贝成功、或同名同模板实例已存在（存量库升级回填）都置标记，之后该行永不再处理，用户删除实例不会在重启时被复活。**copy 不删**：旧表保留为只读历史（回滚后旧数据完整）；JSON 损坏行保留旧表、仅告警（标记不置位，数据修好后下次启动重试）。
 - `/strategy-lab/configs` 四个端点、schema 与 `config_repo` 移除；实验室「保存配置」改为创建实例、「加载已保存配置」改为「加载策略实例」。
 
 ### 16.4 回测血缘与页面联动

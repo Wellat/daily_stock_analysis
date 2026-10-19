@@ -82,6 +82,46 @@ def test_migration_copies_presets_once(tmp_path):
     assert len(_instances(db)) == 2
     with _manager(db).get_session() as session:
         assert len(session.execute(select(StrategyLabStrategyConfig)).scalars().all()) == 2
+
+    # 一次性标记：用户删除实例后重启不再复活（回归：按同名去重的旧语义
+    # 会让迁移器在每次重启时用旧 preset 重建被删实例）
+    with _manager(db).get_session() as session:
+        victim = next(r for r in session.execute(select(LiveStrategyConfig)).scalars()
+                      if r.name == "红利ETF回归")
+        session.delete(victim)
+        session.commit()
+    DatabaseManager.reset_instance()
+    DatabaseManager(db_url=f"sqlite:///{db_file}")
+    assert [r.name for r in _instances(db)] == ["双低小仓"]
+    DatabaseManager.reset_instance()
+
+
+def test_migration_flags_presets_with_existing_instance_without_copy(tmp_path):
+    """同名同模板实例已存在的 preset 只回填标记、不重复拷贝（存量库升级路径）。"""
+    db_file = tmp_path / "backfill.db"
+    DatabaseManager.reset_instance()
+    db = DatabaseManager(db_url=f"sqlite:///{db_file}")
+    with db.get_session() as session:
+        session.add(StrategyLabStrategyConfig(
+            config_uid="preset-1", name="红利ETF·MA210", strategy_id="signal",
+            parameters_json='{"ma_window": 210}', symbols_json='["510880"]'))
+        session.add(LiveStrategyConfig(name="红利ETF·MA210", strategy_id="signal",
+                                       qmt_account="-", enabled=False,
+                                       symbols_json='["510880"]',
+                                       parameters_json='{"ma_window": 210}'))
+        session.commit()
+    DatabaseManager.reset_instance()
+
+    DatabaseManager(db_url=f"sqlite:///{db_file}")
+    # 只回填标记：不新建、不重复
+    assert len(_instances(db)) == 1
+    # 删除实例后重启同样不复活
+    with _manager(db).get_session() as session:
+        session.delete(session.execute(select(LiveStrategyConfig)).scalars().first())
+        session.commit()
+    DatabaseManager.reset_instance()
+    DatabaseManager(db_url=f"sqlite:///{db_file}")
+    assert _instances(db) == []
     DatabaseManager.reset_instance()
 
 

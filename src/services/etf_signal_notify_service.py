@@ -33,6 +33,32 @@ def _normalize_symbol(symbol: str) -> str:
     return str(symbol).strip().lower().split(".")[-1]
 
 
+# 因子 → 计算该因子实际依赖的策略参数；通知「参数」行只展示生效参数，
+# 不再罗列与当前规则无关的窗口（如 signal 策略显示 macd_* 全家桶）。
+_FACTOR_PARAM_KEYS = {
+    "ma_gap_pct": ("ma_window",),
+    "roc_pct": ("roc_window",),
+    "macd_dif": ("macd_fast", "macd_slow", "macd_signal"),
+    "macd_dea": ("macd_fast", "macd_slow", "macd_signal"),
+    "macd_hist": ("macd_fast", "macd_slow", "macd_signal"),
+    "macd_cross": ("macd_fast", "macd_slow", "macd_signal"),
+}
+
+
+def _effective_param_summary(sp: SignalParams) -> str:
+    active_factors = {r.factor for r in [*sp.entry_rules, *sp.exit_rules]}
+    keys = [
+        key for key in ("ma_window", "roc_window", "macd_fast", "macd_slow", "macd_signal")
+        if any(key in _FACTOR_PARAM_KEYS.get(factor, ()) for factor in active_factors)
+    ]
+    parts = [f"{k}={getattr(sp, k)}" for k in keys]
+    # 股息率阈值不在 SignalParams 字段里，值就是规则本身
+    dividend_rule = next((r for r in sp.entry_rules if r.factor == "dividend_yield"), None)
+    if dividend_rule is not None:
+        parts.append(f"dividend_yield_min={dividend_rule.value:g}")
+    return ", ".join(parts)
+
+
 class EtfSignalNotifyService:
     """对 live_mode=notify 的 ETF 信号策略做每日信号评估与飞书通知。"""
 
@@ -194,9 +220,7 @@ class EtfSignalNotifyService:
         name = next((s["name"] for s in list_builtin_strategies() if s["strategy_id"] == config.strategy_id),
                     config.strategy_id)
         lines = [f"ETF 信号通知 · {trade_date.isoformat()}", f"策略：{name}"]
-        summary = ", ".join(f"{k}={getattr(sp, k)}" for k in ("ma_window", "roc_window",
-                     "macd_fast", "macd_slow", "macd_signal")
-                     if getattr(sp, k, None))
+        summary = _effective_param_summary(sp)
         if summary:
             lines.append(f"参数：{summary}")
         for item in results:
@@ -320,10 +344,8 @@ class EtfSignalNotifyService:
         saved = json.loads(config.parameters_json or "{}")
         params = dict(defaults)
         params.update(saved)
-        # 股息率当前无数据源（列为预留）：元数据默认值不得凭空引入该规则，
-        # 仅当用户显式保存过才参与（与 SignalParams 的 None 缺省语义对齐）
-        if "dividend_yield_min" not in saved:
-            params.pop("dividend_yield_min", None)
+        # 股息率过滤 0=关闭由 SignalParams 引擎层保证（无数据源时 >0 阈值
+        # 仍会让买入规则持续不成立，属文档已记的已知边界）。
         # MACD 变体的默认规则（金叉买/死叉卖）为服务端注入，不占参数面板
         if config.strategy_id == "signal_macd":
             params.setdefault("default_rules", "macd_cross")

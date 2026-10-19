@@ -119,6 +119,39 @@ def test_manager_does_not_warn_when_fallback_source_succeeds(mock_get_config, ca
 
 
 @patch("src.config.get_config")
+def test_manager_etf_quote_returns_early_without_stock_supplements(mock_get_config):
+    """ETF 无 PE/PB/市值（任何源都补不上）：量比/换手/振幅拿齐即返回，
+    不再对后续源发起注定失败的补充请求（东财断连时每只 ETF 白等 ~30s）。"""
+    mock_get_config.return_value = SimpleNamespace(
+        enable_realtime_quote=True,
+        realtime_source_priority="tencent,efinance",
+    )
+    etf_quote = _make_quote(
+        code="513630", name="港股低波红利ETF摩根", source=RealtimeSource.TENCENT,
+        volume_ratio=0.55, turnover_rate=1.15, amplitude=1.2,
+    )
+    calls: list[str] = []
+
+    class _SpyFetcher(_DummyFetcher):
+        def get_realtime_quote(self, *args, **kwargs):
+            calls.append(self.name)
+            return super().get_realtime_quote(*args, **kwargs)
+
+    manager = DataFetcherManager(
+        fetchers=[
+            _SpyFetcher("AkshareFetcher", 0, result=etf_quote),
+            _SpyFetcher("EfinanceFetcher", 1, result=_make_quote(code="513630")),
+        ]
+    )
+
+    quote = manager.get_realtime_quote("513630")
+
+    assert quote is etf_quote
+    assert quote.pe_ratio is None  # ETF 本就没有估值字段，但不触发补充
+    assert calls == ["AkshareFetcher"]
+
+
+@patch("src.config.get_config")
 def test_manager_supplement_does_not_mark_fallback_from(mock_get_config):
     mock_get_config.return_value = SimpleNamespace(
         enable_realtime_quote=True,

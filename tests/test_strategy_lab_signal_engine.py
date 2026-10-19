@@ -90,6 +90,16 @@ class TestSignalSemantics:
         assert result.metrics.diagnostics["factor_coverage_pct"]["dividend_yield"] == 0.0
         assert result.final_equity == pytest.approx(100000.0)
 
+    def test_dividend_filter_disabled_at_zero(self):
+        # 0=关闭（与本仓库 stop_loss_pct 等口径一致）：默认买入规则不含股息率条件，
+        # 无数据源也不堵死买入；正数阈值才激活过滤
+        sp = SignalParams.from_parameters({"dividend_yield_min": 0})
+        assert [r.factor for r in sp.entry_rules] == ["ma_gap_pct"]
+        sp_active = SignalParams.from_parameters({"dividend_yield_min": 3.0})
+        assert [r.factor for r in sp_active.entry_rules] == ["ma_gap_pct", "dividend_yield"]
+        result = SignalEngine(ROWS).run(_config({"ma_window": 10, "dividend_yield_min": 0}))
+        assert result.trades, "dividend_yield_min=0 不应堵死买入"
+
     def test_dividend_yield_rule_fires_when_data_present(self):
         # 数据落库后规则即刻生效：前半段股息率 2%（不满足），后半段 4%（满足）
         yields = [2.0] * 35 + [4.0] * 25

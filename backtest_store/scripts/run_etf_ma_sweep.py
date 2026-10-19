@@ -32,7 +32,7 @@ INITIAL_CASH = 100000.0
 BENCHMARK = "buy_hold"
 
 
-def run_batch(service: StrategyLabBatchService, win: dict) -> dict:
+def run_batch(service: StrategyLabBatchService, win: dict, symbols: list | None = None) -> dict:
     base_config = {
         "strategy_id": "signal",
         "market": "cn",
@@ -41,7 +41,7 @@ def run_batch(service: StrategyLabBatchService, win: dict) -> dict:
         "end_date": win["end"],
         "initial_cash": INITIAL_CASH,
         "benchmark_symbol": BENCHMARK,
-        "symbols": SYMBOLS,
+        "symbols": symbols or SYMBOLS,
         "parameters": {},  # 缺省构建 入<0/出>7，网格只覆盖 ma_window
     }
     payload = service.create_batch(

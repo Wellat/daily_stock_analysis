@@ -94,7 +94,7 @@ def main() -> None:
         for key in ["A_full", "C_early", "B_recent"]:
             win = info["windows"][key]
             print(f"启动批次：{symbol} {win['label']}（{win['start']} ~ {win['end']}），{len(MA_WINDOWS)} 组 ...")
-            payload = run_batch(service, win)
+            payload = run_batch(service, win, symbols=[symbol])
             win["batch_id"] = int(payload["id"])
             win["n_days"] = count_days(symbol, win["start"], win["end"])
             print_summary(service, win["batch_id"], f"{symbol} {win['label']}")
