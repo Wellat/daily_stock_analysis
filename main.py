@@ -733,6 +733,13 @@ def run_full_analysis(
     # existing run_full_analysis return-value semantics.
     portfolio_stock_codes = _resolve_portfolio_stock_codes(args)
     portfolio_is_empty = portfolio_stock_codes == []
+    # STOCK_ANALYSIS_ENABLED=false 仅暂停配置驱动的运行（定时任务/立即运行）；
+    # --stocks / --portfolio 显式指定的临时分析不受影响。
+    pause_stock_analysis = (
+        stock_codes is None
+        and portfolio_stock_codes is None
+        and not getattr(config, 'stock_analysis_enabled', True)
+    )
     market_review_requested = (
         getattr(config, 'market_review_enabled', False)
         and not getattr(args, 'no_market_review', False)
@@ -862,7 +869,10 @@ def run_full_analysis(
             )
 
         # 1. 运行个股分析
-        if skip_futu_stock_analysis:
+        if pause_stock_analysis:
+            logger.info("个股分析已暂停（STOCK_ANALYSIS_ENABLED=false），本轮仅执行大盘复盘。")
+            results = []
+        elif skip_futu_stock_analysis:
             if portfolio_is_empty:
                 logger.info("真实账户中无符合条件的 Futu 持仓，跳过个股分析。")
             else:

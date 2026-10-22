@@ -541,6 +541,8 @@ cd apps/dsa-desktop && npm install && npm run build
 
 `signal` / `signal_macd` 的实盘信号通知已落地（此前「规划接入中」）：交易日按各行 `schedule_time` 由 runtime scheduler 触发 `EtfSignalNotifyService`，评估配置标的的进出场规则并直发飞书群机器人（复用 `FEISHU_WEBHOOK_URL`），每日汇总必发、不下单。当日 bar 由实时行情折算后复权口径拼接（优先 `现价/pre_close`、缺省用涨跌幅，皆缺或历史过期则该标的标注跳过）；信号评估与回测同一套 `series_factors` + signal_v1 规则语义；持仓状态从历史信号决策推导。配置入口在「策略管理」页（`PUT /live-strategy/configs/notify` 每策略一行 upsert），链路细节见 `docs/convertible-bond-trading.md` 调度与通知两节。
 
+飞书消息格式（2026-10 起）：卡片标题为「信号通知」；每个标的一行，行首表情标识方向——买入 `🔴📈`、卖出 `🟢📉`、无信号 `⚪️`、行情异常/跳过 `⚠️`，正文含现价（涨跌幅）、生效因子值与持仓状态。
+
 ## 16. 策略模板 / 策略实例产品模型（2026-10）
 
 ### 16.1 两层概念

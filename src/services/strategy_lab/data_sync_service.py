@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import logging
-import json
 import threading
 from datetime import date, timedelta
 import time
@@ -125,14 +124,62 @@ class StrategyLabDataSyncService:
             self.repository.fail_sync_run(_run_id, str(exc))
             raise
 
+    # 飞书同步摘要里各阶段的展示名（未列出的阶段按原 key 展示）
+    _STAGE_LABELS = {
+        "cb_basic": "基础信息",
+        "cb_ohlc": "转债行情",
+        "cb_factors": "因子计算",
+        "portfolio_holdings": "持仓日线",
+    }
+    # 各阶段摘要优先展示的计数字段（取第一个有值的）
+    _STAGE_COUNT_FIELDS = (
+        ("cb_basic_upserted", "更新"),
+        ("cb_factor_upserted", "写入"),
+        ("premium_computed", "计算"),
+        ("stock_daily_rows_new", "新增K线"),
+        ("bonds_total", "标的"),
+    )
+
+    def _build_sync_summary(self, run_kind: str, result: Dict[str, Any], *, success: bool) -> str:
+        kind_label = "盘中" if run_kind == "intraday" else "盘后"
+        duration = result.get("duration_seconds")
+        if isinstance(duration, (int, float)):
+            dur_text = f"（耗时 {duration / 60:.0f} 分钟）" if duration >= 120 else f"（耗时 {duration:.0f}s）"
+        else:
+            dur_text = ""
+        status_icon = "✅" if success else "❌"
+        trade_date = result.get("trade_date") or date.today().isoformat()
+        lines = [f"可转债数据同步 · {trade_date} {kind_label} {status_icon}{dur_text}"]
+        if not success:
+            error = result.get("error")
+            if error:
+                lines.extend(["", f"❗ 错误：{str(error)[:200]}"])
+        for key, stage in result.items():
+            if not isinstance(stage, dict) or key in {"cancelled"}:
+                continue
+            parts = [self._STAGE_LABELS.get(key, key)]
+            if stage.get("cancelled"):
+                parts.append("已取消")
+            failed = stage.get("bonds_failed")
+            if isinstance(failed, list) and failed:
+                parts.append(f"❗失败 {len(failed)}")
+            for count_key, count_label in self._STAGE_COUNT_FIELDS:
+                value = stage.get(count_key)
+                if isinstance(value, (int, float)) and value:
+                    parts.append(f"{count_label} {int(value)}")
+                    break
+            if len(parts) > 1:
+                lines.append(f"• {'：'.join(parts)}")
+        return "\n".join(lines)
+
     def _notify_sync(self, run_kind: str, result: Dict[str, Any], *, success: bool) -> None:
         try:
             config = get_config()
-            if not getattr(config, "cb_sync_notify_email_enabled", True): return
-            from src.notification_sender import EmailSender
-            title = f"可转债{'盘中' if run_kind == 'intraday' else '盘后'}同步{'成功' if success else '失败'}"
+            if not getattr(config, "cb_sync_notify_enabled", True): return
             result.update({"duration_seconds": time.time() - self.task_start_time})
-            EmailSender(config).send_to_email(json.dumps(result, ensure_ascii=False, indent=2), subject=title, timeout_seconds=20)
+            from src.notification import NotificationService
+            message = self._build_sync_summary(run_kind, result, success=success)
+            NotificationService().send_to_feishu(message, title="数据同步")
         except Exception:
             logger.exception("CB sync notification failed")
 

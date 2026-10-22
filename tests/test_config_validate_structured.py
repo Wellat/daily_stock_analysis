@@ -131,6 +131,11 @@ class TestValidateStructuredStockList:
         issues = cfg.validate_structured()
         assert not any(i.field == "STOCK_LIST" for i in issues if i.severity == "error")
 
+    def test_empty_stock_list_allowed_when_stock_analysis_disabled(self):
+        cfg = _make_config(stock_list=[], stock_analysis_enabled=False)
+        issues = cfg.validate_structured()
+        assert not any(i.field == "STOCK_LIST" for i in issues if i.severity == "error")
+
     def test_stock_email_groups_outside_stock_list_is_warning(self):
         cfg = _make_config(
             stock_list=["600519"],

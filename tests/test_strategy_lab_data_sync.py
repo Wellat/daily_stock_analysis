@@ -8,6 +8,7 @@ import pytest
 import sys
 from datetime import date
 from types import SimpleNamespace
+from unittest import mock
 from sqlalchemy import func, select
 import pandas as pd
 
@@ -2100,3 +2101,51 @@ def test_list_cb_factor_inputs_flags_redeem_alert_from_strong_redeem_event(
     inputs = repo.list_cb_factor_inputs(market="cn", trade_date=date(2026, 9, 14))
     flags = {item["bond_code"]: item["redeem_alert"] for item in inputs}
     assert flags == {"113001": True, "113002": False}
+
+
+def test_notify_sync_sends_readable_feishu_summary(
+    db_manager: DatabaseManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """同步通知改发飞书：可读摘要 + 标题「数据同步」，不再发邮件。"""
+    service = StrategyLabDataSyncService(db_manager)
+    # get_config 在模块内 import，直接替换模块属性
+    monkeypatch.setattr("src.services.strategy_lab.data_sync_service.get_config",
+                        lambda: SimpleNamespace(cb_sync_notify_enabled=True))
+
+    result = {
+        "run_kind": "after_close",
+        "trade_date": "2026-10-22",
+        "duration_seconds": 12.3,
+        "cb_ohlc": {"cb_factor_upserted": 473, "bonds_failed": []},
+        "cb_factors": {"premium_computed": 460, "bonds_failed": [{"bond_code": "113099"}]},
+    }
+
+    with mock.patch("src.notification.NotificationService.send_to_feishu", return_value=True) as send:
+        service._notify_sync("after_close", result, success=True)
+
+    send.assert_called_once()
+    message = send.call_args.args[0]
+    assert send.call_args.kwargs.get("title") == "数据同步"
+    assert "可转债数据同步 · 2026-10-22 盘后 ✅" in message
+    assert "• 转债行情：写入 473" in message
+    assert "• 因子计算：❗失败 1" in message
+
+
+def test_notify_sync_respects_disabled_flag_and_reports_failure(
+    db_manager: DatabaseManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = StrategyLabDataSyncService(db_manager)
+
+    monkeypatch.setattr("src.services.strategy_lab.data_sync_service.get_config",
+                        lambda: SimpleNamespace(cb_sync_notify_enabled=False))
+    with mock.patch("src.notification.NotificationService.send_to_feishu", return_value=True) as send:
+        service._notify_sync("intraday", {}, success=True)
+    send.assert_not_called()
+
+    monkeypatch.setattr("src.services.strategy_lab.data_sync_service.get_config",
+                        lambda: SimpleNamespace(cb_sync_notify_enabled=True))
+    with mock.patch("src.notification.NotificationService.send_to_feishu", return_value=True) as send:
+        service._notify_sync("intraday", {"error": "boom"}, success=False)
+    message = send.call_args.args[0]
+    assert "盘中 ❌" in message
+    assert "❗ 错误：boom" in message

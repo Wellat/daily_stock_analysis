@@ -1239,6 +1239,58 @@ class MainScheduleModeTestCase(unittest.TestCase):
         run_market_review.assert_not_called()
         refresh.assert_called_once_with(config)
 
+    def test_run_full_analysis_pauses_stock_analysis_when_disabled(self) -> None:
+        """STOCK_ANALYSIS_ENABLED=false：配置驱动的运行跳过个股分析，大盘复盘照常。"""
+        args = self._make_args()
+        config = self._make_config(
+            trading_day_check_enabled=False,
+            market_review_enabled=True,
+            stock_analysis_enabled=False,
+            single_stock_notify=False,
+            merge_email_notification=False,
+            analysis_delay=0,
+            database_path=str(Path(self.temp_dir.name) / "stock_analysis.db"),
+        )
+        config.stock_list = ["600519"]
+        config.refresh_stock_list = lambda: None
+        pipeline = MagicMock()
+        pipeline.run.return_value = []
+
+        with patch.object(main, "_refresh_stock_index_cache_for_analysis"), \
+             patch("main._compute_trading_day_filter", return_value=(["600519"], "cn", False)), \
+             patch("src.core.pipeline.StockAnalysisPipeline", return_value=pipeline), \
+             patch("main._prime_daily_market_context", side_effect=[("", ""), ("缓存摘要", "完整复盘")]), \
+             patch("main._run_market_review_with_shared_lock", return_value=SimpleNamespace(report="大盘复盘")) as run_with_lock:
+            main.run_full_analysis(config, args, None)
+
+        pipeline.run.assert_not_called()
+        run_with_lock.assert_called_once()
+
+    def test_run_full_analysis_keeps_explicit_stocks_when_stock_analysis_disabled(self) -> None:
+        """暂停开关不影响显式传入的股票列表（--stocks / API 临时分析）。"""
+        args = self._make_args()
+        config = self._make_config(
+            trading_day_check_enabled=False,
+            market_review_enabled=True,
+            stock_analysis_enabled=False,
+            single_stock_notify=False,
+            merge_email_notification=False,
+            analysis_delay=0,
+            database_path=str(Path(self.temp_dir.name) / "stock_analysis.db"),
+        )
+        pipeline = MagicMock()
+        pipeline.run.return_value = []
+
+        with patch.object(main, "_refresh_stock_index_cache_for_analysis"), \
+             patch("main._compute_trading_day_filter", return_value=(["600519"], "cn", False)), \
+             patch("src.core.pipeline.StockAnalysisPipeline", return_value=pipeline), \
+             patch("main._prime_daily_market_context", side_effect=[("", ""), ("缓存摘要", "完整复盘")]), \
+             patch("main._run_market_review_with_shared_lock", return_value=SimpleNamespace(report="大盘复盘")) as run_with_lock:
+            main.run_full_analysis(config, args, ["600519"])
+
+        pipeline.run.assert_called_once()
+        run_with_lock.assert_called_once()
+
     def test_run_full_analysis_defaults_daily_context_on_without_disabling_market_review(self) -> None:
         args = self._make_args()
         config = self._make_config(

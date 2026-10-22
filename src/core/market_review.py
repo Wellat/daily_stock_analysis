@@ -15,7 +15,7 @@ import inspect
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 import uuid
 
 from src.config import get_config
@@ -118,6 +118,7 @@ def _get_market_review_text(language: str) -> dict[str, str]:
         return {
             "root_title": "# 🎯 Market Review",
             "push_title": "🎯 Market Review",
+            "feishu_title": "Market Review",
             "cn_title": "# A-share Market Recap",
             "us_title": "# US Market Recap",
             "hk_title": "# HK Market Recap",
@@ -129,6 +130,7 @@ def _get_market_review_text(language: str) -> dict[str, str]:
         return {
             "root_title": "# 🎯 시황 리뷰",
             "push_title": "🎯 시황 리뷰",
+            "feishu_title": "시황 리뷰",
             "cn_title": "# 중국 A주 시황 리뷰",
             "us_title": "# 미국 시황 리뷰",
             "hk_title": "# 홍콩 시황 리뷰",
@@ -139,6 +141,7 @@ def _get_market_review_text(language: str) -> dict[str, str]:
     return {
         "root_title": "# 🎯 大盘复盘",
         "push_title": "🎯 大盘复盘",
+        "feishu_title": "大盘复盘",
         "cn_title": "# A股大盘复盘",
         "us_title": "# 美股大盘复盘",
         "hk_title": "# 港股大盘复盘",
@@ -368,7 +371,13 @@ def run_market_review(
                 send_kwargs: Dict[str, Any] = {
                     "email_send_to_all": True,
                     "route_type": "report",
+                    # 飞书渠道专属：卡片标题 + 结构化数据驱动的精简版内容（无表格，适配手机）；
+                    # 其余渠道（如邮件）仍发送完整报告
+                    "feishu_title": review_text["feishu_title"],
                 }
+                feishu_digest = _render_market_review_feishu_digest(market_review_payload)
+                if feishu_digest:
+                    send_kwargs["feishu_content"] = feishu_digest
                 try:
                     supports_payload = (
                         "structured_payload" in inspect.signature(notifier.send).parameters
@@ -534,6 +543,187 @@ def _render_market_review_merge_markdown(
     if isinstance(markets, dict) and markets:
         return _render_market_review_payload_markdown(payload)
     return _append_missing_sector_payload_block(review_report, payload)
+
+
+# ---------------------------------------------------------------------------
+# 飞书精简版（结构化数据驱动、无 markdown 表格，适配手机卡片阅读）
+# ---------------------------------------------------------------------------
+
+# LLM 摘要与「明日计划」小节的截断预算，避免精简版重新变长
+_FEISHU_DIGEST_INTRO_MAX_CHARS = 160
+_FEISHU_DIGEST_PLAN_MAX_LINES = 6
+_FEISHU_DIGEST_PLAN_LINE_MAX_CHARS = 90
+_FEISHU_DIGEST_SECTOR_TOP_N = 3
+
+
+def _truncate_feishu_digest_text(text: str, limit: int) -> str:
+    normalized = re.sub(r"\s+", " ", text).strip()
+    if len(normalized) <= limit:
+        return normalized
+    return normalized[:limit].rstrip() + "……"
+
+
+def _extract_market_review_digest_intro(payload: Dict[str, Any]) -> str:
+    """取报告 intro（复盘标题下、首个小节前的摘要，通常是 LLM 一两句总评）。"""
+    for section in payload.get("sections") or []:
+        if not isinstance(section, dict) or section.get("key") != "overview":
+            continue
+        markdown = str(section.get("markdown") or "")
+        lines = [re.sub(r"^>\s?", "", line).strip() for line in markdown.splitlines()]
+        intro = " ".join(line for line in lines if line)
+        return _truncate_feishu_digest_text(intro, _FEISHU_DIGEST_INTRO_MAX_CHARS)
+    return ""
+
+
+def _extract_market_review_digest_plan(payload: Dict[str, Any],
+                                       language: str) -> List[str]:
+    """取「明日交易计划」小节并压成短 bullet 行（找不到时返回空列表）。"""
+    keywords = ("明日", "交易计划", "计划") if language != "en" else ("Trade Plan", "Tomorrow", "Plan")
+    markdown = ""
+    for section in payload.get("sections") or []:
+        if not isinstance(section, dict):
+            continue
+        haystack = f"{section.get('title') or ''} {section.get('key') or ''}"
+        if any(keyword.lower() in haystack.lower() for keyword in keywords):
+            markdown = str(section.get("markdown") or "").strip()
+            if markdown:
+                break
+    if not markdown:
+        return []
+
+    plan_lines: List[str] = []
+    for raw_line in markdown.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("- "):
+            line = "• " + _truncate_feishu_digest_text(line[2:], _FEISHU_DIGEST_PLAN_LINE_MAX_CHARS)
+        elif re.match(r"^\d+[.、)]", line):
+            line = "◦ " + _truncate_feishu_digest_text(re.sub(r"^\d+[.、)]\s*", "", line),
+                                                       _FEISHU_DIGEST_PLAN_LINE_MAX_CHARS)
+        else:
+            line = _truncate_feishu_digest_text(line, _FEISHU_DIGEST_PLAN_LINE_MAX_CHARS)
+        plan_lines.append(line)
+        if len(plan_lines) >= _FEISHU_DIGEST_PLAN_MAX_LINES:
+            plan_lines.append("……（完整计划见报告）")
+            break
+    return plan_lines
+
+
+def _format_feishu_digest_pct(value: Any) -> Optional[str]:
+    if not isinstance(value, (int, float)):
+        return None
+    return f"{value:+.2f}%"
+
+
+def _render_single_market_review_feishu_digest(payload: Dict[str, Any]) -> Optional[str]:
+    indices = [i for i in (payload.get("indices") or []) if isinstance(i, dict)]
+    breadth = payload.get("breadth") if isinstance(payload.get("breadth"), dict) else None
+    light = payload.get("market_light") if isinstance(payload.get("market_light"), dict) else None
+    if not indices and not breadth and not light:
+        return None
+
+    language = normalize_report_language(payload.get("language"))
+    is_en = language == "en"
+    lines: List[str] = []
+
+    title_parts = [str(part).strip() for part in (payload.get("date"), payload.get("market_scope")) if part]
+    if title_parts:
+        lines.extend(["**" + " · ".join(title_parts) + "**", ""])
+
+    intro = _extract_market_review_digest_intro(payload)
+    if intro:
+        lines.extend([intro, ""])
+
+    if light and light.get("score") is not None:
+        labels = "，".join(str(light[k]) for k in ("temperature_label", "label") if light.get(k))
+        label_text = f"（{labels}）" if labels else ""
+        lines.append(f"🚦 **{'Market signal' if is_en else '盘面信号'}**：{light.get('score')}/100{label_text}")
+        if light.get("guidance"):
+            lines.append(f"{'Guidance' if is_en else '操作建议'}：{light['guidance']}")
+        lines.append("")
+
+    if indices:
+        lines.append(f"📈 **{'Indices' if is_en else '主要指数'}**")
+        red_up = str(payload.get("color_scheme") or "green_up") == "red_up"
+        for idx in indices:
+            name = str(idx.get("name") or "").strip()
+            current = idx.get("current")
+            change_pct = idx.get("change_pct")
+            if not name or not isinstance(current, (int, float)) or not isinstance(change_pct, (int, float)):
+                continue
+            if change_pct == 0:
+                arrow = "⚪"
+            else:
+                up = change_pct > 0
+                arrow = ("🔴" if up else "🟢") if red_up else ("🟢" if up else "🔴")
+            lines.append(f"• {name} {current:.2f}　{arrow} {change_pct:+.2f}%")
+        lines.append("")
+
+    if breadth:
+        lines.append(f"📊 **{'Breadth & turnover' if is_en else '涨跌与成交'}**")
+        if breadth.get("up_count") or breadth.get("down_count") or breadth.get("flat_count"):
+            lines.append(f"• {'Advancers' if is_en else '上涨'} {breadth.get('up_count', 0)}"
+                         f" ｜{'Decliners' if is_en else '下跌'} {breadth.get('down_count', 0)}"
+                         + (f" ｜{'Flat' if is_en else '平盘'} {breadth['flat_count']}" if breadth.get("flat_count") else ""))
+        if breadth.get("limit_up_count") or breadth.get("limit_down_count"):
+            lines.append(f"• {'Limit up/down' if is_en else '涨停/跌停'}"
+                         f" {breadth.get('limit_up_count', 0)} / {breadth.get('limit_down_count', 0)}")
+        if breadth.get("total_amount"):
+            unit = breadth.get("turnover_unit") or ("亿" if not is_en else "")
+            lines.append(f"• {'Turnover' if is_en else '成交额'} {breadth['total_amount']:.0f} {unit}".rstrip())
+        lines.append("")
+
+    sectors = payload.get("sectors") if isinstance(payload.get("sectors"), dict) else {}
+    has_sector_line = False
+    for key, emoji, label in (
+        ("top", "🔥", "领涨板块" if not is_en else "Leading sectors"),
+        ("bottom", "❄️", "领跌板块" if not is_en else "Lagging sectors"),
+    ):
+        rows = [r for r in (sectors.get(key) or []) if isinstance(r, dict)]
+        items = []
+        for row in rows[:_FEISHU_DIGEST_SECTOR_TOP_N]:
+            name = str(row.get("name") or "").strip()
+            pct = _format_feishu_digest_pct(row.get("change_pct"))
+            if name and pct:
+                items.append(f"{name} {pct}")
+        if items:
+            lines.append(f"{emoji} {label}：" + "；".join(items))
+            has_sector_line = True
+    if has_sector_line:
+        lines.append("")
+
+    plan_lines = _extract_market_review_digest_plan(payload, language)
+    if plan_lines:
+        lines.append(f"🧭 **{'Tomorrow plan' if is_en else '明日交易计划'}**")
+        lines.extend(plan_lines)
+        lines.append("")
+
+    while lines and not lines[-1]:
+        lines.pop()
+    lines.append("")
+    lines.append("（完整报告见 Web 历史记录）" if not is_en else "(Full report in web history)")
+    return "\n".join(lines)
+
+
+def _render_market_review_feishu_digest(payload: Dict[str, Any]) -> Optional[str]:
+    """渲染大盘复盘的飞书精简版；结构化数据缺失时返回 None，调用方回退完整报告。"""
+    markets = payload.get("markets")
+    blocks: List[str] = []
+    if isinstance(markets, dict) and markets:
+        for region in _MARKET_REVIEW_REGION_ORDER:
+            market_payload = markets.get(region)
+            if isinstance(market_payload, dict):
+                block = _render_single_market_review_feishu_digest(market_payload)
+                if block:
+                    blocks.append(block)
+    else:
+        block = _render_single_market_review_feishu_digest(payload)
+        if block:
+            blocks.append(block)
+    if not blocks:
+        return None
+    return "\n\n────────\n\n".join(blocks)
 
 
 def _render_market_review_payload_body(payload: Dict[str, Any]) -> str:

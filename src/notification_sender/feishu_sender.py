@@ -77,6 +77,9 @@ _APP_SEND_RETRIES = 3
 _APP_SEND_BACKOFF_SECONDS = (1.0, 2.0, 4.0)
 _WEBHOOK_SEND_TIMEOUT_SECONDS = 30
 
+# 卡片标题默认值；调用方可通过 send_to_feishu(title=...) 按消息类型覆盖
+DEFAULT_CARD_TITLE = "股票智能分析报告"
+
 # Sentinel for "client not yet initialised".
 _NO_CLIENT = object()
 
@@ -134,12 +137,12 @@ class FeishuSender:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _build_card_body(content: str) -> dict:
+    def _build_card_body(content: str, *, title: Optional[str] = None) -> dict:
         """Build a Feishu interactive-card body (without the ``msg_type`` wrapper)."""
         return {
             "config": {"wide_screen_mode": True},
             "header": {
-                "title": {"tag": "plain_text", "content": "股票智能分析报告"},
+                "title": {"tag": "plain_text", "content": title or DEFAULT_CARD_TITLE},
             },
             "elements": [
                 {
@@ -222,7 +225,7 @@ class FeishuSender:
     # App Bot send helpers
     # ------------------------------------------------------------------
 
-    def _send_via_app_bot(self, content: str) -> bool:
+    def _send_via_app_bot(self, content: str, *, title: Optional[str] = None) -> bool:
         """Send message through the Feishu App Bot, chunking if necessary."""
         if not self._feishu_chat_id:
             logger.warning("FEISHU_CHAT_ID 未配置，跳过 App Bot 推送")
@@ -239,11 +242,11 @@ class FeishuSender:
             logger.info(
                 "App Bot 消息超长 (%d 字节)，将分批发送", content_bytes
             )
-            return self._app_send_chunked(client, formatted)
+            return self._app_send_chunked(client, formatted, title=title)
 
-        return self._app_send_once(client, formatted)
+        return self._app_send_once(client, formatted, title=title)
 
-    def _app_send_chunked(self, client: Any, content: str) -> bool:
+    def _app_send_chunked(self, client: Any, content: str, *, title: Optional[str] = None) -> bool:
         """Chunk and send long content through App Bot."""
         try:
             chunks = chunk_content_by_max_bytes(
@@ -255,7 +258,7 @@ class FeishuSender:
 
         success = True
         for i, chunk in enumerate(chunks):
-            ok = self._app_send_once(client, chunk)
+            ok = self._app_send_once(client, chunk, title=title)
             if not ok:
                 logger.error("App Bot 第 %d/%d 批发送失败", i + 1, len(chunks))
                 success = False
@@ -263,14 +266,14 @@ class FeishuSender:
                 time.sleep(1)
         return success
 
-    def _app_send_once(self, client: Any, content: str) -> bool:
+    def _app_send_once(self, client: Any, content: str, *, title: Optional[str] = None) -> bool:
         """Single-shot send via App Bot with card-first / text-fallback.
 
         Content received here has already been through ``format_feishu_markdown``
         which converts all Markdown constructs to ``lark_md``-compatible format.
         The interactive card uses ``tag: lark_md`` for rendering.
         """
-        card_payload = json.dumps(self._build_card_body(content), ensure_ascii=False)
+        card_payload = json.dumps(self._build_card_body(content, title=title), ensure_ascii=False)
 
         if self._app_send_raw(client, "interactive", card_payload):
             return True
@@ -358,7 +361,8 @@ class FeishuSender:
     # Public API
     # ------------------------------------------------------------------
 
-    def send_to_feishu(self, content: str, *, timeout_seconds: Optional[float] = None) -> bool:
+    def send_to_feishu(self, content: str, *, timeout_seconds: Optional[float] = None,
+                       title: Optional[str] = None) -> bool:
         """
         Push a message to Feishu.
 
@@ -366,6 +370,11 @@ class FeishuSender:
           1. **Webhook** – when ``feishu_webhook_url`` is configured.
           2. **App Bot** – when ``feishu_app_id`` + ``feishu_app_secret``
              + ``feishu_chat_id`` are all configured and webhook is absent.
+
+        Args:
+            content: 消息内容（Markdown）。
+            timeout_seconds: 仅 webhook 模式生效的请求超时。
+            title: 卡片标题；未指定时使用默认标题「股票智能分析报告」。
 
         Returns:
             Whether the send succeeded.
@@ -375,8 +384,10 @@ class FeishuSender:
             return False
         sanitized_content = strip_hidden_markdown_metadata(content).strip()
         if self._feishu_url:
-            return self._send_via_webhook(sanitized_content, timeout_seconds=timeout_seconds)
-        return self._send_via_app_bot(sanitized_content)
+            return self._send_via_webhook(
+                sanitized_content, timeout_seconds=timeout_seconds, title=title
+            )
+        return self._send_via_app_bot(sanitized_content, title=title)
 
     def send_feishu_file(self, file_path: str) -> bool:
         """
@@ -536,7 +547,8 @@ class FeishuSender:
     # Webhook path (legacy, unchanged)
     # ------------------------------------------------------------------
 
-    def _send_via_webhook(self, content: str, *, timeout_seconds: Optional[float] = None) -> bool:
+    def _send_via_webhook(self, content: str, *, timeout_seconds: Optional[float] = None,
+                          title: Optional[str] = None) -> bool:
         """Legacy webhook send path."""
         formatted_content = format_feishu_markdown(content)
 
@@ -559,15 +571,18 @@ class FeishuSender:
                 )
                 return False
             logger.info("飞书消息内容超长(%d字节/%d字符)，将分批发送", content_bytes, len(content))
-            return self._send_feishu_chunked(formatted_content, effective_max_bytes)
+            return self._send_feishu_chunked(formatted_content, effective_max_bytes, title=title)
 
         try:
-            return self._send_feishu_message(formatted_content, timeout_seconds=timeout_seconds)
+            return self._send_feishu_message(
+                formatted_content, timeout_seconds=timeout_seconds, title=title
+            )
         except Exception as e:
             logger.error("发送飞书消息失败: %s", e)
             return False
 
-    def _send_feishu_chunked(self, content: str, max_bytes: int) -> bool:
+    def _send_feishu_chunked(self, content: str, max_bytes: int, *,
+                             title: Optional[str] = None) -> bool:
         try:
             chunks = chunk_content_by_max_bytes(content, max_bytes, add_page_marker=True)
         except ValueError as e:
@@ -579,7 +594,7 @@ class FeishuSender:
         logger.info("飞书分批发送：共 %d 批", total_chunks)
         for i, chunk in enumerate(chunks):
             try:
-                if self._send_feishu_message(chunk):
+                if self._send_feishu_message(chunk, title=title):
                     success_count += 1
                     logger.info("飞书第 %d/%d 批发送成功", i + 1, total_chunks)
                 else:
@@ -590,7 +605,8 @@ class FeishuSender:
                 time.sleep(1)
         return success_count == total_chunks
 
-    def _send_feishu_message(self, content: str, *, timeout_seconds: Optional[float] = None) -> bool:
+    def _send_feishu_message(self, content: str, *, timeout_seconds: Optional[float] = None,
+                             title: Optional[str] = None) -> bool:
         """Send a single Feishu webhook message (interactive card, fallback text)."""
         prepared_content = self._apply_keyword_prefix(content)
         security_fields = self._build_security_fields()
@@ -632,7 +648,10 @@ class FeishuSender:
             logger.error("飞书 Webhook 请求失败: HTTP %d", response.status_code)
             return False
 
-        card_payload = {"msg_type": "interactive", "card": self._build_card_body(prepared_content)}
+        card_payload = {
+            "msg_type": "interactive",
+            "card": self._build_card_body(prepared_content, title=title),
+        }
 
         if _post_payload(card_payload):
             return True

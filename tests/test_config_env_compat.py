@@ -1016,3 +1016,46 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    @patch.object(Config, "_parse_stock_email_groups", return_value=[])
+    def test_cb_sync_notify_and_live_trade_summary_env(
+        self, _mock_parse_stock_email_groups, _mock_parse_litellm_yaml, _mock_setup_env
+    ):
+        """CB 同步通知开关：新键优先，未设时回落旧键；盘后成交汇总默认开启 15:10。"""
+        # 全空 → 默认值
+        with patch.dict(os.environ, {}, clear=True):
+            config = Config._load_from_env()
+        self.assertTrue(config.cb_sync_notify_enabled)
+        self.assertTrue(config.live_trade_summary_enabled)
+        self.assertEqual(config.live_trade_summary_time, "15:10")
+
+        # 新键显式关闭
+        with patch.dict(os.environ, {"CB_SYNC_NOTIFY_ENABLED": "false"}, clear=True):
+            config = Config._load_from_env()
+        self.assertFalse(config.cb_sync_notify_enabled)
+
+        # 新键未设、旧键关闭 → 回落旧键（兼容存量 .env）
+        with patch.dict(os.environ, {"CB_SYNC_NOTIFY_EMAIL_ENABLED": "false"}, clear=True):
+            config = Config._load_from_env()
+        self.assertFalse(config.cb_sync_notify_enabled)
+
+        # 新键优先于旧键
+        with patch.dict(
+            os.environ,
+            {"CB_SYNC_NOTIFY_ENABLED": "true", "CB_SYNC_NOTIFY_EMAIL_ENABLED": "false"},
+            clear=True,
+        ):
+            config = Config._load_from_env()
+        self.assertTrue(config.cb_sync_notify_enabled)
+
+        # 成交汇总时刻与开关可配置
+        with patch.dict(
+            os.environ,
+            {"LIVE_TRADE_SUMMARY_ENABLED": "false", "LIVE_TRADE_SUMMARY_TIME": "15:30"},
+            clear=True,
+        ):
+            config = Config._load_from_env()
+        self.assertFalse(config.live_trade_summary_enabled)
+        self.assertEqual(config.live_trade_summary_time, "15:30")

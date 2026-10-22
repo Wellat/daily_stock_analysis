@@ -455,7 +455,7 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
         self.assertTrue(result.dispatched)
         self.assertTrue(result.success)
         self.assertEqual([item.channel for item in result.channel_results], ["feishu"])
-        mock_webhook.assert_called_once_with("content")
+        mock_webhook.assert_called_once_with("content", title=None)
 
     @mock.patch("src.notification.get_config")
     def test_feishu_send_as_file_route_report_calls_send_feishu_file(self, mock_get_config):
@@ -505,7 +505,7 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
              mock.patch.object(service, "save_report_to_file") as mock_save:
             result = service.send_with_results("alert content", route_type="alert")
         self.assertTrue(result.success)
-        mock_text.assert_called_once_with("alert content")
+        mock_text.assert_called_once_with("alert content", title=None)
         mock_save.assert_not_called()
 
     @mock.patch("src.notification.get_config")
@@ -521,7 +521,7 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
              mock.patch.object(service, "save_report_to_file") as mock_save:
             result = service.send_with_results("report content")
         self.assertTrue(result.success)
-        mock_text.assert_called_once_with("report content")
+        mock_text.assert_called_once_with("report content", title=None)
         mock_save.assert_not_called()
 
     @mock.patch("src.notification.get_config")
@@ -537,7 +537,7 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
              mock.patch.object(service, "save_report_to_file") as mock_save:
             result = service.send_with_results("report content", route_type="report")
         self.assertTrue(result.success)
-        mock_text.assert_called_once_with("report content")
+        mock_text.assert_called_once_with("report content", title=None)
         mock_save.assert_not_called()
 
     @mock.patch("src.notification.get_config")
@@ -571,8 +571,31 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
              mock.patch.object(service, "save_report_to_file") as mock_save:
             result = service.send_with_results("error", route_type="system_error")
         self.assertTrue(result.success)
-        mock_text.assert_called_once_with("error")
+        mock_text.assert_called_once_with("error", title=None)
         mock_save.assert_not_called()
+
+    @mock.patch("src.notification.get_config")
+    def test_send_feishu_title_and_content_overrides_apply_to_feishu_only(self, mock_get_config):
+        """feishu_title/feishu_content 只影响飞书渠道，其他渠道仍使用完整 content。"""
+        cfg = _make_config(
+            feishu_webhook_url="https://open.feishu.cn/open-apis/bot/v2/hook/test-token",
+            wechat_webhook_url="https://wechat.example/hook",
+        )
+        mock_get_config.return_value = cfg
+        service = NotificationService()
+
+        with mock.patch.object(service, "send_to_feishu", return_value=True) as mock_feishu, \
+             mock.patch.object(service, "send_to_wechat", return_value=True) as mock_wechat:
+            result = service.send_with_results(
+                "完整报告内容",
+                route_type="report",
+                feishu_title="大盘复盘",
+                feishu_content="精简版内容",
+            )
+
+        self.assertTrue(result.success)
+        mock_feishu.assert_called_once_with("精简版内容", title="大盘复盘")
+        mock_wechat.assert_called_once_with("完整报告内容")
 
     @mock.patch("src.notification.get_config")
     def test_send_dedup_suppresses_static_channels_after_success(self, mock_get_config: mock.MagicMock):
@@ -2098,7 +2121,11 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
                 )
 
                 self.assertTrue(ok)
-                mock_sender.assert_called_once_with(expected)
+                if channel == NotificationChannel.FEISHU:
+                    # 飞书渠道带 title 透传参数（默认 None → 默认卡片标题）
+                    mock_sender.assert_called_once_with(expected, title=None)
+                else:
+                    mock_sender.assert_called_once_with(expected)
 
     @mock.patch("src.notification.get_config")
     @mock.patch("smtplib.SMTP_SSL")

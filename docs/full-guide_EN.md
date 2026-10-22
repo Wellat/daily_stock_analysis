@@ -404,6 +404,7 @@ For the notification baseline, diagnostics, and deployment notes, see [Notificat
 |--------|------|--------|
 | `STOCK_LIST` | Watchlist codes (comma-separated) | - |
 | `MAX_WORKERS` | Concurrent threads | `3` |
+| `STOCK_ANALYSIS_ENABLED` | Enable stock analysis; when `false`, scheduled/immediate runs only run market review, ad-hoc `--stocks` runs are unaffected, and `STOCK_LIST` may be empty | `true` |
 | `MARKET_REVIEW_ENABLED` | Enable market review | `true` |
 | `DAILY_MARKET_CONTEXT_ENABLED` | Inject the daily market context into stock-analysis prompts and soften aggressive buy advice in high-risk/risk-off markets; enabled by default, and market review can still run when this is set to `false` | `true` |
 | `MARKET_REVIEW_REGION` | Market review region: cn (A-shares), hk (HK stocks), us (US stocks), jp (JP stocks), kr (KR stocks), both (all five markets) | `cn` |

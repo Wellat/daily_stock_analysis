@@ -926,5 +926,153 @@ class MarketReviewLocalizationTestCase(unittest.TestCase):
                     os.environ["DATABASE_PATH"] = old_db_path
 
 
+class MarketReviewFeishuDigestTestCase(unittest.TestCase):
+    """飞书精简版渲染：结构化数据驱动、无表格、缺失数据时回退。"""
+
+    def _payload(self) -> dict:
+        return {
+            "version": 1,
+            "kind": "market_review",
+            "region": "cn",
+            "language": "zh",
+            "color_scheme": "green_up",
+            "date": "2026-10-21",
+            "market_scope": "A股",
+            "indices": [
+                {"name": "上证指数", "current": 3713.03, "change_pct": -0.60},
+                {"name": "创业板指", "current": 2694.71, "change_pct": -1.62},
+                {"name": "科创50", "current": 1343.28, "change_pct": 0.06},
+            ],
+            "sectors": {
+                "top": [
+                    {"name": "渔业", "change_pct": 4.02},
+                    {"name": "林业", "change_pct": 2.17},
+                    {"name": "种植业", "change_pct": 1.95},
+                    {"name": "第4名不应出现", "change_pct": 1.5},
+                ],
+                "bottom": [{"name": "教育", "change_pct": -2.65}],
+            },
+            "breadth": {
+                "up_count": 1981,
+                "down_count": 3363,
+                "flat_count": 223,
+                "limit_up_count": 51,
+                "limit_down_count": 5,
+                "total_amount": 14418,
+                "turnover_unit": "亿",
+            },
+            "market_light": {
+                "status": "yellow",
+                "label": "需观察",
+                "score": 49,
+                "temperature_label": "震荡",
+                "guidance": "信号分化，控制仓位并等待量价确认。",
+            },
+            "sections": [
+                {"key": "overview", "title": "Overview", "markdown": "> 指数缩量磨底、防守板块接力领涨，市场处于偏弱震荡阶段。"},
+                {"key": "六_明日交易计划", "title": "六、明日交易计划",
+                 "markdown": "- **结论：均衡偏防守**。\n- **仓位区间**：3-5成。\n- **失效触发条件**：跌破3700转防守。"},
+            ],
+            "markdown_report": "full report",
+        }
+
+    def test_digest_renders_structured_data_without_tables(self) -> None:
+        digest = market_review_module._render_market_review_feishu_digest(self._payload())
+
+        self.assertIsNotNone(digest)
+        self.assertNotIn("|", digest)
+        self.assertIn("**2026-10-21 · A股**", digest)
+        self.assertIn("指数缩量磨底、防守板块接力领涨", digest)
+        self.assertIn("🚦 **盘面信号**：49/100（震荡，需观察）", digest)
+        self.assertIn("• 上证指数 3713.03　🔴 -0.60%", digest)
+        self.assertIn("• 科创50 1343.28　🟢 +0.06%", digest)
+        self.assertIn("• 上涨 1981 ｜下跌 3363 ｜平盘 223", digest)
+        self.assertIn("🔥 领涨板块：渔业 +4.02%；林业 +2.17%；种植业 +1.95%", digest)
+        self.assertNotIn("第4名不应出现", digest)
+        self.assertIn("🧭 **明日交易计划**", digest)
+        self.assertIn("• **仓位区间**：3-5成。", digest)
+
+    def test_digest_returns_none_without_structured_data(self) -> None:
+        bare = {"sections": [{"key": "full_review", "markdown": "x"}], "markdown_report": "x"}
+        self.assertIsNone(market_review_module._render_market_review_feishu_digest(bare))
+
+    def test_digest_supports_multi_market_payloads(self) -> None:
+        payload = {
+            "markets": {
+                "cn": self._payload(),
+                "us": {
+                    "region": "us", "language": "en", "date": "2026-10-21",
+                    "market_scope": "US",
+                    "indices": [{"name": "S&P 500", "current": 5900.0, "change_pct": 0.5}],
+                },
+            }
+        }
+
+        digest = market_review_module._render_market_review_feishu_digest(payload)
+
+        self.assertIsNotNone(digest)
+        self.assertIn("• 上证指数 3713.03", digest)
+        self.assertIn("• S&P 500 5900.00　🟢 +0.50%", digest)
+        self.assertIn("────────", digest)
+
+    def test_run_market_review_passes_feishu_title_and_digest(self) -> None:
+        notifier = MagicMock()
+        notifier.save_report_to_file.return_value = "/tmp/market_review.md"
+        notifier.is_available.return_value = True
+        notifier.send.return_value = True
+        review = SimpleNamespace(
+            report="## 2026-10-21 A股大盘复盘\n\n### 一、盘面总览\n\nbody",
+            market_light_snapshot={"region": "cn", "trade_date": "2026-10-21", "score": 49},
+            structured_payload=self._payload(),
+        )
+        market_analyzer = MagicMock()
+        market_analyzer.run_daily_review_with_snapshot.return_value = review
+
+        with patch.object(
+            market_review_module,
+            "get_config",
+            return_value=SimpleNamespace(report_language="zh", market_review_region="cn"),
+        ), patch.object(
+            market_review_module,
+            "MarketAnalyzer",
+            return_value=market_analyzer,
+        ), patch.object(market_review_module, "_persist_market_review_history"):
+            run_market_review(notifier, send_notification=True)
+
+        kwargs = notifier.send.call_args.kwargs
+        self.assertEqual(kwargs["feishu_title"], "大盘复盘")
+        self.assertIsNotNone(kwargs.get("feishu_content"))
+        self.assertIn("• 上证指数 3713.03", kwargs["feishu_content"])
+        # 完整报告仍作为通用 content 发送（邮件等其他渠道不受精简版影响）
+        self.assertIn("明日交易计划", notifier.send.call_args.args[0])
+
+    def test_run_market_review_omits_feishu_digest_without_structured_payload(self) -> None:
+        notifier = MagicMock()
+        notifier.save_report_to_file.return_value = "/tmp/market_review.md"
+        notifier.is_available.return_value = True
+        notifier.send.return_value = True
+        review = SimpleNamespace(
+            report="## 2026-10-21 A股大盘复盘\n\nbody",
+            market_light_snapshot={"region": "cn", "trade_date": "2026-10-21", "score": 49},
+        )
+        market_analyzer = MagicMock()
+        market_analyzer.run_daily_review_with_snapshot.return_value = review
+
+        with patch.object(
+            market_review_module,
+            "get_config",
+            return_value=SimpleNamespace(report_language="zh", market_review_region="cn"),
+        ), patch.object(
+            market_review_module,
+            "MarketAnalyzer",
+            return_value=market_analyzer,
+        ), patch.object(market_review_module, "_persist_market_review_history"):
+            run_market_review(notifier, send_notification=True)
+
+        kwargs = notifier.send.call_args.kwargs
+        self.assertEqual(kwargs["feishu_title"], "大盘复盘")
+        self.assertNotIn("feishu_content", kwargs)
+
+
 if __name__ == "__main__":
     unittest.main()

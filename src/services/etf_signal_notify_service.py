@@ -21,7 +21,7 @@ from src.core.strategy_lab.engine import list_builtin_strategies
 from src.core.strategy_lab.series_factors import get_series_factor
 from src.core.strategy_lab.signal_engine import SignalEngine
 from src.core.strategy_lab.signal_params import SignalParams
-from src.notification import NotificationBuilder, NotificationService
+from src.notification import NotificationService
 from src.repositories.strategy_decision_repo import StrategyDecisionRepository
 from src.repositories.strategy_lab.data_repo import StrategyLabDataRepository
 from src.storage import DatabaseManager, LiveStrategyConfig, LiveStrategyRun
@@ -227,16 +227,16 @@ class EtfSignalNotifyService:
             symbol = item["symbol"]
             label = f"{item.get('name') or symbol}（{symbol}）"
             if item.get("status") == "quote_unavailable":
-                lines.append(f"- {label}：行情不可用，跳过评估")
+                lines.append(f"⚠️ {label}：行情不可用，跳过评估")
                 continue
             if item.get("status") == "insufficient_history":
-                lines.append(f"- {label}：历史数据不足（{item.get('history_bars', 0)} 根，需预热更多交易日），跳过评估")
+                lines.append(f"⚠️ {label}：历史数据不足（{item.get('history_bars', 0)} 根，需预热更多交易日），跳过评估")
                 continue
             if item.get("status") == "stale_history":
-                lines.append(f"- {label}：历史数据过期（最后 {item.get('last_history_date')}），请先同步 ETF 日线，跳过评估")
+                lines.append(f"⚠️ {label}：历史数据过期（最后 {item.get('last_history_date')}），请先同步 ETF 日线，跳过评估")
                 continue
             if item.get("status") == "adjust_unavailable":
-                lines.append(f"- {label}：行情缺昨收/涨跌幅、无法折算后复权口径，跳过评估")
+                lines.append(f"⚠️ {label}：行情缺昨收/涨跌幅、无法折算后复权口径，跳过评估")
                 continue
             change = item.get("change_pct")
             change_text = f"{change:+.2f}%" if change is not None else "--"
@@ -244,21 +244,22 @@ class EtfSignalNotifyService:
                 f"{get_series_factor(k).label} {v}" for k, v in (item.get("factors") or {}).items()
             )
             signal = item.get("signal")
+            # 表情放行首，手机通知列表里一眼区分方向（红涨绿跌，与 A 股习惯一致）
             if signal == "buy":
-                verdict = "🔴 买入信号"
+                verdict = "🔴📈 买入信号"
             elif signal == "sell":
-                verdict = "🟢 卖出信号"
+                verdict = "🟢📉 卖出信号"
             else:
-                verdict = "无信号"
+                verdict = "⚪️ 无信号"
             holding_text = "持仓中" if item.get("holding") else "未持仓"
-            lines.append(f"- {label}：现价 {item['price']}（{change_text}）｜{factor_text} → {verdict}（{holding_text}）")
+            lines.append(f"{verdict}｜{label}：现价 {item['price']}（{change_text}）｜{factor_text}（{holding_text}）")
         return "\n".join(lines)
 
     def _send_feishu(self, message: str) -> bool:
         try:
             notifier = self.notifier or NotificationService()
-            text = NotificationBuilder.build_simple_alert(title="ETF 信号通知", content=message, alert_type="info")
-            return bool(notifier.send_to_feishu(text))
+            # 卡片标题「信号通知」+ 消息体首行「ETF 信号通知 · 日期」，不再套 build_simple_alert 标题壳
+            return bool(notifier.send_to_feishu(message, title="信号通知"))
         except Exception:
             logger.exception("[EtfSignalNotify] feishu send raised")
             return False

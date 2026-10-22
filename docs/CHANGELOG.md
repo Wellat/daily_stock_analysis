@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [改进] 可转债数据同步完成/失败通知改发飞书群（标题「数据同步」）：摘要式展示盘中/盘后、耗时与各阶段失败数/写入量，不再发送原始 JSON 邮件；开关迁移为 `CB_SYNC_NOTIFY_ENABLED`（默认 true，旧键 `CB_SYNC_NOTIFY_EMAIL_ENABLED` 仍生效，语义从邮件改为飞书）。
+- [新功能] 盘后实盘成交汇总推送：每个 A 股交易日 `LIVE_TRADE_SUMMARY_TIME`（默认 15:10）汇总当日实盘成交记录（`portfolio_trades`）按买卖方向直发飞书（标题「成交汇总」，🔴 买入/🟢 卖出逐笔数量+名称+金额 + 合计/净额/费用，多账户逐条标注账户），当日无成交不发送；`LIVE_TRADE_SUMMARY_ENABLED` 总开关（默认 true）。标的名称按 成交行自带 → 订单记录 → 转债基础表 → 实时行情 兜底补全，行情失败降级为仅代码。
+- [改进] 飞书消息卡片标题按消息类型区分：ETF 信号通知显示「信号通知」，大盘复盘显示「大盘复盘」，个股/合并报告保持「股票智能分析报告」默认标题；`FeishuSender.send_to_feishu` 新增可选 `title` 参数（webhook 与 App Bot、分片路径全量透传），`NotificationService.send` 新增可选 `feishu_title`/`feishu_content`（仅影响飞书渠道，其他渠道仍发送完整内容）。
+- [改进] ETF 信号通知买卖信号表情加强：买入 `🔴📈`、卖出 `🟢📉`、无信号 `⚪️`，表情移到行首并置于结论前，通知列表一眼辨别方向；行情异常/跳过行加 `⚠️` 标识。
+- [改进] 大盘复盘飞书推送改为结构化数据驱动的精简版（约缩至原报告 1/4 长度）：LLM 总评摘要 + 盘面信号（评分/操作建议）+ 主要指数行（点位+涨跌箭头）+ 涨跌与成交 + 领涨/领跌板块 Top3 + 明日交易计划要点，全部为列表样式、无 markdown 表格（此前表格被逐行展开成 8 组「键：值」长行，手机排版混乱）；结构化数据缺失时自动回退完整报告，完整报告仍保存至 `reports/` 并可经 Web 历史记录/邮件渠道查看。
+- [新功能] 新增 `STOCK_ANALYSIS_ENABLED` 配置（默认 `true`）：设为 `false` 暂停个股分析，定时/立即运行仅执行大盘复盘，显式 `--stocks`/`--portfolio` 临时分析不受影响；暂停期间 `STOCK_LIST` 允许留空（不再报配置错误）。GitHub Actions 每日工作流同步支持该变量（repo variables/secrets 均可）。
 - [改进] 实时行情补字段按品种区分：ETF 无 PE/PB/市值字段（任何源都补不上），补充字段收窄为量比/换手率/振幅三项——首个源拿齐即返回，不再对后续源发起注定失败的补充请求（东财接口断连时每只 ETF 行情白等约 30s 重试超时，腾讯成功后仍连环重试东财即此因）；股票的 7 字段补充语义不变。
 - [修复] 策略实例删除后被"复活"：实验室 presets 一次性迁移此前按同名同模板去重、旧表不删，用户删除迁移来的实例（如「红利ETF·MA210」）后每次服务重启都会被迁移器重建。现 `strategy_lab_strategy_configs` 增加行级 `migrated_to_instance` 标记——拷贝成功或同名实例已存在（存量库回填）即置位、该行永不再处理；损坏行不置位待数据修复后重试。
 - [修复] ETF 实时行情源路由：`AkshareFetcher.get_realtime_quote` 对 ETF 代码无视 `source` 参数、无论配置优先级一律走东财 `fund_etf_spot_em`，导致东财接口断连（如 2026-10-19 起 push2.eastmoney.com 不可达）时腾讯/新浪 fallback 槽位全部打到同一死接口，ETF 信号通知全部「行情不可用，跳过评估」（名称也随之丢失）。现 `source=tencent` 时 ETF 走腾讯直连（qt.gtimg.cn，股票/ETF 同格式，含现价/昨收/涨跌幅/名称），新浪全量接口不覆盖 ETF 维持东财一路；默认优先级腾讯首位，东财恢复前后均不影响取数。

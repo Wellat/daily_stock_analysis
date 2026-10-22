@@ -1193,10 +1193,15 @@ class Config:
     cb_after_close_sync_time: str = "20:00"
     portfolio_snapshot_time: str = "20:05"     # 持仓每日快照生成时间（趋势图数据源，须晚于盘后行情同步）
     cb_intraday_data_max_age_minutes: int = 15
-    cb_sync_notify_email_enabled: bool = True
+    # 可转债数据同步完成通知（发飞书群；兼容旧键 CB_SYNC_NOTIFY_EMAIL_ENABLED）
+    cb_sync_notify_enabled: bool = True
     schedule_times: List[str] = field(default_factory=lambda: ["18:00"])
     schedule_run_immediately: bool = True     # 启动时是否立即执行一次
     run_immediately: bool = True              # 启动时是否立即执行一次（非定时模式）
+    # 盘后实盘成交汇总推送（当日 portfolio_trades 成交直发飞书；无成交不发）
+    live_trade_summary_enabled: bool = True
+    live_trade_summary_time: str = "15:10"
+    stock_analysis_enabled: bool = True       # 是否启用个股分析（false 时配置驱动的运行仅执行大盘复盘）
     market_review_enabled: bool = True        # 是否启用大盘复盘
     daily_market_context_enabled: bool = True   # 是否将大盘环境摘要用于个股分析 Prompt 与保守护栏
     # 大盘复盘市场区域：cn(A股)、hk(港股)、us(美股)、jp(日股)、kr(韩股)、both(全部市场)
@@ -2154,13 +2159,20 @@ class Config:
             cb_after_close_sync_time=(os.getenv('CB_AFTER_CLOSE_SYNC_TIME') or '20:00').strip(),
             portfolio_snapshot_time=(os.getenv('PORTFOLIO_SNAPSHOT_TIME') or '20:05').strip(),
             cb_intraday_data_max_age_minutes=parse_env_int(os.getenv('CB_INTRADAY_DATA_MAX_AGE_MINUTES'), 15, field_name='CB_INTRADAY_DATA_MAX_AGE_MINUTES', minimum=1),
-            cb_sync_notify_email_enabled=parse_env_bool(os.getenv('CB_SYNC_NOTIFY_EMAIL_ENABLED'), default=True),
+            # 新键未设置时回落旧键 CB_SYNC_NOTIFY_EMAIL_ENABLED（旧配置语义=开关通知）
+            cb_sync_notify_enabled=parse_env_bool(
+                (os.getenv('CB_SYNC_NOTIFY_ENABLED') or os.getenv('CB_SYNC_NOTIFY_EMAIL_ENABLED') or '').strip() or None,
+                default=True,
+            ),
+            live_trade_summary_enabled=parse_env_bool(os.getenv('LIVE_TRADE_SUMMARY_ENABLED'), default=True),
+            live_trade_summary_time=(os.getenv('LIVE_TRADE_SUMMARY_TIME') or '15:10').strip() or '15:10',
             schedule_times=normalize_schedule_times(
                 schedule_times_value,
                 fallback_time=(schedule_time_value or '18:00').strip() or '18:00',
             ),
             schedule_run_immediately=schedule_run_immediately,
             run_immediately=legacy_run_immediately,
+            stock_analysis_enabled=os.getenv('STOCK_ANALYSIS_ENABLED', 'true').lower() == 'true',
             market_review_enabled=os.getenv('MARKET_REVIEW_ENABLED', 'true').lower() == 'true',
             daily_market_context_enabled=os.getenv('DAILY_MARKET_CONTEXT_ENABLED', 'true').lower() == 'true',
             market_review_region=cls._parse_market_review_region(
@@ -3063,7 +3075,8 @@ class Config:
         issues: List[ConfigIssue] = []
 
         # --- Stock list ---
-        if not self.stock_list:
+        # STOCK_ANALYSIS_ENABLED=false 时个股分析已暂停，STOCK_LIST 允许留空（仅大盘复盘的运行仍有效）
+        if not self.stock_list and self.stock_analysis_enabled:
             issues.append(ConfigIssue(
                 severity="error",
                 message="未配置 STOCK_LIST。请设置至少一个股票代码，例如：600519,hk00700,AAPL。",

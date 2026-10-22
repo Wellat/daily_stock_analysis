@@ -217,6 +217,42 @@ def build_portfolio_snapshot_background_tasks(config: Config) -> List[Dict[str, 
     ]
 
 
+# 盘后实盘成交汇总任务
+def build_live_trade_summary_background_tasks(config: Config) -> List[Dict[str, Any]]:
+    """盘后汇总当日实盘成交（portfolio_trades）并直发飞书。
+
+    默认 15:10（收盘后，order 实例 14:35 前后的成交已入账），当日无成交
+    不发送。时刻/开关经 LIVE_TRADE_SUMMARY_TIME / LIVE_TRADE_SUMMARY_ENABLED 配置。
+    """
+    if not getattr(config, "live_trade_summary_enabled", True):
+        return []
+    from src.services.live_trade_summary_service import LiveTradeSummaryService
+    state = {"date": None}
+
+    def task() -> None:
+        now = datetime.now()
+        hhmm = str(getattr(config, "live_trade_summary_time", "15:10"))
+        if now.strftime("%H:%M") != hhmm or state["date"] == now.date():
+            return
+        # 仅 A 股交易日运行（exchange-calendars 不可用时 fail-open 视为交易日）
+        if not _is_cn_trading_day(now.date()):
+            logger.info("Skip live trade summary on non-trading day %s", now.date())
+            return
+        try:
+            result = LiveTradeSummaryService().run(trade_date=now.date())
+            # 无论当日有无成交都标记完成，避免同一分钟内重复触发
+            state["date"] = now.date()
+            if result:
+                logger.info("[LiveTradeSummary] scheduled run ok: trades=%s sent=%s",
+                            result.get("trade_count"), result.get("feishu_sent"))
+        except Exception:
+            logger.exception("Live trade summary failed")
+
+    return [
+        {"task": task, "interval_seconds": 30, "run_immediately": False, "name": "live_trade_summary"},
+    ]
+
+
 class RuntimeSchedulerService:
     """Manage scheduled analysis inside the current API/Web/Desktop process."""
 
@@ -337,6 +373,7 @@ class RuntimeSchedulerService:
         tasks.extend(build_live_strategy_background_tasks(config))
         tasks.extend(build_convertible_bond_sync_background_tasks(config))
         tasks.extend(build_portfolio_snapshot_background_tasks(config))
+        tasks.extend(build_live_trade_summary_background_tasks(config))
         return tasks
 
     def _current_agent_event_monitor_background_tasks(self, config: Config) -> List[Dict[str, Any]]:

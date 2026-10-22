@@ -2523,6 +2523,8 @@ class NotificationService(
         email_stock_codes: Optional[List[str]],
         email_send_to_all: bool,
         route_type: Optional[str] = None,
+        feishu_title: Optional[str] = None,
+        feishu_content: Optional[str] = None,
     ) -> bool:
         use_image = self._should_use_image_for_channel(channel, image_bytes)
         sanitized_content = strip_hidden_markdown_metadata(content).strip()
@@ -2531,13 +2533,18 @@ class NotificationService(
                 return self._send_wechat_image(image_bytes)
             return self.send_to_wechat(content)
         if channel == NotificationChannel.FEISHU:
+            # feishu_content/feishu_title 仅影响飞书渠道（如大盘复盘精简版），
+            # 其余渠道仍使用完整 content
+            channel_content = sanitized_content
+            if feishu_content:
+                channel_content = strip_hidden_markdown_metadata(feishu_content).strip()
             if getattr(self, "_feishu_send_as_file", False) and route_type == "report":
                 date_str = datetime.now().strftime('%Y%m%d')
                 filepath = self.save_report_to_file(
-                    sanitized_content, filename=f"report_{date_str}.md"
+                    channel_content, filename=f"report_{date_str}.md"
                 )
                 return self.send_feishu_file(filepath)
-            return self.send_to_feishu(sanitized_content)
+            return self.send_to_feishu(channel_content, title=feishu_title)
         if channel == NotificationChannel.DINGTALK:
             return self.send_to_dingtalk(sanitized_content)
         if channel == NotificationChannel.TELEGRAM:
@@ -2591,6 +2598,8 @@ class NotificationService(
         dedup_key: Optional[str] = None,
         cooldown_key: Optional[str] = None,
         structured_payload: Optional[Dict[str, Any]] = None,
+        feishu_title: Optional[str] = None,
+        feishu_content: Optional[str] = None,
     ) -> NotificationDispatchResult:
         """
         Send a notification and return per-channel diagnostics.
@@ -2612,6 +2621,8 @@ class NotificationService(
             dedup_key: 可选稳定去重 key；未设置时使用内容 hash
             cooldown_key: 可选冷却 key；未设置时使用路由/级别默认 key
             structured_payload: 可选的个股或市场结构化结果，仅用于图片模板精确填充
+            feishu_title: 可选飞书卡片标题；未设置时使用默认「股票智能分析报告」
+            feishu_content: 可选飞书专属内容（如精简版报告）；未设置时飞书与其他渠道共用 content
 
         Returns:
             Structured dispatch diagnostics.
@@ -2747,6 +2758,8 @@ class NotificationService(
                     email_stock_codes=email_stock_codes,
                     email_send_to_all=email_send_to_all,
                     route_type=route_type,
+                    feishu_title=feishu_title,
+                    feishu_content=feishu_content,
                 )
                 latency_ms = int((time.monotonic() - started_at) * 1000)
 
@@ -2809,6 +2822,8 @@ class NotificationService(
         dedup_key: Optional[str] = None,
         cooldown_key: Optional[str] = None,
         structured_payload: Optional[Dict[str, Any]] = None,
+        feishu_title: Optional[str] = None,
+        feishu_content: Optional[str] = None,
     ) -> bool:
         """
         统一发送接口 - 向所有已配置的渠道发送。
@@ -2825,6 +2840,8 @@ class NotificationService(
             dedup_key=dedup_key,
             cooldown_key=cooldown_key,
             structured_payload=structured_payload,
+            feishu_title=feishu_title,
+            feishu_content=feishu_content,
         )
         return bool(result.success)
 

@@ -342,7 +342,31 @@ class TestFeishuSender(unittest.TestCase):
         result = sender.send_to_feishu("[dsa-market-region]: # (us)\n\n# 🎯 Market Review\n\nBody")
 
         self.assertTrue(result)
-        mock_send.assert_called_once_with("# 🎯 Market Review\n\nBody", timeout_seconds=None)
+        mock_send.assert_called_once_with("# 🎯 Market Review\n\nBody", timeout_seconds=None, title=None)
+
+    @mock.patch("src.notification_sender.feishu_sender.requests.post")
+    def test_send_default_title_used_in_card_header(self, mock_post):
+        mock_post.return_value = _response(200, {"code": 0})
+        cfg = _config(feishu_webhook_url="https://feishu.example/hook")
+        sender = FeishuSender(cfg)
+
+        result = sender.send_to_feishu("hello")
+
+        self.assertTrue(result)
+        payload = mock_post.call_args.kwargs["json"]
+        self.assertEqual(payload["card"]["header"]["title"]["content"], "股票智能分析报告")
+
+    @mock.patch("src.notification_sender.feishu_sender.requests.post")
+    def test_send_custom_title_used_in_card_header(self, mock_post):
+        mock_post.return_value = _response(200, {"code": 0})
+        cfg = _config(feishu_webhook_url="https://feishu.example/hook")
+        sender = FeishuSender(cfg)
+
+        result = sender.send_to_feishu("hello", title="信号通知")
+
+        self.assertTrue(result)
+        payload = mock_post.call_args.kwargs["json"]
+        self.assertEqual(payload["card"]["header"]["title"]["content"], "信号通知")
 
     @mock.patch("src.notification_sender.feishu_sender.requests.post")
     def test_send_http_error_returns_false(self, mock_post):

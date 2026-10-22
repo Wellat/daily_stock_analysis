@@ -8,7 +8,7 @@ import os
 import sys
 import tempfile
 import unittest
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -775,3 +775,50 @@ class RuntimeSchedulerServiceTestCase(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LiveTradeSummaryBackgroundTaskTestCase(unittest.TestCase):
+    """盘后实盘成交汇总任务的构建与开关。"""
+
+    def test_disabled_returns_no_tasks(self) -> None:
+        from src.services.runtime_scheduler import build_live_trade_summary_background_tasks
+
+        config = SimpleNamespace(live_trade_summary_enabled=False)
+        self.assertEqual(build_live_trade_summary_background_tasks(config), [])
+
+    def test_enabled_builds_named_task(self) -> None:
+        from src.services.runtime_scheduler import build_live_trade_summary_background_tasks
+
+        config = SimpleNamespace(live_trade_summary_enabled=True, live_trade_summary_time="15:10")
+        entries = build_live_trade_summary_background_tasks(config)
+
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["name"], "live_trade_summary")
+        self.assertEqual(entries[0]["interval_seconds"], 30)
+
+    def test_task_runs_service_once_per_matching_day(self) -> None:
+        """时刻匹配时调用服务一次，且当日幂等（同一闭包状态不重复触发）。"""
+        from src.services.runtime_scheduler import build_live_trade_summary_background_tasks
+
+        service_calls = []
+
+        class _StubService:
+            def __init__(self) -> None:
+                service_calls.append(1)
+
+            def run(self, *, trade_date):
+                service_calls.append(trade_date)
+                return None
+
+        # builder 内部 import 服务类，须在构建任务前完成 patch 才能生效
+        with patch("src.services.live_trade_summary_service.LiveTradeSummaryService", _StubService), \
+             patch("src.services.runtime_scheduler._is_cn_trading_day", return_value=True), \
+             patch("src.services.runtime_scheduler.datetime") as mock_datetime:
+            config = SimpleNamespace(live_trade_summary_enabled=True, live_trade_summary_time="15:10")
+            task = build_live_trade_summary_background_tasks(config)[0]["task"]
+
+            mock_datetime.now.return_value = datetime(2026, 10, 22, 15, 10, 3)
+            task()
+            task()  # 同一分钟第二次 tick：当日已跑，跳过
+
+        self.assertEqual(service_calls, [1, date(2026, 10, 22)])

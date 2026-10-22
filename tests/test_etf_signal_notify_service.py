@@ -32,12 +32,14 @@ class _Fetcher:
 class _Notifier:
     def __init__(self):
         self.sent: list[str] = []
+        self.titles: list[str | None] = []
         self.ok = True
 
-    def send_to_feishu(self, content, timeout_seconds=None):
+    def send_to_feishu(self, content, timeout_seconds=None, title=None):
         if not self.ok:
             return False
         self.sent.append(content)
+        self.titles.append(title)
         return True
 
 
@@ -94,6 +96,9 @@ def test_notify_evaluates_entry_signal_and_sends_feishu(notify_env):
     signals = {s["symbol"]: s for s in result["signals"]}
     assert signals["510880"]["signal"] == "buy"
     assert signals["510880"]["reason"] == "signal_entry"
+    # 飞书卡片标题为「信号通知」，买入信号行首带 🔴📈 表情方便一眼辨别
+    assert service.notifier.titles == ["信号通知"]
+    assert "🔴📈 买入信号" in result["message"]
     # hfq 折算：库内昨收 100 × 99/100 = 99.0，乖离率 (99/99.8-1) ≈ -0.8%
     assert signals["510880"]["hfq_scaled"] is True
     assert signals["510880"]["factors"]["ma_gap_pct"] == pytest.approx(-0.8016, abs=1e-3)
@@ -135,6 +140,7 @@ def test_notify_exit_signal_uses_decision_history_state(notify_env):
     assert signals["510880"]["reason"] == "signal_exit"
     assert signals["510880"]["holding"] is True
     assert "卖出信号" in result["message"] and "持仓中" in result["message"]
+    assert "🟢📉 卖出信号" in result["message"]
 
 
 def test_notify_no_signal_when_rules_not_met(notify_env):
