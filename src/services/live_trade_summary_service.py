@@ -2,8 +2,8 @@
 """盘后实盘成交汇总（每个交易日收盘后推送飞书）。
 
 数据源为 portfolio_trades（实盘成交记录真源，含 QMT 同步与手工登记），
-当日有成交时按买卖方向汇总成一条消息直发飞书群机器人，无成交不打扰。
-不落库：每日一次的语义由 runtime scheduler 的任务状态保证。
+按买卖方向汇总成一条消息直发飞书群机器人，每日必发一条（无成交发
+「今日无成交」）。不落库：每日一次的语义由 runtime scheduler 的任务状态保证。
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ def _quantity_unit(symbol: str) -> str:
 
 
 class LiveTradeSummaryService:
-    """汇总当日实盘成交并推送飞书群通知（FEISHU_WEBHOOK_URL）。"""
+    """汇总当日实盘成交并推送飞书群通知（FEISHU_WEBHOOK_URL），每日必发一条（无成交发「今日无成交」）。"""
 
     def __init__(self, db_manager: Optional[DatabaseManager] = None):
         self.db = db_manager or DatabaseManager.get_instance()
@@ -46,11 +46,16 @@ class LiveTradeSummaryService:
     # 对外入口
     # ------------------------------------------------------------------
 
-    def run(self, *, trade_date: date) -> Optional[Dict[str, Any]]:
+    def run(self, *, trade_date: date) -> Dict[str, Any]:
         rows = self._load_trades(trade_date)
         if not rows:
-            logger.info("[LiveTradeSummary] %s 无实盘成交，跳过通知", trade_date)
-            return None
+            payload = {"trade_date": trade_date.isoformat(), "trade_count": 0,
+                       "buy_count": 0, "sell_count": 0, "empty": True}
+            message = self.build_message(payload)
+            payload["feishu_sent"] = self._send_feishu(message)
+            if not payload["feishu_sent"]:
+                logger.error("[LiveTradeSummary] feishu send failed for %s", trade_date)
+            return payload
         payload = self.summarize(trade_date, rows)
         payload["feishu_sent"] = self._send_feishu(self.build_message(payload))
         if not payload["feishu_sent"]:
@@ -112,6 +117,9 @@ class LiveTradeSummaryService:
             f"实盘成交汇总 · {payload['trade_date']}"
             f"（买入 {payload['buy_count']} ｜卖出 {payload['sell_count']}）",
         ]
+        if payload.get("empty"):
+            lines.extend(["", "📭 今日无实盘成交"])
+            return "\n".join(lines)
         for icon, key in (("🔴 买入", "buys"), ("🟢 卖出", "sells")):
             items = payload.get(key) or []
             if not items:

@@ -225,3 +225,15 @@ def test_invalid_params_return_400(db_manager: DatabaseManager, client: TestClie
         json={"account": "  ", "deals": [_deal()]},
     )
     assert empty_account.status_code == 400
+
+
+def test_report_deals_persists_symbol_name(db_manager: DatabaseManager) -> None:
+    """QMT 回报自带的标的名称落库到 portfolio_trades.symbol_name（盘后成交汇总直接可用）。"""
+    from src.storage import PortfolioTrade
+
+    result = _report(db_manager, "testS", [_deal(symbol="113002", name="工行转债")])
+    assert result["inserted_count"] == 1
+
+    with db_manager.get_session() as session:
+        row = session.query(PortfolioTrade).filter_by(symbol="113002").one()
+    assert row.symbol_name == "工行转债"

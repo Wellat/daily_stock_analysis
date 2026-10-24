@@ -163,6 +163,8 @@ class QmtDealService:
                     currency="CNY",
                     trade_uid=trade_uid,
                     note=note,
+                    # 回报自带名称，直接落库（盘后成交汇总等消费方免二次补全）
+                    symbol_name=deal["name"],
                 )
             except PortfolioConflictError:
                 item["status"] = "duplicate"

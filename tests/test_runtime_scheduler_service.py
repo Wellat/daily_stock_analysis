@@ -789,7 +789,7 @@ class LiveTradeSummaryBackgroundTaskTestCase(unittest.TestCase):
     def test_enabled_builds_named_task(self) -> None:
         from src.services.runtime_scheduler import build_live_trade_summary_background_tasks
 
-        config = SimpleNamespace(live_trade_summary_enabled=True, live_trade_summary_time="15:10")
+        config = SimpleNamespace(live_trade_summary_enabled=True, live_trade_summary_time="15:20")
         entries = build_live_trade_summary_background_tasks(config)
 
         self.assertEqual(len(entries), 1)
@@ -808,16 +808,16 @@ class LiveTradeSummaryBackgroundTaskTestCase(unittest.TestCase):
 
             def run(self, *, trade_date):
                 service_calls.append(trade_date)
-                return None
+                return {"trade_count": 0, "feishu_sent": True}
 
         # builder 内部 import 服务类，须在构建任务前完成 patch 才能生效
         with patch("src.services.live_trade_summary_service.LiveTradeSummaryService", _StubService), \
              patch("src.services.runtime_scheduler._is_cn_trading_day", return_value=True), \
              patch("src.services.runtime_scheduler.datetime") as mock_datetime:
-            config = SimpleNamespace(live_trade_summary_enabled=True, live_trade_summary_time="15:10")
+            config = SimpleNamespace(live_trade_summary_enabled=True, live_trade_summary_time="15:20")
             task = build_live_trade_summary_background_tasks(config)[0]["task"]
 
-            mock_datetime.now.return_value = datetime(2026, 10, 22, 15, 10, 3)
+            mock_datetime.now.return_value = datetime(2026, 10, 22, 15, 20, 3)
             task()
             task()  # 同一分钟第二次 tick：当日已跑，跳过
 

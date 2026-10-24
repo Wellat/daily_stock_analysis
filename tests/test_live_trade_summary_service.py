@@ -89,14 +89,18 @@ def test_summary_message_groups_by_side_with_amounts(db: DatabaseManager) -> Non
     assert "费用 2.23" in message
 
 
-def test_run_skips_notification_when_no_trades(db: DatabaseManager) -> None:
+def test_run_sends_empty_notice_when_no_trades(db: DatabaseManager) -> None:
+    """无成交日也必发一条「今日无实盘成交」。"""
     _seed_account(db)
 
-    with mock.patch.object(LiveTradeSummaryService, "_send_feishu") as send:
+    with mock.patch("src.notification.NotificationService.send_to_feishu", return_value=True) as send:
         result = LiveTradeSummaryService(db).run(trade_date=TRADE_DATE)
 
-    assert result is None
-    send.assert_not_called()
+    assert result is not None and result["trade_count"] == 0 and result["feishu_sent"] is True
+    send.assert_called_once()
+    assert "实盘成交汇总 · 2026-10-22（买入 0 ｜卖出 0）" in send.call_args.args[0]
+    assert "📭 今日无实盘成交" in send.call_args.args[0]
+    assert send.call_args.kwargs.get("title") == "成交汇总"
 
 
 def test_run_sends_feishu_with_trade_summary_title(db: DatabaseManager) -> None:
