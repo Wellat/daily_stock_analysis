@@ -139,7 +139,7 @@ P1 新增后端 Alert API 与 schema，锁定告警中心最小 API 契约，不
   - `GET /api/v1/alerts/triggers`
   - `GET /api/v1/alerts/notifications`
 - 首版规则仍只支持 `price_cross`、`price_change_percent`、`volume_spike`；`sentiment_shift`、`risk_flag`、`custom` 等未来类型返回结构化 unsupported 错误。
-- `test` 接口只做一次性 dry-run 评估，不发送通知，不写入真实触发记录或通知 attempt。
+- `test` 接口做一次性 dry-run 评估，不写入真实触发记录或通知 attempt；评估完成后会向 alert 路由渠道（`NOTIFICATION_ALERT_CHANNELS`，缺省全部已配置渠道）发送一条带【测试】标记的结果通知，通知内容含规则、标的、状态、触发与否与观察值（批量规则附评估/触发/降级/跳过计数）。发送是 best-effort：失败不影响评估结果，发送结果通过响应字段 `notification_status` / `notification_message` 返回（取值同通知 dispatch status，如 `sent` / `all_failed` / `no_channel` / `noise_suppressed` / `exception`）。
 - `cooldown_policy` / `notification_policy` 在 P1 中只是保留字段：API 可存储和返回这些 opaque 配置，但不执行冷却或自定义通知语义。
 - API 响应必须脱敏，不回显 token、完整 webhook URL、邮箱密码、cookie、bot secret。
 - `AGENT_EVENT_ALERT_RULES_JSON` 继续保留为 legacy 配置入口；P1 不自动迁移、删除、覆盖或改写 legacy 配置。

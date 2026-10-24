@@ -33,13 +33,15 @@ class _Notifier:
     def __init__(self):
         self.sent: list[str] = []
         self.titles: list[str | None] = []
+        self.alert_routes: list[bool] = []
         self.ok = True
 
-    def send_to_feishu(self, content, timeout_seconds=None, title=None):
+    def send_to_feishu(self, content, timeout_seconds=None, title=None, alert_route=False):
         if not self.ok:
             return False
         self.sent.append(content)
         self.titles.append(title)
+        self.alert_routes.append(bool(alert_route))
         return True
 
 
@@ -96,8 +98,10 @@ def test_notify_evaluates_entry_signal_and_sends_feishu(notify_env):
     signals = {s["symbol"]: s for s in result["signals"]}
     assert signals["510880"]["signal"] == "buy"
     assert signals["510880"]["reason"] == "signal_entry"
-    # 飞书卡片标题为「信号通知」，买入信号行首带 🔴📈 表情方便一眼辨别
+    # 飞书卡片标题为「信号通知」，买入信号行首带 🔴📈 表情方便一眼辨别；
+    # alert_route=True：配置 FEISHU_ALERT_WEBHOOK_URL 时信号通知发往告警专用群
     assert service.notifier.titles == ["信号通知"]
+    assert service.notifier.alert_routes == [True]
     assert "🔴📈 买入信号" in result["message"]
     # hfq 折算：库内昨收 100 × 99/100 = 99.0，乖离率 (99/99.8-1) ≈ -0.8%
     assert signals["510880"]["hfq_scaled"] is True

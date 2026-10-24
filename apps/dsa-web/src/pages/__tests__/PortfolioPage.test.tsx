@@ -97,6 +97,7 @@ vi.mock('../../api/portfolio', () => ({
 }));
 
 vi.mock('echarts', () => ({
+  connect: vi.fn(),
   init: vi.fn(() => ({ setOption: vi.fn(), resize: vi.fn(), dispose: vi.fn() })),
 }));
 

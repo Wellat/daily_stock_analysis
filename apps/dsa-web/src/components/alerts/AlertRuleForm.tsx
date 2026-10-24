@@ -104,6 +104,8 @@ const MAX_REQUESTED_DAYS = 365;
 interface AlertRuleFormProps {
   onSubmit: (payload: AlertRuleCreateRequest) => Promise<boolean | void> | boolean | void;
   isSubmitting?: boolean;
+  /** Render without the outer Card wrapper, for embedding in a drawer/dialog. */
+  embedded?: boolean;
 }
 
 function isPortfolioScope(scope: AlertTargetScope): boolean {
@@ -124,7 +126,7 @@ function optionsForScope(scope: AlertTargetScope, language: UiLanguage) {
   return scope === 'portfolio_account' ? ALERT_PORTFOLIO_TYPE_OPTIONS[language] : ALERT_SYMBOL_TYPE_OPTIONS[language];
 }
 
-export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmitting = false }) => {
+export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmitting = false, embedded = false }) => {
   const { language } = useUiLanguage();
   const text = ALERT_FORM_TEXT[language];
   const [name, setName] = useState('');
@@ -468,9 +470,8 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
     );
   };
 
-  return (
-    <Card title={text.cardTitle} subtitle={text.cardSubtitle} variant="bordered" padding="md">
-      <form className="space-y-4" noValidate onSubmit={(event) => void handleSubmit(event)}>
+  const formNode = (
+    <form className="space-y-4" noValidate onSubmit={(event) => void handleSubmit(event)}>
         <div className="grid gap-4 md:grid-cols-2">
           <Input
             label={text.ruleName}
@@ -781,7 +782,16 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
           </Button>
         </div>
         {formError ? <p role="alert" className="text-sm text-danger">{formError}</p> : null}
-      </form>
+    </form>
+  );
+
+  if (embedded) {
+    return formNode;
+  }
+
+  return (
+    <Card title={text.cardTitle} subtitle={text.cardSubtitle} variant="bordered" padding="md">
+      {formNode}
     </Card>
   );
 };

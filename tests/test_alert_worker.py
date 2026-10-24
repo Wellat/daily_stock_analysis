@@ -244,6 +244,18 @@ class AlertWorkerTestCase(unittest.TestCase):
         Config.reset_instance()
         DatabaseManager.reset_instance()
         self.service = AlertService()
+        # AlertService.test_rule（dry-run）会发送带【测试】标记的通知；统一 mock
+        # 通知服务，避免宿主进程环境变量里的渠道配置导致测试真实推送外部渠道。
+        notification_patcher = patch("src.notification.NotificationService")
+        notification_cls = notification_patcher.start()
+        notification_cls.return_value.send_with_results.return_value = SimpleNamespace(
+            dispatched=False,
+            success=False,
+            status="no_channel",
+            channel_results=[],
+            message="notification route alert has no configured channel",
+        )
+        self.addCleanup(notification_patcher.stop)
 
     def tearDown(self) -> None:
         DatabaseManager.reset_instance()

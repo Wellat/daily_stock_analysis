@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { DataSyncPanel } from '../../components/market-data/DataSyncPanel';
 import MarketDataPage from '../MarketDataPage';
@@ -20,6 +21,7 @@ const stockApi = vi.hoisted(() => ({
 }));
 
 vi.mock('echarts', () => ({
+  connect: vi.fn(),
   init: vi.fn(() => ({ setOption: vi.fn(), resize: vi.fn(), dispose: vi.fn() })),
 }));
 vi.mock('../../api/strategyLab', () => ({ strategyLabApi: cbApi }));
@@ -118,7 +120,7 @@ describe('MarketDataPage', () => {
   });
 
   it('renders tabs and loads active convertible bonds by default', async () => {
-    render(<MarketDataPage />);
+    render(<MemoryRouter><MarketDataPage /></MemoryRouter>);
     expect(await screen.findByRole('heading', { name: '行情数据' })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: '可转债' })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: '股票' })).toBeInTheDocument();
@@ -135,7 +137,7 @@ describe('MarketDataPage', () => {
   }, 15000);
 
   it('sorts the bond table via clickable column headers', async () => {
-    render(<MarketDataPage />);
+    render(<MemoryRouter><MarketDataPage /></MemoryRouter>);
     await screen.findByText('123001');
 
     // antd 排序点击区在列头内层，点列标题文字触发（标题 span 与其容器都含该文本，取第一个）
@@ -169,7 +171,7 @@ describe('MarketDataPage', () => {
         },
       ],
     });
-    render(<MarketDataPage />);
+    render(<MemoryRouter><MarketDataPage /></MemoryRouter>);
     await screen.findByText('共 120 只标的');
     expect(screen.getByText('共 120 只')).toBeInTheDocument();
 
@@ -182,7 +184,7 @@ describe('MarketDataPage', () => {
   }, 15000);
 
   it('expands CB detail inline on row click and collapses on second click', async () => {
-    render(<MarketDataPage />);
+    render(<MemoryRouter><MarketDataPage /></MemoryRouter>);
     const instrument = await screen.findByText('123001');
     fireEvent.click(instrument);
 
@@ -209,7 +211,7 @@ describe('MarketDataPage', () => {
     cbApi.listInstrumentStockBars.mockResolvedValue({
       bond_code: '123001', stock_code: '', stock_name: null, total: 0, source: null, items: [],
     });
-    render(<MarketDataPage />);
+    render(<MemoryRouter><MarketDataPage /></MemoryRouter>);
     fireEvent.click(await screen.findByText('123001'));
 
     expect(await screen.findByText(/正股行情暂不可用/)).toBeInTheDocument();
@@ -217,7 +219,7 @@ describe('MarketDataPage', () => {
   }, 15000);
 
   it('switches to the stock tab and shows stock bars', async () => {
-    render(<MarketDataPage />);
+    render(<MemoryRouter><MarketDataPage /></MemoryRouter>);
     await screen.findByText('123001');
     fireEvent.click(screen.getByRole('tab', { name: '股票' }));
 
@@ -231,7 +233,7 @@ describe('MarketDataPage', () => {
   }, 15000);
 
   it('switches to the data-sync tab and submits a basic-data sync request', async () => {
-    render(<MarketDataPage />);
+    render(<MemoryRouter><MarketDataPage /></MemoryRouter>);
     await screen.findByText('123001');
     cbApi.syncData.mockResolvedValue({ sync_run_id: 7, status: 'running', cb_basic_upserted: 0, cb_terms_upserted: 0, cb_factor_upserted: 0, cb_event_upserted: 0 });
     cbApi.listSyncRuns.mockResolvedValue({
@@ -261,7 +263,7 @@ describe('MarketDataPage', () => {
   }, 15000);
 
   it('submits an OHLC sync request with the delisted flag and a date range', async () => {
-    render(<MarketDataPage />);
+    render(<MemoryRouter><MarketDataPage /></MemoryRouter>);
     await screen.findByText('123001');
     cbApi.syncData.mockResolvedValue({ sync_run_id: 8, status: 'running', ohlc_bars_upserted: 0, ohlc_skipped: 0 });
     fireEvent.click(screen.getByRole('tab', { name: '数据同步' }));
@@ -282,7 +284,7 @@ describe('MarketDataPage', () => {
   }, 15000);
 
   it('submits a premium-history sync request with the delisted flag', async () => {
-    render(<MarketDataPage />);
+    render(<MemoryRouter><MarketDataPage /></MemoryRouter>);
     await screen.findByText('123001');
     cbApi.syncData.mockResolvedValue({
       sync_run_id: 10,
@@ -306,7 +308,7 @@ describe('MarketDataPage', () => {
   }, 15000);
 
   it('submits a factor-calc sync request with the factor date', async () => {
-    render(<MarketDataPage />);
+    render(<MemoryRouter><MarketDataPage /></MemoryRouter>);
     await screen.findByText('123001');
     cbApi.syncData.mockResolvedValue({ sync_run_id: 11, status: 'running' });
     fireEvent.click(screen.getByRole('tab', { name: '数据同步' }));
@@ -324,7 +326,7 @@ describe('MarketDataPage', () => {
   }, 15000);
 
   it('submits a scheduled-sync request from the source dropdown', async () => {
-    render(<MarketDataPage />);
+    render(<MemoryRouter><MarketDataPage /></MemoryRouter>);
     await screen.findByText('123001');
     cbApi.syncData.mockResolvedValue({ sync_run_id: 13, status: 'running' });
     fireEvent.click(screen.getByRole('tab', { name: '数据同步' }));

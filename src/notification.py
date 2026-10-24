@@ -2544,7 +2544,13 @@ class NotificationService(
                     channel_content, filename=f"report_{date_str}.md"
                 )
                 return self.send_feishu_file(filepath)
-            return self.send_to_feishu(channel_content, title=feishu_title)
+            # alert 路由（告警规则触发、dry-run 测试通知）优先发往
+            # FEISHU_ALERT_WEBHOOK_URL 告警专用群；未配置时回落主 webhook。
+            return self.send_to_feishu(
+                channel_content,
+                title=feishu_title,
+                alert_route=route_type == "alert",
+            )
         if channel == NotificationChannel.DINGTALK:
             return self.send_to_dingtalk(sanitized_content)
         if channel == NotificationChannel.TELEGRAM:

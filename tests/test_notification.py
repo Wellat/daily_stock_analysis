@@ -455,7 +455,7 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
         self.assertTrue(result.dispatched)
         self.assertTrue(result.success)
         self.assertEqual([item.channel for item in result.channel_results], ["feishu"])
-        mock_webhook.assert_called_once_with("content", title=None)
+        mock_webhook.assert_called_once_with("content", title=None, alert_route=False)
 
     @mock.patch("src.notification.get_config")
     def test_feishu_send_as_file_route_report_calls_send_feishu_file(self, mock_get_config):
@@ -505,8 +505,38 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
              mock.patch.object(service, "save_report_to_file") as mock_save:
             result = service.send_with_results("alert content", route_type="alert")
         self.assertTrue(result.success)
-        mock_text.assert_called_once_with("alert content", title=None)
+        mock_text.assert_called_once_with("alert content", title=None, alert_route=True)
         mock_save.assert_not_called()
+
+    @mock.patch("src.notification.get_config")
+    def test_alert_route_feishu_posts_to_alert_webhook_when_configured(self, mock_get_config):
+        """route_type=alert 且配置 FEISHU_ALERT_WEBHOOK_URL 时，飞书渠道发往告警专用群。"""
+        cfg = _make_config(
+            feishu_webhook_url="https://feishu.example/main",
+            feishu_alert_webhook_url="https://feishu.example/alert",
+        )
+        mock_get_config.return_value = cfg
+        service = NotificationService()
+        with mock.patch("src.notification_sender.feishu_sender.requests.post") as mock_post:
+            mock_post.return_value = _make_response(200, {"code": 0})
+            result = service.send_with_results("alert content", route_type="alert")
+        self.assertTrue(result.success)
+        self.assertEqual(mock_post.call_args.args[0], "https://feishu.example/alert")
+
+    @mock.patch("src.notification.get_config")
+    def test_report_route_feishu_still_posts_to_main_webhook(self, mock_get_config):
+        """report 路由不受告警专用 webhook 影响，仍发主群。"""
+        cfg = _make_config(
+            feishu_webhook_url="https://feishu.example/main",
+            feishu_alert_webhook_url="https://feishu.example/alert",
+        )
+        mock_get_config.return_value = cfg
+        service = NotificationService()
+        with mock.patch("src.notification_sender.feishu_sender.requests.post") as mock_post:
+            mock_post.return_value = _make_response(200, {"code": 0})
+            result = service.send_with_results("report content", route_type="report")
+        self.assertTrue(result.success)
+        self.assertEqual(mock_post.call_args.args[0], "https://feishu.example/main")
 
     @mock.patch("src.notification.get_config")
     def test_feishu_send_as_file_route_none_uses_text(self, mock_get_config):
@@ -521,7 +551,7 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
              mock.patch.object(service, "save_report_to_file") as mock_save:
             result = service.send_with_results("report content")
         self.assertTrue(result.success)
-        mock_text.assert_called_once_with("report content", title=None)
+        mock_text.assert_called_once_with("report content", title=None, alert_route=False)
         mock_save.assert_not_called()
 
     @mock.patch("src.notification.get_config")
@@ -537,7 +567,7 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
              mock.patch.object(service, "save_report_to_file") as mock_save:
             result = service.send_with_results("report content", route_type="report")
         self.assertTrue(result.success)
-        mock_text.assert_called_once_with("report content", title=None)
+        mock_text.assert_called_once_with("report content", title=None, alert_route=False)
         mock_save.assert_not_called()
 
     @mock.patch("src.notification.get_config")
@@ -571,7 +601,7 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
              mock.patch.object(service, "save_report_to_file") as mock_save:
             result = service.send_with_results("error", route_type="system_error")
         self.assertTrue(result.success)
-        mock_text.assert_called_once_with("error", title=None)
+        mock_text.assert_called_once_with("error", title=None, alert_route=False)
         mock_save.assert_not_called()
 
     @mock.patch("src.notification.get_config")
@@ -594,7 +624,7 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
             )
 
         self.assertTrue(result.success)
-        mock_feishu.assert_called_once_with("精简版内容", title="大盘复盘")
+        mock_feishu.assert_called_once_with("精简版内容", title="大盘复盘", alert_route=False)
         mock_wechat.assert_called_once_with("完整报告内容")
 
     @mock.patch("src.notification.get_config")
@@ -2122,8 +2152,9 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
 
                 self.assertTrue(ok)
                 if channel == NotificationChannel.FEISHU:
-                    # 飞书渠道带 title 透传参数（默认 None → 默认卡片标题）
-                    mock_sender.assert_called_once_with(expected, title=None)
+                    # 飞书渠道带 title 透传参数（默认 None → 默认卡片标题）；
+                    # report 路由不带告警专用 webhook
+                    mock_sender.assert_called_once_with(expected, title=None, alert_route=False)
                 else:
                     mock_sender.assert_called_once_with(expected)
 

@@ -69,6 +69,18 @@ class AlertApiTestCase(unittest.TestCase):
         app = create_app(static_dir=self.data_dir / "empty-static")
         self.client = TestClient(app)
         self.db = DatabaseManager.get_instance()
+        # Dry-run 会发送带【测试】标记的通知；统一 mock 通知服务，
+        # 避免宿主进程环境变量里的渠道配置导致测试真实推送外部渠道。
+        notification_patcher = patch("src.notification.NotificationService")
+        notification_cls = notification_patcher.start()
+        notification_cls.return_value.send_with_results.return_value = SimpleNamespace(
+            dispatched=False,
+            success=False,
+            status="no_channel",
+            channel_results=[],
+            message="notification route alert has no configured channel",
+        )
+        self.addCleanup(notification_patcher.stop)
 
     def tearDown(self) -> None:
         DatabaseManager.reset_instance()
@@ -628,6 +640,53 @@ class AlertApiTestCase(unittest.TestCase):
         self.assertFalse(payload["triggered"])
         self.assertEqual(payload["status"], "not_triggered")
         self.assertEqual(payload["observed_value"], 1700.0)
+
+    def test_dry_run_sends_test_notification_tagged_and_reports_dispatch(self) -> None:
+        rule = self._create_rule()
+
+        with patch(
+            "src.agent.events.EventMonitor._get_realtime_quote",
+            new=AsyncMock(return_value=SimpleNamespace(price=1800.0)),
+        ), patch("src.notification.NotificationService") as notification_cls:
+            notification_cls.return_value.send_with_results.return_value = SimpleNamespace(
+                status="sent", message="ok"
+            )
+            resp = self.client.post(f"/api/v1/alerts/rules/{rule['id']}/test")
+
+        self.assertEqual(resp.status_code, 200, resp.text)
+        payload = resp.json()
+        self.assertEqual(payload["notification_status"], "sent")
+        self.assertEqual(payload["notification_message"], "ok")
+
+        send_call = notification_cls.return_value.send_with_results.call_args
+        self.assertEqual(send_call.kwargs.get("route_type"), "alert")
+        alert_text = send_call.args[0]
+        self.assertIn("【测试】", alert_text)
+        self.assertIn(rule["name"], alert_text)
+        self.assertIn("600519", alert_text)
+        self.assertIn("triggered", alert_text)
+
+        # 通知发送本身不写库
+        self.assertEqual(self.client.get("/api/v1/alerts/notifications").json()["total"], 0)
+
+    def test_dry_run_notification_failure_does_not_affect_evaluation_response(self) -> None:
+        rule = self._create_rule()
+
+        def _raise_dispatch(*_args, **_kwargs):
+            raise RuntimeError("token=secret-token failed at https://example.com/webhook")
+
+        with patch(
+            "src.agent.events.EventMonitor._get_realtime_quote",
+            new=AsyncMock(return_value=SimpleNamespace(price=1800.0)),
+        ), patch("src.notification.NotificationService") as notification_cls:
+            notification_cls.return_value.send_with_results.side_effect = _raise_dispatch
+            resp = self.client.post(f"/api/v1/alerts/rules/{rule['id']}/test")
+
+        self.assertEqual(resp.status_code, 200, resp.text)
+        payload = resp.json()
+        self.assertTrue(payload["triggered"])
+        self.assertEqual(payload["notification_status"], "exception")
+        self.assertNotIn("secret-token", payload["notification_message"])
 
     def test_dry_run_quote_exception_returns_evaluation_error_and_sanitizes_message(self) -> None:
         rule = self._create_rule()

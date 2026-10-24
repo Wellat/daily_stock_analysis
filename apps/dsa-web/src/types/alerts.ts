@@ -95,6 +95,8 @@ export interface AlertRuleTestResponse {
   degradedCount?: number;
   skippedCount?: number;
   targetResults?: AlertRuleTargetResult[];
+  notificationStatus?: string | null;
+  notificationMessage?: string | null;
 }
 
 export interface AlertRuleTargetResult {

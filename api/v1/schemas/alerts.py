@@ -94,6 +94,9 @@ class AlertRuleTestResponse(BaseModel):
     degraded_count: int = 0
     skipped_count: int = 0
     target_results: List[AlertRuleTargetResult] = Field(default_factory=list)
+    # Dry-run result notification (tagged 测试) sent to the alert route.
+    notification_status: Optional[str] = None
+    notification_message: Optional[str] = None
 
 
 class AlertTriggerItem(BaseModel):

@@ -101,6 +101,11 @@ class FeishuSender:
         self._feishu_url = getattr(config, "feishu_webhook_url", None)
         self._feishu_secret = (getattr(config, "feishu_webhook_secret", None) or "").strip()
         self._feishu_keyword = (getattr(config, "feishu_webhook_keyword", None) or "").strip()
+        # -- Alert-route webhook (optional separate group for alert/signal notifications) --
+        # secret/keyword are per-bot, so they are independent from the main group.
+        self._feishu_alert_url = getattr(config, "feishu_alert_webhook_url", None)
+        self._feishu_alert_secret = (getattr(config, "feishu_alert_webhook_secret", None) or "").strip()
+        self._feishu_alert_keyword = (getattr(config, "feishu_alert_webhook_keyword", None) or "").strip()
         self._feishu_max_bytes = getattr(config, "feishu_max_bytes", 20000)
         self._feishu_send_as_file = getattr(config, "feishu_send_as_file", False)
         self._webhook_verify_ssl = getattr(config, "webhook_verify_ssl", True)
@@ -156,22 +161,24 @@ class FeishuSender:
     # Webhook helpers (unchanged legacy path)
     # ------------------------------------------------------------------
 
-    def _get_keyword_prefix(self) -> str:
-        if not self._feishu_keyword:
+    def _get_keyword_prefix(self, *, alert_route: bool = False) -> str:
+        keyword = self._feishu_alert_keyword if alert_route else self._feishu_keyword
+        if not keyword:
             return ""
-        return f"{self._feishu_keyword}\n"
+        return f"{keyword}\n"
 
-    def _apply_keyword_prefix(self, content: str) -> str:
-        prefix = self._get_keyword_prefix()
+    def _apply_keyword_prefix(self, content: str, *, alert_route: bool = False) -> str:
+        prefix = self._get_keyword_prefix(alert_route=alert_route)
         if not prefix:
             return content
-        return f"{prefix}{content}" if content else self._feishu_keyword
+        return f"{prefix}{content}" if content else (self._feishu_alert_keyword if alert_route else self._feishu_keyword)
 
-    def _build_security_fields(self) -> Dict[str, str]:
-        if not self._feishu_secret:
+    def _build_security_fields(self, *, alert_route: bool = False) -> Dict[str, str]:
+        secret = self._feishu_alert_secret if alert_route else self._feishu_secret
+        if not secret:
             return {}
         timestamp = str(int(time.time()))
-        string_to_sign = f"{timestamp}\n{self._feishu_secret}"
+        string_to_sign = f"{timestamp}\n{secret}"
         sign = base64.b64encode(
             hmac.new(
                 string_to_sign.encode("utf-8"),
@@ -362,7 +369,7 @@ class FeishuSender:
     # ------------------------------------------------------------------
 
     def send_to_feishu(self, content: str, *, timeout_seconds: Optional[float] = None,
-                       title: Optional[str] = None) -> bool:
+                       title: Optional[str] = None, alert_route: bool = False) -> bool:
         """
         Push a message to Feishu.
 
@@ -375,6 +382,8 @@ class FeishuSender:
             content: 消息内容（Markdown）。
             timeout_seconds: 仅 webhook 模式生效的请求超时。
             title: 卡片标题；未指定时使用默认标题「股票智能分析报告」。
+            alert_route: 走告警专用 webhook（``FEISHU_ALERT_WEBHOOK_URL``）；
+                未配置时回落主 webhook，行为与默认路由一致。
 
         Returns:
             Whether the send succeeded.
@@ -383,9 +392,10 @@ class FeishuSender:
             logger.error("send_to_feishu: content 不能为 None")
             return False
         sanitized_content = strip_hidden_markdown_metadata(content).strip()
-        if self._feishu_url:
+        if self._feishu_url or (alert_route and self._feishu_alert_url):
             return self._send_via_webhook(
-                sanitized_content, timeout_seconds=timeout_seconds, title=title
+                sanitized_content, timeout_seconds=timeout_seconds, title=title,
+                alert_route=alert_route,
             )
         return self._send_via_app_bot(sanitized_content, title=title)
 
@@ -548,12 +558,16 @@ class FeishuSender:
     # ------------------------------------------------------------------
 
     def _send_via_webhook(self, content: str, *, timeout_seconds: Optional[float] = None,
-                          title: Optional[str] = None) -> bool:
+                          title: Optional[str] = None, alert_route: bool = False) -> bool:
         """Legacy webhook send path."""
+        # alert_route 时优先告警专用 webhook；未配置则回落主 webhook。
+        webhook_url = self._feishu_url
+        if alert_route and self._feishu_alert_url:
+            webhook_url = self._feishu_alert_url
         formatted_content = format_feishu_markdown(content)
 
         max_bytes = self._feishu_max_bytes
-        keyword_overhead = len(self._get_keyword_prefix().encode("utf-8"))
+        keyword_overhead = len(self._get_keyword_prefix(alert_route=alert_route).encode("utf-8"))
         effective_max_bytes = max_bytes - keyword_overhead
 
         if effective_max_bytes <= 0:
@@ -571,30 +585,39 @@ class FeishuSender:
                 )
                 return False
             logger.info("飞书消息内容超长(%d字节/%d字符)，将分批发送", content_bytes, len(content))
-            return self._send_feishu_chunked(formatted_content, effective_max_bytes, title=title)
+            return self._send_feishu_chunked(
+                formatted_content, effective_max_bytes, title=title, alert_route=alert_route
+            )
 
         try:
             return self._send_feishu_message(
-                formatted_content, timeout_seconds=timeout_seconds, title=title
+                formatted_content, timeout_seconds=timeout_seconds, title=title,
+                alert_route=alert_route, webhook_url=webhook_url,
             )
         except Exception as e:
             logger.error("发送飞书消息失败: %s", e)
             return False
 
     def _send_feishu_chunked(self, content: str, max_bytes: int, *,
-                             title: Optional[str] = None) -> bool:
+                             title: Optional[str] = None, alert_route: bool = False) -> bool:
         try:
             chunks = chunk_content_by_max_bytes(content, max_bytes, add_page_marker=True)
         except ValueError as e:
             logger.error("飞书消息分片失败，单片预算不足以安全分页（关键词过长或 max_bytes 过小）: %s", e)
             return False
 
+        webhook_url = self._feishu_url
+        if alert_route and self._feishu_alert_url:
+            webhook_url = self._feishu_alert_url
+
         total_chunks = len(chunks)
         success_count = 0
         logger.info("飞书分批发送：共 %d 批", total_chunks)
         for i, chunk in enumerate(chunks):
             try:
-                if self._send_feishu_message(chunk, title=title):
+                if self._send_feishu_message(
+                    chunk, title=title, alert_route=alert_route, webhook_url=webhook_url
+                ):
                     success_count += 1
                     logger.info("飞书第 %d/%d 批发送成功", i + 1, total_chunks)
                 else:
@@ -606,17 +629,19 @@ class FeishuSender:
         return success_count == total_chunks
 
     def _send_feishu_message(self, content: str, *, timeout_seconds: Optional[float] = None,
-                             title: Optional[str] = None) -> bool:
+                             title: Optional[str] = None, alert_route: bool = False,
+                             webhook_url: Optional[str] = None) -> bool:
         """Send a single Feishu webhook message (interactive card, fallback text)."""
-        prepared_content = self._apply_keyword_prefix(content)
-        security_fields = self._build_security_fields()
+        url = webhook_url or self._feishu_url
+        prepared_content = self._apply_keyword_prefix(content, alert_route=alert_route)
+        security_fields = self._build_security_fields(alert_route=alert_route)
 
         def _post_payload(payload: Dict[str, Any]) -> bool:
             request_payload = dict(payload)
             request_payload.update(security_fields)
             try:
                 response = requests.post(
-                    self._feishu_url,
+                    url,
                     json=request_payload,
                     timeout=timeout_seconds or _WEBHOOK_SEND_TIMEOUT_SECONDS,
                     verify=self._webhook_verify_ssl,

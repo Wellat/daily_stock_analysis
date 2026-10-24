@@ -258,8 +258,9 @@ class EtfSignalNotifyService:
     def _send_feishu(self, message: str) -> bool:
         try:
             notifier = self.notifier or NotificationService()
-            # 卡片标题「信号通知」+ 消息体首行「ETF 信号通知 · 日期」，不再套 build_simple_alert 标题壳
-            return bool(notifier.send_to_feishu(message, title="信号通知"))
+            # 卡片标题「信号通知」+ 消息体首行「ETF 信号通知 · 日期」，不再套 build_simple_alert 标题壳；
+            # alert_route：配置 FEISHU_ALERT_WEBHOOK_URL 时发往告警专用群，未配置回落主群
+            return bool(notifier.send_to_feishu(message, title="信号通知", alert_route=True))
         except Exception:
             logger.exception("[EtfSignalNotify] feishu send raised")
             return False

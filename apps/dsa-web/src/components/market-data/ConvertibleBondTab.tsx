@@ -1,12 +1,14 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Descriptions, Empty, Input, Segmented, Skeleton, Switch, Table, Tag } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import type { TablePaginationConfig } from 'antd/es/table';
 import type { FilterValue, SorterResult } from 'antd/es/table/interface';
+import { useSearchParams } from 'react-router-dom';
 import { ApiErrorAlert } from '../common';
 import { countdownTag, exitDateCell as sharedExitDateCell, formatNumber, formatPct, yearsToMaturity } from '../common/cbIndicators';
 import { EChart } from '../common/EChart';
 import type { EChartOption } from '../common/EChart';
+import { portfolioApi } from '../../api/portfolio';
 import type { ParsedApiError } from '../../api/error';
 import { getParsedApiError } from '../../api/error';
 import {
@@ -17,6 +19,7 @@ import {
   type StrategyLabInstrumentItem,
   type StrategyLabStockBarItem,
 } from '../../api/strategyLab';
+import type { PortfolioTradeListItem } from '../../types/portfolio';
 
 const PAGE_SIZE = 50;
 type SortField = 'premium_rate' | 'double_low' | 'last_trading_date';
@@ -55,10 +58,16 @@ const termText = (terms: Record<string, unknown> | undefined, key: string): stri
 const exitDateCell = (item: StrategyLabInstrumentItem) => sharedExitDateCell(item.last_trading_date, item.maturity_date);
 
 export const ConvertibleBondTab: React.FC = () => {
+  // 支持 /market-data?tab=convertible-bond&symbol=113042 直达某只转债详情
+  // （策略看板「分标的盈亏明细」点击标的新开标签页跳转到这里）
+  const [searchParams] = useSearchParams();
+  const initialSymbol = searchParams.get('symbol')?.trim() || '';
+  const pendingSymbolRef = useRef<string | null>(initialSymbol || null);
+
   const [instruments, setInstruments] = useState<StrategyLabInstrumentItem[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
-  const [keyword, setKeyword] = useState('');
+  const [keyword, setKeyword] = useState(initialSymbol);
   const [sort, setSort] = useState<{ field: SortField; order: SortOrder }>(DEFAULT_SORT);
   const [expandedKeys, setExpandedKeys] = useState<string[]>([]);
   const [selected, setSelected] = useState<StrategyLabInstrumentItem | null>(null);
@@ -69,6 +78,7 @@ export const ConvertibleBondTab: React.FC = () => {
   const [events, setEvents] = useState<StrategyLabEventItem[]>([]);
   const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'delisted'>('active');
   const [heldOnly, setHeldOnly] = useState(false);
+  const [bondTrades, setBondTrades] = useState<PortfolioTradeListItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
   const [error, setError] = useState<ParsedApiError | null>(null);
@@ -146,6 +156,7 @@ export const ConvertibleBondTab: React.FC = () => {
     setSelected(item);
     setDetailLoading(true);
     setStockLoading(true);
+    setBondTrades([]);
     setError(null);
     try {
       const [detailPayload, barsPayload, eventsPayload] = await Promise.all([
@@ -156,6 +167,11 @@ export const ConvertibleBondTab: React.FC = () => {
       setDetail(detailPayload);
       setBars(barsPayload.items);
       setEvents(eventsPayload.items);
+      // 该标的的实盘成交（买卖点标记），失败降级为空不阻塞详情
+      portfolioApi
+        .listTrades({ symbol: item.bond_code, page: 1, pageSize: 100 })
+        .then((payload) => setBondTrades(payload.items))
+        .catch(() => setBondTrades([]));
       // 正股 K 线按因子日期窗口实时拉取，失败降级为空（不影响详情主体加载）
       try {
         const stockPayload = await strategyLabApi.listInstrumentStockBars(item.bond_code, {
@@ -185,17 +201,136 @@ export const ConvertibleBondTab: React.FC = () => {
     void loadDetail(item);
   }, [expandedKeys, loadDetail]);
 
+  // URL symbol 参数直达：列表加载后自动展开目标行；默认「未退市」筛不到时放宽为全部再找一次
+  useEffect(() => {
+    const target = pendingSymbolRef.current;
+    if (!target || loading) return;
+    const item = instruments.find((row) => row.bond_code === target);
+    if (item) {
+      pendingSymbolRef.current = null;
+      setExpandedKeys([target]);
+      void loadDetail(item);
+    } else if (statusFilter === 'active') {
+      setStatusFilter('all');
+    } else {
+      pendingSymbolRef.current = null;
+    }
+  }, [instruments, loading, statusFilter, loadDetail]);
+
+  // 实盘成交买卖点：同日同向聚合，吸附到最近一根有溢价率的 K 线（标记在溢价率曲线 y 轴上）
+  const tradeMarkers = useMemo(() => {
+    type Agg = { qty: number; amount: number; count: number };
+    const buy = new Map<number, Agg>();
+    const sell = new Map<number, Agg>();
+    if (bars.length && bondTrades.length) {
+      for (const trade of bondTrades) {
+        let idx = bars.findIndex((bar) => bar.trade_date === trade.tradeDate);
+        if (idx < 0) {
+          // 当日无 K 线（数据缺口）→ 回退最近一根更早的 bar
+          idx = -1;
+          for (let i = 0; i < bars.length; i += 1) {
+            if (bars[i].trade_date < trade.tradeDate) idx = i;
+            else break;
+          }
+          if (idx < 0) continue;
+        }
+        const target = trade.side === 'buy' ? buy : sell;
+        const agg = target.get(idx) ?? { qty: 0, amount: 0, count: 0 };
+        agg.qty += trade.quantity;
+        agg.amount += trade.quantity * trade.price;
+        agg.count += 1;
+        target.set(idx, agg);
+      }
+    }
+    const toPoints = (agg: Map<number, Agg>) =>
+      [...agg.entries()]
+        .filter(([idx]) => bars[idx]?.premium_rate != null)
+        .map(([idx, { qty, amount, count }]) => ({
+          value: [idx, bars[idx].premium_rate] as [number, number],
+          name: `${qty.toFixed(0)} 张 @ ${(amount / qty).toFixed(3)}${count > 1 ? `（${count} 笔）` : ''}`,
+        }));
+    return { buy: toPoints(buy), sell: toPoints(sell) };
+  }, [bars, bondTrades]);
+
+  const hasTradeMarkers = tradeMarkers.buy.length > 0 || tradeMarkers.sell.length > 0;
+
+  const tradeMarkerSeries = useMemo(() => {
+    type TradeMarkerPoint = { value: [number, number]; name: string };
+    type TradeMarkerSeries = {
+      name: string;
+      type: 'scatter';
+      yAxisIndex: number;
+      symbol: string;
+      symbolRotate: number;
+      symbolSize: number;
+      itemStyle: { color: string };
+      z: number;
+      data: TradeMarkerPoint[];
+    };
+    if (!hasTradeMarkers) return [] as TradeMarkerSeries[];
+    const build = (points: TradeMarkerPoint[], side: 'buy' | 'sell'): TradeMarkerSeries => ({
+      name: side === 'buy' ? '买入点' : '卖出点',
+      type: 'scatter',
+      yAxisIndex: 1,
+      symbol: 'triangle',
+      symbolRotate: side === 'buy' ? 0 : 180,
+      symbolSize: 11,
+      itemStyle: { color: side === 'buy' ? '#ef4444' : '#22c55e' },
+      z: 5,
+      data: points,
+    });
+    return [build(tradeMarkers.buy, 'buy'), build(tradeMarkers.sell, 'sell')];
+  }, [tradeMarkers, hasTradeMarkers]);
+
+  // 轴触发 tooltip：普通序列显示数值，买卖点序列附带 数量@成交价
+  const axisTooltip = useMemo<EChartOption['tooltip']>(() => ({
+    trigger: 'axis',
+    formatter: (params) => {
+      const list = Array.isArray(params) ? params : [params];
+      if (!list.length) return '';
+      const first = list[0] as { axisValueLabel?: string; name?: string };
+      const header = String(first.axisValueLabel ?? first.name ?? '');
+      const lines = list.map((p) => {
+        const pointName = (p.data as { name?: string } | undefined)?.name;
+        const value = Array.isArray(p.value) ? p.value[p.value.length - 1] : p.value;
+        return `${p.marker} ${p.seriesName}：${pointName ?? value}`;
+      });
+      return `${header}<br/>${lines.join('<br/>')}`;
+    },
+  }), []);
+
+  // 时间窗缩放：底部滑窗拖拽 + 滚轮/触摸捏合；两组件同 group 联动（见 EChart group）
+  const dataZoom = useMemo<EChartOption['dataZoom']>(() => ([
+    { type: 'inside' },
+    {
+      type: 'slider',
+      height: 18,
+      bottom: 8,
+      borderColor: 'transparent',
+      backgroundColor: 'rgba(148, 163, 184, 0.08)',
+      fillerColor: 'rgba(34, 211, 238, 0.15)',
+      handleStyle: { color: '#22d3ee' },
+      moveHandleStyle: { color: '#475569' },
+      textStyle: { color: '#94a3b8', fontSize: 10 },
+    },
+  ]), []);
+
   const chartOption: EChartOption = bars.length
     ? {
         backgroundColor: 'transparent',
-        tooltip: { trigger: 'axis' },
-        legend: { data: ['收盘价', '转股溢价率'], textStyle: { color: '#94a3b8' }, top: 0 },
-        grid: { left: 56, right: 56, top: 32, bottom: 32 },
+        tooltip: axisTooltip,
+        legend: {
+          data: ['收盘价', '转股溢价率', ...(hasTradeMarkers ? ['买入点', '卖出点'] : [])],
+          textStyle: { color: '#94a3b8' },
+          top: 0,
+        },
+        grid: { left: 56, right: 56, top: 32, bottom: 52 },
         xAxis: { type: 'category', data: bars.map((bar) => bar.trade_date) },
         yAxis: [
           { type: 'value', name: '价格', scale: true },
           { type: 'value', name: '溢价率', scale: true, splitLine: { show: false } },
         ],
+        dataZoom,
         series: [
           {
             name: '收盘价',
@@ -215,6 +350,7 @@ export const ConvertibleBondTab: React.FC = () => {
             data: bars.map((bar) => bar.premium_rate),
             lineStyle: { width: 2, color: '#f59e0b' },
           },
+          ...tradeMarkerSeries,
         ],
       }
     : {};
@@ -224,14 +360,19 @@ export const ConvertibleBondTab: React.FC = () => {
     bars.length && stockBars.length
       ? {
           backgroundColor: 'transparent',
-          tooltip: { trigger: 'axis' },
-          legend: { data: ['正股收盘价', '转股溢价率'], textStyle: { color: '#94a3b8' }, top: 0 },
-          grid: { left: 56, right: 56, top: 32, bottom: 32 },
+          tooltip: axisTooltip,
+          legend: {
+            data: ['正股收盘价', '转股溢价率', ...(hasTradeMarkers ? ['买入点', '卖出点'] : [])],
+            textStyle: { color: '#94a3b8' },
+            top: 0,
+          },
+          grid: { left: 56, right: 56, top: 32, bottom: 52 },
           xAxis: { type: 'category', data: bars.map((bar) => bar.trade_date) },
           yAxis: [
             { type: 'value', name: '正股价格', scale: true },
             { type: 'value', name: '溢价率', scale: true, splitLine: { show: false } },
           ],
+          dataZoom,
           series: [
             {
               name: '正股收盘价',
@@ -253,6 +394,7 @@ export const ConvertibleBondTab: React.FC = () => {
               data: bars.map((bar) => bar.premium_rate),
               lineStyle: { width: 2, color: '#f59e0b' },
             },
+            ...tradeMarkerSeries,
           ],
         }
       : {};
@@ -342,6 +484,8 @@ export const ConvertibleBondTab: React.FC = () => {
 
   const stockCode = detail?.stock_code || selected?.stock_code || '--';
   const stockName = detail?.stock_name || selected?.stock_name || '--';
+  // 两张图同 group：dataZoom / tooltip 联动（同一转债、同一日期轴）
+  const chartGroup = `cb-detail-${detail?.bond_code || selected?.bond_code || 'unknown'}`;
   const industry = detail?.industry || termText(detail?.terms, 'industry') || '--';
   const currentPremiumRate = detail?.current_premium_rate ?? selected?.current_premium_rate ?? detail?.latest_premium_rate ?? selected?.latest_premium_rate;
   const latestClose = detail?.latest_close ?? selected?.latest_close;
@@ -391,19 +535,23 @@ export const ConvertibleBondTab: React.FC = () => {
       </div>
 
       <div className="glass-panel px-4 py-4">
-        <h3 className="mb-3 text-sm font-semibold text-foreground">价格与溢价率</h3>
-        {detailLoading ? <Skeleton active paragraph={{ rows: 5 }} /> : <EChart option={chartOption} height={320} aria-label="价格与溢价率图表" />}
+        <h3 className="mb-3 text-sm font-semibold text-foreground">
+          价格与溢价率
+          {hasTradeMarkers ? <span className="ml-2 text-xs font-normal text-secondary-text">▲ 买入 / ▼ 卖出 为实盘成交点（溢价率轴）</span> : null}
+        </h3>
+        {detailLoading ? <Skeleton active paragraph={{ rows: 5 }} /> : <EChart option={chartOption} height={320} group={chartGroup} aria-label="价格与溢价率图表" />}
       </div>
 
       <div className="glass-panel px-4 py-4">
         <h3 className="mb-3 text-sm font-semibold text-foreground">
           正股与溢价率
           {stockName !== '--' ? <span className="ml-2 text-xs font-normal text-secondary-text">{stockName} · {stockCode}</span> : null}
+          {hasTradeMarkers ? <span className="ml-2 text-xs font-normal text-secondary-text">▲ 买入 / ▼ 卖出 为实盘成交点（溢价率轴）</span> : null}
         </h3>
         {stockLoading ? (
           <Skeleton active paragraph={{ rows: 5 }} />
         ) : stockBars.length ? (
-          <EChart option={stockChartOption} height={320} aria-label="正股与溢价率图表" />
+          <EChart option={stockChartOption} height={320} group={chartGroup} aria-label="正股与溢价率图表" />
         ) : (
           <Empty description="正股行情暂不可用（实时拉取腾讯日 K 失败或无正股代码）" image={Empty.PRESENTED_IMAGE_SIMPLE} />
         )}

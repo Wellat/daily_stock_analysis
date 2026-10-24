@@ -1038,6 +1038,12 @@ class Config:
     feishu_webhook_url: Optional[str] = None
     feishu_webhook_secret: Optional[str] = None  # 自定义机器人签名密钥（可选）
     feishu_webhook_keyword: Optional[str] = None  # 自定义机器人关键词（可选）
+    # 飞书告警专用 Webhook（可选）：告警路由（告警规则触发、dry-run 测试通知、ETF 信号通知）
+    # 配置后发往该群；secret/keyword 独立于主群（每个机器人的加签/关键词配置互不相关）。
+    # 不配置时告警类消息回落主 Webhook，行为与原先一致。
+    feishu_alert_webhook_url: Optional[str] = None
+    feishu_alert_webhook_secret: Optional[str] = None
+    feishu_alert_webhook_keyword: Optional[str] = None
     dingtalk_webhook_url: Optional[str] = None
     dingtalk_secret: Optional[str] = None
 
@@ -2005,6 +2011,9 @@ class Config:
             feishu_webhook_url=os.getenv('FEISHU_WEBHOOK_URL'),
             feishu_webhook_secret=os.getenv('FEISHU_WEBHOOK_SECRET'),
             feishu_webhook_keyword=os.getenv('FEISHU_WEBHOOK_KEYWORD'),
+            feishu_alert_webhook_url=os.getenv('FEISHU_ALERT_WEBHOOK_URL'),
+            feishu_alert_webhook_secret=os.getenv('FEISHU_ALERT_WEBHOOK_SECRET'),
+            feishu_alert_webhook_keyword=os.getenv('FEISHU_ALERT_WEBHOOK_KEYWORD'),
             dingtalk_webhook_url=os.getenv('DINGTALK_WEBHOOK_URL'),
             dingtalk_secret=os.getenv('DINGTALK_SECRET'),
             

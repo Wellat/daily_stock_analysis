@@ -1,6 +1,6 @@
 import type React from 'react';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { BellRing } from 'lucide-react';
+import { BellRing, Plus } from 'lucide-react';
 import { alertsApi } from '../api/alerts';
 import type { ParsedApiError } from '../api/error';
 import { getParsedApiError } from '../api/error';
@@ -12,7 +12,17 @@ import {
   type AlertTypeFilter,
 } from '../components/alerts/AlertRuleList';
 import { AlertTriggerHistory } from '../components/alerts/AlertTriggerHistory';
-import { ApiErrorAlert, AppPage, Card, EmptyState, InlineAlert, Loading, PageHeader } from '../components/common';
+import {
+  ApiErrorAlert,
+  AppPage,
+  Button,
+  Card,
+  Drawer,
+  EmptyState,
+  InlineAlert,
+  Loading,
+  PageHeader,
+} from '../components/common';
 import type {
   AlertNotificationItem,
   AlertRuleCreateRequest,
@@ -40,6 +50,20 @@ function testVariant(result: AlertRuleTestResponse): 'success' | 'warning' | 'da
   return result.triggered ? 'success' : 'warning';
 }
 
+const notificationDispatchLabel: Record<string, string> = {
+  sent: '已发送',
+  all_failed: '发送失败',
+  no_channel: '未发送（无可用渠道）',
+  noise_suppressed: '未发送（降噪抑制）',
+  exception: '发送异常',
+};
+
+function formatTestNotificationStatus(result: AlertRuleTestResponse): string {
+  const status = result.notificationStatus;
+  if (!status) return '未发送';
+  return notificationDispatchLabel[status] ?? status;
+}
+
 function renderTestResultMessage(result: AlertRuleTestResponse): React.ReactNode {
   const targetResults = result.targetResults ?? [];
   return (
@@ -52,6 +76,11 @@ function renderTestResultMessage(result: AlertRuleTestResponse): React.ReactNode
         {result.triggered ? '是' : '否'}
         {' · 观察值：'}
         {result.observedValue == null ? '--' : String(result.observedValue)}
+      </div>
+      <div className="text-xs">
+        {'测试通知：'}
+        {formatTestNotificationStatus(result)}
+        {result.notificationMessage ? `（${result.notificationMessage}）` : ''}
       </div>
       {result.evaluatedCount != null && result.evaluatedCount > 1 ? (
         <div className="text-xs">
@@ -122,6 +151,7 @@ const AlertsPage: React.FC = () => {
   const [createLoading, setCreateLoading] = useState(false);
   const [createError, setCreateError] = useState<ParsedApiError | null>(null);
   const [createSuccess, setCreateSuccess] = useState<string | null>(null);
+  const [createDrawerOpen, setCreateDrawerOpen] = useState(false);
   const [busyRule, setBusyRule] = useState<AlertRuleBusyState | null>(null);
   const [testResult, setTestResult] = useState<AlertRuleTestResponse | null>(null);
   const rulesRequestIdRef = useRef(0);
@@ -207,6 +237,7 @@ const AlertsPage: React.FC = () => {
     try {
       const created = await alertsApi.createRule(payload);
       setCreateSuccess(`已创建告警规则「${created.name}」`);
+      setCreateDrawerOpen(false);
       await loadRules(1);
       return true;
     } catch (error) {
@@ -264,9 +295,14 @@ const AlertsPage: React.FC = () => {
         eyebrow="Alert Center"
         title="告警中心"
         description="管理事件告警、日线技术指标、自选股、持仓/账户联动和大盘红绿灯规则，执行一次性测试，并查看后台评估任务记录的触发历史。"
+        actions={(
+          <Button onClick={() => setCreateDrawerOpen(true)}>
+            <Plus className="h-4 w-4" />
+            新建规则
+          </Button>
+        )}
       />
 
-      {createError ? <ApiErrorAlert error={createError} onDismiss={() => setCreateError(null)} /> : null}
       {createSuccess ? (
         <InlineAlert
           title="创建成功"
@@ -281,40 +317,45 @@ const AlertsPage: React.FC = () => {
       ) : null}
       {rulesError ? <ApiErrorAlert error={rulesError} onDismiss={() => setRulesError(null)} /> : null}
 
-      <div className="grid items-stretch gap-5 xl:grid-cols-[380px_minmax(0,1fr)]">
-        <AlertRuleForm onSubmit={handleCreateRule} isSubmitting={createLoading} />
-        <div className="flex h-full min-h-0 flex-col gap-4">
-          <AlertRuleList
-            className="flex h-full min-h-0 flex-col"
-            rules={rules}
-            total={rulesTotal}
-            page={rulesPage}
-            pageSize={PAGE_SIZE}
-            isLoading={rulesLoading}
-            enabledFilter={enabledFilter}
-            alertTypeFilter={alertTypeFilter}
-            onEnabledFilterChange={(value) => {
-              setEnabledFilter(value);
-              setRulesPage(1);
-            }}
-            onAlertTypeFilterChange={(value) => {
-              setAlertTypeFilter(value);
-              setRulesPage(1);
-            }}
-            onPageChange={setRulesPage}
-            onToggleEnabled={(rule) => void handleToggleEnabled(rule)}
-            onDelete={(rule) => void handleDeleteRule(rule)}
-            onTest={(rule) => void handleTestRule(rule)}
-            busyRule={busyRule}
+      <Drawer
+        isOpen={createDrawerOpen}
+        onClose={() => setCreateDrawerOpen(false)}
+        title="新建告警规则"
+      >
+        {createError ? <ApiErrorAlert error={createError} onDismiss={() => setCreateError(null)} /> : null}
+        <AlertRuleForm onSubmit={handleCreateRule} isSubmitting={createLoading} embedded />
+      </Drawer>
+
+      <div className="flex flex-col gap-4">
+        <AlertRuleList
+          rules={rules}
+          total={rulesTotal}
+          page={rulesPage}
+          pageSize={PAGE_SIZE}
+          isLoading={rulesLoading}
+          enabledFilter={enabledFilter}
+          alertTypeFilter={alertTypeFilter}
+          onEnabledFilterChange={(value) => {
+            setEnabledFilter(value);
+            setRulesPage(1);
+          }}
+          onAlertTypeFilterChange={(value) => {
+            setAlertTypeFilter(value);
+            setRulesPage(1);
+          }}
+          onPageChange={setRulesPage}
+          onToggleEnabled={(rule) => void handleToggleEnabled(rule)}
+          onDelete={(rule) => void handleDeleteRule(rule)}
+          onTest={(rule) => void handleTestRule(rule)}
+          busyRule={busyRule}
+        />
+        {testResult ? (
+          <InlineAlert
+            title="测试结果"
+            variant={testVariant(testResult)}
+            message={renderTestResultMessage(testResult)}
           />
-          {testResult ? (
-            <InlineAlert
-              title="测试结果"
-              variant={testVariant(testResult)}
-              message={renderTestResultMessage(testResult)}
-            />
-          ) : null}
-        </div>
+        ) : null}
       </div>
 
       {triggersError ? <ApiErrorAlert error={triggersError} onDismiss={() => setTriggersError(null)} /> : null}

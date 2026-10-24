@@ -342,7 +342,9 @@ class TestFeishuSender(unittest.TestCase):
         result = sender.send_to_feishu("[dsa-market-region]: # (us)\n\n# 🎯 Market Review\n\nBody")
 
         self.assertTrue(result)
-        mock_send.assert_called_once_with("# 🎯 Market Review\n\nBody", timeout_seconds=None, title=None)
+        mock_send.assert_called_once_with(
+            "# 🎯 Market Review\n\nBody", timeout_seconds=None, title=None, alert_route=False
+        )
 
     @mock.patch("src.notification_sender.feishu_sender.requests.post")
     def test_send_default_title_used_in_card_header(self, mock_post):
@@ -375,6 +377,63 @@ class TestFeishuSender(unittest.TestCase):
         sender = FeishuSender(cfg)
         result = sender.send_to_feishu("hello")
         self.assertFalse(result)
+
+    @mock.patch("src.notification_sender.feishu_sender.requests.post")
+    def test_alert_route_posts_to_alert_webhook_when_configured(self, mock_post):
+        mock_post.return_value = _response(200, {"code": 0})
+        cfg = _config(
+            feishu_webhook_url="https://feishu.example/main",
+            feishu_alert_webhook_url="https://feishu.example/alert",
+        )
+        sender = FeishuSender(cfg)
+
+        self.assertTrue(sender.send_to_feishu("alert!", alert_route=True))
+
+        self.assertEqual(mock_post.call_args.args[0], "https://feishu.example/alert")
+
+    @mock.patch("src.notification_sender.feishu_sender.requests.post")
+    def test_alert_route_falls_back_to_main_webhook_when_alert_url_absent(self, mock_post):
+        mock_post.return_value = _response(200, {"code": 0})
+        cfg = _config(feishu_webhook_url="https://feishu.example/main")
+        sender = FeishuSender(cfg)
+
+        self.assertTrue(sender.send_to_feishu("alert!", alert_route=True))
+
+        self.assertEqual(mock_post.call_args.args[0], "https://feishu.example/main")
+
+    @mock.patch("src.notification_sender.feishu_sender.requests.post")
+    def test_default_route_still_posts_to_main_webhook_when_alert_url_configured(self, mock_post):
+        mock_post.return_value = _response(200, {"code": 0})
+        cfg = _config(
+            feishu_webhook_url="https://feishu.example/main",
+            feishu_alert_webhook_url="https://feishu.example/alert",
+        )
+        sender = FeishuSender(cfg)
+
+        self.assertTrue(sender.send_to_feishu("report"))
+
+        self.assertEqual(mock_post.call_args.args[0], "https://feishu.example/main")
+
+    @mock.patch("src.notification_sender.feishu_sender.time.time", return_value=1700000000)
+    @mock.patch("src.notification_sender.feishu_sender.requests.post")
+    def test_alert_route_uses_independent_secret_and_keyword(self, mock_post, _mock_time):
+        mock_post.return_value = _response(200, {"code": 0})
+        cfg = _config(
+            feishu_webhook_url="https://feishu.example/main",
+            feishu_webhook_keyword="股票日报",
+            feishu_alert_webhook_url="https://feishu.example/alert",
+            feishu_alert_webhook_secret="alert-secret",
+            feishu_alert_webhook_keyword="告警",
+        )
+        sender = FeishuSender(cfg)
+
+        self.assertTrue(sender.send_to_feishu("body", alert_route=True))
+
+        payload = mock_post.call_args.kwargs["json"]
+        # 告警路由使用告警群自己的关键词前缀与签名，不回落主群配置
+        self.assertTrue(payload["card"]["elements"][0]["text"]["content"].startswith("告警\n"))
+        self.assertIn("sign", payload)
+        self.assertEqual(payload["timestamp"], "1700000000")
 
     @mock.patch("src.notification_sender.feishu_sender.time.time", return_value=1700000000)
     @mock.patch("src.notification_sender.feishu_sender.requests.post")

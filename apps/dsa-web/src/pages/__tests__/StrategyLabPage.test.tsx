@@ -17,6 +17,7 @@ const liveApi = vi.hoisted(() => ({
 }));
 
 vi.mock('echarts', () => ({
+  connect: vi.fn(),
   init: vi.fn(() => ({ setOption: vi.fn(), resize: vi.fn(), dispose: vi.fn() })),
 }));
 vi.mock('../../api/strategyLab', () => ({ strategyLabApi: api }));

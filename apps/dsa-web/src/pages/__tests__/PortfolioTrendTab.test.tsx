@@ -6,6 +6,7 @@ const { getTrend } = vi.hoisted(() => ({ getTrend: vi.fn() }));
 
 vi.mock('../../api/portfolio', () => ({ portfolioApi: { getTrend } }));
 vi.mock('echarts', () => ({
+  connect: vi.fn(),
   init: vi.fn(() => ({ setOption: vi.fn(), resize: vi.fn(), dispose: vi.fn() })),
 }));
 

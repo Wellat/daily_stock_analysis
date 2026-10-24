@@ -31,6 +31,9 @@ function pnlClassName(value: number): string {
   return 'text-secondary-text';
 }
 
+// 可转债代码（沪 11x / 深 12x / 创 123xxx 等 6 位 1[123] 开头）：可跳行情数据详情
+const isConvertibleBondCode = (symbol: string): boolean => /^1[123]\d{4}$/.test(symbol);
+
 export const StrategyDashboardTab: React.FC = () => {
   const [rangeMode, setRangeMode] = useState<RangeMode>('all');
   const [startDate, setStartDate] = useState('');
@@ -112,7 +115,22 @@ export const StrategyDashboardTab: React.FC = () => {
       title: '标的',
       dataIndex: 'symbol',
       width: 180,
-      render: (_, record) => (record.symbolName ? `${record.symbolName}（${record.symbol}）` : record.symbol),
+      render: (_, record) => {
+        const label = record.symbolName ? `${record.symbolName}（${record.symbol}）` : record.symbol;
+        // 可转债标的：新开标签页直达行情数据详情，溢价率曲线上带实盘买卖点
+        if (!isConvertibleBondCode(record.symbol)) return label;
+        return (
+          <a
+            href={`/market-data?tab=convertible-bond&symbol=${record.symbol}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-cyan hover:underline"
+            title="在行情数据中查看该转债详情与买卖点"
+          >
+            {label}
+          </a>
+        );
+      },
     },
     {
       title: '买入',
@@ -255,6 +273,7 @@ export const StrategyDashboardTab: React.FC = () => {
 
           <div className="glass-panel px-4 py-4">
             <h3 className="text-sm font-semibold text-foreground mb-2">分标的盈亏明细</h3>
+            <p className="mb-2 text-xs text-secondary-text">点击可转债标的可在新标签页查看行情数据详情，溢价率曲线上标记实盘买卖点。</p>
             <Table<TradingDashboardSymbolItem>
               size="small"
               rowKey="symbol"

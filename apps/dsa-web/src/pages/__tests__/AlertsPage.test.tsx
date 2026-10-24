@@ -127,6 +127,15 @@ describe('AlertsPage', () => {
 
   it('runs a dry-run test and renders only declared response fields', async () => {
     listTriggers.mockResolvedValueOnce({ items: [], total: 0, page: 1, pageSize: 20 });
+    testRule.mockResolvedValueOnce({
+      ruleId: 1,
+      status: 'triggered',
+      triggered: true,
+      observedValue: 1801,
+      message: '600519 price above 1800',
+      notificationStatus: 'sent',
+      notificationMessage: 'ok',
+    });
     render(<AlertsPage />);
 
     fireEvent.click(await screen.findByRole('button', { name: '测试' }));
@@ -135,6 +144,7 @@ describe('AlertsPage', () => {
     expect(await screen.findByText('测试结果')).toBeInTheDocument();
     expect(screen.getByText(/600519 price above 1800/)).toBeInTheDocument();
     expect(screen.getByText(/观察值：1801/)).toBeInTheDocument();
+    expect(screen.getByText(/测试通知：已发送（ok）/)).toBeInTheDocument();
     expect(screen.queryByText(/realtime_quote/)).not.toBeInTheDocument();
   });
 
@@ -180,10 +190,11 @@ describe('AlertsPage', () => {
     expect(screen.getByText(/not_triggered \/ degraded/)).toBeInTheDocument();
   });
 
-  it('creates a rule through the page form and reloads rules', async () => {
+  it('creates a rule through the create drawer and reloads rules', async () => {
     render(<AlertsPage />);
 
     await screen.findByText('茅台价格突破');
+    fireEvent.click(screen.getByRole('button', { name: '新建规则' }));
     fireEvent.change(screen.getByLabelText('标的代码'), { target: { value: 'aapl' } });
     fireEvent.change(screen.getByLabelText('价格阈值'), { target: { value: '200' } });
     fireEvent.click(screen.getByRole('button', { name: '创建规则' }));
@@ -196,6 +207,7 @@ describe('AlertsPage', () => {
       }));
     });
     expect(await screen.findByText(/已创建告警规则/)).toBeInTheDocument();
+    expect(screen.queryByLabelText('标的代码')).not.toBeInTheDocument();
   });
 
   it('keeps create form values when create API fails', async () => {
@@ -203,6 +215,7 @@ describe('AlertsPage', () => {
     render(<AlertsPage />);
 
     await screen.findByText('茅台价格突破');
+    fireEvent.click(screen.getByRole('button', { name: '新建规则' }));
     fireEvent.change(screen.getByLabelText('标的代码'), { target: { value: 'aapl' } });
     fireEvent.change(screen.getByLabelText('价格阈值'), { target: { value: '200' } });
     fireEvent.click(screen.getByRole('button', { name: '创建规则' }));

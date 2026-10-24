@@ -222,7 +222,7 @@ P3 新增三类通知路由配置：
 | 路由类型 | 配置 key | 当前生产者 |
 | --- | --- | --- |
 | `report` | `NOTIFICATION_REPORT_CHANNELS` | 单股推送、聚合日报、大盘复盘、合并推送、飞书文档成功链接 |
-| `alert` | `NOTIFICATION_ALERT_CHANNELS` | EventMonitor 触发通知 |
+| `alert` | `NOTIFICATION_ALERT_CHANNELS` | 告警规则触发通知（AlertWorker）、告警规则 dry-run 测试通知 |
 | `system_error` | `NOTIFICATION_SYSTEM_ERROR_CHANNELS` | 预留能力；当前不新增自动系统错误生产者 |
 
 配置值为逗号分隔渠道枚举：`wechat,dingtalk,feishu,telegram,email,pushover,ntfy,gotify,pushplus,serverchan3,custom,discord,slack,astrbot`。
@@ -234,6 +234,20 @@ P3 新增三类通知路由配置：
 - 路由过滤发生在 Markdown 转图片前，`MARKDOWN_TO_IMAGE_CHANNELS` 只对路由后的渠道子集生效。
 - `MERGE_EMAIL_NOTIFICATION` 不需要额外配置；只要 `email` 仍在 report 路由后的渠道中，现有合并邮件行为保持不变。
 - `--check-notify` 会把未知渠道值报为 error，把合法但未启用的路由目标报为 warning。
+
+### 飞书告警专用群（FEISHU_ALERT_WEBHOOK_URL）
+
+配置一组告警专用飞书 webhook 后，告警类消息发往独立群，与主通知群分流：
+
+| 消息类别 | 目标群 |
+| --- | --- |
+| 个股/聚合报告、大盘复盘、成交汇总、可转债数据同步等通知类消息 | 主群（`FEISHU_WEBHOOK_URL`） |
+| 告警规则触发、告警 dry-run 测试通知、ETF 信号通知（买卖信号） | 告警群（`FEISHU_ALERT_WEBHOOK_URL`） |
+
+- `FEISHU_ALERT_WEBHOOK_URL`：告警专用群的自定义机器人 webhook；不配置时告警类消息回落主群，行为与原先一致。
+- `FEISHU_ALERT_WEBHOOK_SECRET` / `FEISHU_ALERT_WEBHOOK_KEYWORD`：告警群机器人各自的签名密钥/关键词，**只作用于告警群，不回落主群的同名配置**（每个机器人的安全设置相互独立）；告警群机器人未开启签名校验时留空即可。
+- ETF 信号通知直发飞书（不走 `NOTIFICATION_ALERT_CHANNELS` 渠道枚举过滤），但同样遵守 `FEISHU_ALERT_WEBHOOK_URL` 分流。
+- 该能力目前仅支持 webhook 模式；主渠道为 App Bot 模式时，配置了 `FEISHU_ALERT_WEBHOOK_URL` 的告警消息仍走告警群 webhook，其余消息保持 App Bot。
 
 ## 聚合报告失败隔离
 

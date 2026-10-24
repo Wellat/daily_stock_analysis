@@ -99,3 +99,44 @@ describe('StrategyDashboardTab 策略看板', () => {
     });
   }, 15000);
 });
+
+  it('可转债标的渲染为新标签页直达行情数据的链接，ETF 标的保持纯文本', async () => {
+    client.get.mockImplementation(async (url: string) => {
+      if (url === '/api/v1/trading/dashboard') {
+        return {
+          data: {
+            ...dashboardPayload,
+            symbols: [
+              ...dashboardPayload.symbols,
+              {
+                symbol: '510880',
+                symbol_name: '红利ETF',
+                buy_count: 1,
+                buy_quantity: 100,
+                buy_amount: 347.5,
+                sell_count: 0,
+                sell_quantity: 0,
+                sell_amount: 0,
+                realized_pnl: 0,
+                open_quantity: 100,
+                open_cost: 347.5,
+                unmatched_sell_quantity: 0,
+              },
+            ],
+          },
+        };
+      }
+      return { data: { items: [] } };
+    });
+
+    render(<StrategyDashboardTab />);
+    await screen.findAllByText('+250.00');
+
+    const link = screen.getByText('样例转债（113001）').closest('a');
+    expect(link).not.toBeNull();
+    expect(link).toHaveAttribute('href', '/market-data?tab=convertible-bond&symbol=113001');
+    expect(link).toHaveAttribute('target', '_blank');
+
+    const etf = screen.getByText('红利ETF（510880）');
+    expect(etf.closest('a')).toBeNull();
+  }, 15000);

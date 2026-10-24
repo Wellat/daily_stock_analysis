@@ -179,12 +179,13 @@ class AlertService:
         try:
             if len(payloads) == 1 and row.target_scope == "single_symbol":
                 result = asyncio.run(self._evaluate_rule(payloads[0].rule, monitor, daily_cache=None))
-                return self._dry_run_response_for_single(payloads[0], result, target_scope=row.target_scope)
-            results = asyncio.run(self._evaluate_runtime_payloads(payloads, monitor))
-            return aggregate_dry_run_results(rule_id, row.target_scope, results)
+                response = self._dry_run_response_for_single(payloads[0], result, target_scope=row.target_scope)
+            else:
+                results = asyncio.run(self._evaluate_runtime_payloads(payloads, monitor))
+                response = aggregate_dry_run_results(rule_id, row.target_scope, results)
         except Exception as exc:
             sanitized_message = self._sanitize_text(str(exc) or "Alert evaluation failed")
-            return {
+            response = {
                 "rule_id": rule_id,
                 "target_scope": row.target_scope,
                 "status": "evaluation_error",
@@ -202,6 +203,79 @@ class AlertService:
                 "skipped_count": 0,
                 "target_results": [],
             }
+        self._send_test_notification(row, payloads, response)
+        return response
+
+    def _send_test_notification(
+        self,
+        row: AlertRuleRecord,
+        payloads: List[RuntimeAlertPayload],
+        response: Dict[str, Any],
+    ) -> None:
+        """Best-effort: push the dry-run result to the alert route, tagged 测试.
+
+        Failures never affect the dry-run response beyond the returned
+        notification summary fields. No rows are written to alert tables.
+        """
+        try:
+            from src.notification import NotificationBuilder, NotificationService
+
+            display_target = self._test_notification_display_target(row, payloads)
+            title = f"【测试】Event Alert | {display_target}"
+            lines = [
+                "【测试】告警规则试跑结果（不写入触发历史）",
+                f"规则：{row.name}",
+                f"标的：{display_target}",
+                f"状态：{response.get('status')}",
+                f"触发：{'是' if response.get('triggered') else '否'}",
+            ]
+            observed = response.get("observed_value")
+            if observed is not None:
+                lines.append(f"观察值：{observed}")
+            evaluated_count = response.get("evaluated_count") or 0
+            if evaluated_count > 1:
+                lines.append(
+                    "评估 {0} · 触发 {1} · 降级 {2} · 跳过 {3}".format(
+                        evaluated_count,
+                        response.get("triggered_count") or 0,
+                        response.get("degraded_count") or 0,
+                        response.get("skipped_count") or 0,
+                    )
+                )
+            message = response.get("message") or response.get("reason")
+            if message:
+                lines.append(f"详情：{message}")
+            alert_text = NotificationBuilder.build_simple_alert(
+                title=title,
+                content="\n".join(lines),
+                alert_type="info",
+            )
+            dispatch = NotificationService().send_with_results(alert_text, route_type="alert")
+            response["notification_status"] = str(getattr(dispatch, "status", None) or "unknown")
+            response["notification_message"] = self._sanitize_text(
+                getattr(dispatch, "message", None) or ""
+            ) or None
+        except Exception as exc:
+            logger.warning(
+                "[AlertService] Failed to send dry-run notification for rule %s: %s",
+                getattr(row, "id", "?"),
+                self._sanitize_text(str(exc) or "dry-run notification failed"),
+            )
+            response["notification_status"] = "exception"
+            response["notification_message"] = self._sanitize_text(str(exc) or "dry-run notification failed")
+
+    @staticmethod
+    def _test_notification_display_target(row: AlertRuleRecord, payloads: List[RuntimeAlertPayload]) -> str:
+        scope = str(row.target_scope or "single_symbol")
+        if scope in {"market", "portfolio_account"}:
+            return "全部账户" if str(row.target) == "all" else f"账户 {row.target}"
+        if scope == "single_symbol":
+            return str((payloads[0].display_target if payloads else None) or row.target)
+        scope_labels = {"watchlist": "自选股", "portfolio_holdings": "持仓标的"}
+        label = scope_labels.get(scope)
+        if label is None:
+            return f"{scope}:{row.target}"
+        return f"{label}（{row.target}）"
 
     async def _evaluate_rule(
         self,
