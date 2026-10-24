@@ -77,7 +77,10 @@ SYMBOL_ALERT_TYPES = LEGACY_RUNTIME_ALERT_TYPES | TECHNICAL_ALERT_TYPES
 SUPPORTED_ALERT_TYPES = SYMBOL_ALERT_TYPES | PORTFOLIO_ALERT_TYPES | MARKET_ALERT_TYPES
 SUPPORTED_TARGET_SCOPES = frozenset({"single_symbol", "watchlist", "portfolio_holdings", "portfolio_account", "market"})
 SUPPORTED_SEVERITIES = frozenset({"info", "warning", "critical"})
-NULLABLE_RULE_UPDATE_FIELDS = frozenset({"cooldown_policy", "notification_policy"})
+NULLABLE_RULE_UPDATE_FIELDS = frozenset({"cooldown_policy", "notification_policy", "check_interval_minutes"})
+
+ALERT_CHECK_INTERVAL_MIN = 1
+ALERT_CHECK_INTERVAL_MAX = 1440
 
 logger = logging.getLogger(__name__)
 
@@ -981,9 +984,24 @@ class AlertService:
             "severity": severity,
             "enabled": bool(payload.get("enabled", True)),
             "source": str(source or "api")[:16],
+            "check_interval_minutes": self._normalize_check_interval(payload.get("check_interval_minutes")),
             "cooldown_policy": self._dump_json_or_none(payload.get("cooldown_policy")),
             "notification_policy": self._dump_json_or_none(payload.get("notification_policy")),
         }
+
+    @staticmethod
+    def _normalize_check_interval(value: Any) -> Optional[int]:
+        if value is None:
+            return None
+        try:
+            minutes = int(value)
+        except (TypeError, ValueError) as exc:
+            raise AlertServiceError(f"invalid check_interval_minutes: {value}") from exc
+        if not ALERT_CHECK_INTERVAL_MIN <= minutes <= ALERT_CHECK_INTERVAL_MAX:
+            raise AlertServiceError(
+                f"check_interval_minutes must be between {ALERT_CHECK_INTERVAL_MIN} and {ALERT_CHECK_INTERVAL_MAX}"
+            )
+        return minutes
 
     def _validate_rule_update_payload(self, payload: Dict[str, Any]) -> None:
         for field_name, value in payload.items():
@@ -1242,6 +1260,7 @@ class AlertService:
             "severity": row.severity,
             "enabled": bool(row.enabled),
             "source": row.source,
+            "check_interval_minutes": getattr(row, "check_interval_minutes", None),
             "cooldown_policy": self._load_json(row.cooldown_policy, default=None),
             "notification_policy": self._load_json(row.notification_policy, default=None),
             "created_at": row.created_at.isoformat() if row.created_at else None,

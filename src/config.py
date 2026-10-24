@@ -1207,6 +1207,9 @@ class Config:
     # 盘后实盘成交汇总推送（当日 portfolio_trades 成交直发飞书；每日必发一条，无成交也通知）
     live_trade_summary_enabled: bool = True
     live_trade_summary_time: str = "15:20"
+    # 周度持仓复盘（每周六生成上一自然周复盘并推送飞书；时间只支持 HH:MM，星期固定周六）
+    weekly_review_enabled: bool = True
+    weekly_review_time: str = "01:00"
     stock_analysis_enabled: bool = True       # 是否启用个股分析（false 时配置驱动的运行仅执行大盘复盘）
     market_review_enabled: bool = True        # 是否启用大盘复盘
     daily_market_context_enabled: bool = True   # 是否将大盘环境摘要用于个股分析 Prompt 与保守护栏
@@ -2175,6 +2178,8 @@ class Config:
             ),
             live_trade_summary_enabled=parse_env_bool(os.getenv('LIVE_TRADE_SUMMARY_ENABLED'), default=True),
             live_trade_summary_time=(os.getenv('LIVE_TRADE_SUMMARY_TIME') or '15:20').strip() or '15:20',
+            weekly_review_enabled=parse_env_bool(os.getenv('WEEKLY_REVIEW_ENABLED'), default=True),
+            weekly_review_time=(os.getenv('WEEKLY_REVIEW_TIME') or '01:00').strip() or '01:00',
             schedule_times=normalize_schedule_times(
                 schedule_times_value,
                 fallback_time=(schedule_time_value or '18:00').strip() or '18:00',

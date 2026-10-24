@@ -256,6 +256,11 @@ class AlertWorkerTestCase(unittest.TestCase):
             message="notification route alert has no configured channel",
         )
         self.addCleanup(notification_patcher.stop)
+        # 交易日过滤默认放行（视为交易日），非交易日行为由个别用例覆盖；
+        # 不 patch 的话周末/节假日跑测试会整批失败
+        calendar_patcher = patch("src.core.trading_calendar.is_market_open", return_value=True)
+        calendar_patcher.start()
+        self.addCleanup(calendar_patcher.stop)
 
     def tearDown(self) -> None:
         DatabaseManager.reset_instance()
@@ -763,6 +768,102 @@ class AlertWorkerTestCase(unittest.TestCase):
         triggers = self._triggers(rule_id=rule["id"], status="triggered")
         self.assertEqual(len(triggers), 1)
         self.assertIsNone(triggers[0]["data_timestamp"])
+
+    def test_rule_check_interval_defers_until_due(self) -> None:
+        """规则带 60 分钟巡检间隔：首评后 5 分钟不到期跳过，61 分钟后再评估。"""
+        self._create_rule(target="600519", check_interval_minutes=60)
+        clock = {"now": 1_700_000_000.0}
+        worker = AlertWorker(
+            config_provider=lambda: self._config(),
+            service=self.service,
+            notifier=self._notifier(),
+            now_provider=lambda: clock["now"],
+        )
+
+        quote = patch(
+            "src.agent.events.EventMonitor._get_realtime_quote",
+            new=AsyncMock(return_value=SimpleNamespace(price=1700.0)),
+        )
+        with quote:
+            first = worker.run_once()
+            clock["now"] += 5 * 60
+            second = worker.run_once()
+            clock["now"] += 56 * 60
+            third = worker.run_once()
+
+        self.assertEqual(first["evaluated"], 1)
+        self.assertEqual(second["evaluated"], 0)
+        self.assertEqual(second["interval_deferred"], 1)
+        self.assertEqual(third["evaluated"], 1)
+        self.assertEqual(third["interval_deferred"], 0)
+
+    def test_rule_without_interval_evaluates_every_cycle(self) -> None:
+        """未配置间隔的规则每轮都评估（与历史行为一致，频率即全局 tick）。"""
+        self._create_rule(target="600519")
+        clock = {"now": 1_700_000_000.0}
+        worker = AlertWorker(
+            config_provider=lambda: self._config(),
+            service=self.service,
+            notifier=self._notifier(),
+            now_provider=lambda: clock["now"],
+        )
+
+        quote = patch(
+            "src.agent.events.EventMonitor._get_realtime_quote",
+            new=AsyncMock(return_value=SimpleNamespace(price=1700.0)),
+        )
+        with quote:
+            first = worker.run_once()
+            clock["now"] += 60  # 下一轮 tick（时间几乎未走也照常评估）
+            second = worker.run_once()
+
+        self.assertEqual(first["evaluated"], 1)
+        self.assertEqual(second["evaluated"], 1)
+        self.assertEqual(second["interval_deferred"], 0)
+
+    def test_market_closed_rule_skipped_without_evaluation(self) -> None:
+        """标的所属市场当日休市：本轮跳过评估，不写触发历史。"""
+        self._create_rule(target="600519")
+        worker = AlertWorker(
+            config_provider=lambda: self._config(),
+            service=self.service,
+            notifier=self._notifier(),
+        )
+
+        with patch("src.core.trading_calendar.is_market_open", return_value=False), patch(
+            "src.agent.events.EventMonitor._get_realtime_quote",
+            new=AsyncMock(return_value=SimpleNamespace(price=1810.0)),
+        ) as quote:
+            stats = worker.run_once()
+
+        self.assertEqual(stats["evaluated"], 0)
+        self.assertEqual(stats["market_closed_skipped"], 1)
+        quote.assert_not_awaited()
+        self.assertEqual(self._triggers(), [])
+
+    def test_us_symbol_still_evaluated_when_cn_market_closed(self) -> None:
+        """A 股休市日，美股标的规则仍正常评估（按标的市场逐条过滤）。"""
+        self._create_rule(target="AAPL")
+        worker = AlertWorker(
+            config_provider=lambda: self._config(),
+            service=self.service,
+            notifier=self._notifier(),
+        )
+
+        def _only_cn_closed(market, _date):
+            return market != "cn"
+
+        with patch(
+            "src.core.trading_calendar.is_market_open", side_effect=_only_cn_closed
+        ), patch(
+            "src.agent.events.EventMonitor._get_realtime_quote",
+            new=AsyncMock(return_value=SimpleNamespace(price=1810.0)),
+        ):
+            stats = worker.run_once()
+
+        self.assertEqual(stats["evaluated"], 1)
+        self.assertEqual(stats["market_closed_skipped"], 0)
+        self.assertEqual(stats["triggered"], 1)
 
     def test_service_test_rule_exception_uses_same_sanitized_reason_and_message(self) -> None:
         rule = self._create_rule(target="600519")

@@ -53,6 +53,7 @@ export interface AlertRuleItem {
   severity: AlertSeverity;
   enabled: boolean;
   source: string;
+  checkIntervalMinutes?: number | null;
   cooldownPolicy?: Record<string, unknown> | null;
   notificationPolicy?: Record<string, unknown> | null;
   lastTriggeredAt?: string | null;
@@ -77,6 +78,7 @@ export interface AlertRuleCreateRequest {
   parameters: AlertRuleParameters;
   severity: AlertSeverity;
   enabled?: boolean;
+  checkIntervalMinutes?: number | null;
 }
 
 export interface AlertDeleteResponse {

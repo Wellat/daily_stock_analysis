@@ -18,6 +18,7 @@ from api.v1.schemas.portfolio import (
     PortfolioAccountItem,
     PortfolioAccountListResponse,
     PortfolioAccountUpdateRequest,
+    PortfolioIndicatorResponse,
     PortfolioCashLedgerListResponse,
     PortfolioCashLedgerCreateRequest,
     PortfolioCorporateActionListResponse,
@@ -41,12 +42,24 @@ from api.v1.schemas.portfolio import (
     PortfolioTradeListResponse,
     PortfolioTradeCreateRequest,
     PortfolioTrendResponse,
+    WeeklyReviewDeleteResponse,
+    WeeklyReviewDetailResponse,
+    WeeklyReviewGenerateRequest,
+    WeeklyReviewGenerateResponse,
+    WeeklyReviewListItem,
+    WeeklyReviewListResponse,
+    WeeklyReviewNoteUpdateRequest,
+    WeeklyReviewPlanCreateRequest,
+    WeeklyReviewPlanItem,
+    WeeklyReviewPlanUpdateRequest,
 )
 from src.services.task_queue import get_task_queue
 from src.services.portfolio_import_service import PortfolioImportService
 from src.services.portfolio_qmt_sync import PortfolioQmtSyncService
 from src.services.portfolio_risk_service import PortfolioRiskService
 from src.services.portfolio_trend_service import PortfolioTrendService
+from src.services.portfolio_weekly_review_service import PortfolioWeeklyReviewService
+from src.services.portfolio_indicator_service import PortfolioIndicatorService
 from src.services.portfolio_service import (
     PortfolioBusyError,
     PortfolioConflictError,
@@ -533,6 +546,30 @@ def get_trend(
         raise _internal_error("Get portfolio trend failed", exc)
 
 
+@router.get(
+    "/positions/indicators",
+    response_model=PortfolioIndicatorResponse,
+    responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
+    summary="Get technical indicators for current holdings",
+)
+def get_position_indicators(
+    account_id: Optional[int] = Query(None, description="Optional account id; default all active accounts"),
+) -> PortfolioIndicatorResponse:
+    """为当前持仓批量计算技术指标（均线/乖离/形态/连涨跌/52周位置/量比/迷你曲线）。
+
+    指标由 stock_daily 收盘序列现算；转债标的附溢价率与强赎进度。
+    行情缺失的标的返回空占位，不阻塞整体响应。
+    """
+    service = PortfolioIndicatorService()
+    try:
+        data = service.get_holding_indicators(account_id=account_id)
+        return PortfolioIndicatorResponse(**data)
+    except ValueError as exc:
+        raise _bad_request(exc)
+    except Exception as exc:
+        raise _internal_error("Get position indicators failed", exc)
+
+
 @router.post(
     "/positions/{symbol}/analysis",
     status_code=202,
@@ -786,3 +823,192 @@ def get_risk_report(
         raise _bad_request(exc)
     except Exception as exc:
         raise _internal_error("Get risk report failed", exc)
+
+
+# ---------------------------------------------------------------------------
+# Weekly review（周度持仓复盘）
+# ---------------------------------------------------------------------------
+
+
+def _parse_period_start(value: str) -> date:
+    try:
+        return date.fromisoformat(value.strip())
+    except (AttributeError, ValueError) as exc:
+        raise _bad_request(ValueError(f"invalid period_start date: {value}")) from exc
+
+
+@router.get(
+    "/weekly-reviews",
+    response_model=WeeklyReviewListResponse,
+    responses={500: {"model": ErrorResponse}},
+    summary="List weekly portfolio reviews",
+)
+def list_weekly_reviews(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+) -> WeeklyReviewListResponse:
+    service = PortfolioWeeklyReviewService()
+    try:
+        data = service.list_reviews(page=page, page_size=page_size)
+        data["items"] = [WeeklyReviewListItem(**item) for item in data["items"]]
+        return WeeklyReviewListResponse(**data)
+    except Exception as exc:
+        raise _internal_error("List weekly reviews failed", exc)
+
+
+@router.get(
+    "/weekly-reviews/{period_start}",
+    response_model=WeeklyReviewDetailResponse,
+    responses={400: {"model": ErrorResponse}, 404: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
+    summary="Get weekly review detail",
+)
+def get_weekly_review(period_start: str) -> WeeklyReviewDetailResponse:
+    service = PortfolioWeeklyReviewService()
+    try:
+        data = service.get_review_detail(_parse_period_start(period_start))
+        data["plans"] = [WeeklyReviewPlanItem(**item) for item in data["plans"]]
+        data["prev_plans"] = [WeeklyReviewPlanItem(**item) for item in data["prev_plans"]]
+        return WeeklyReviewDetailResponse(**data)
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise api_error(404, "not_found", str(exc))
+    except Exception as exc:
+        raise _internal_error("Get weekly review failed", exc)
+
+
+@router.post(
+    "/weekly-reviews/generate",
+    response_model=WeeklyReviewGenerateResponse,
+    responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
+    summary="Generate (or backfill) a weekly review",
+)
+def generate_weekly_review(request: WeeklyReviewGenerateRequest) -> WeeklyReviewGenerateResponse:
+    """手动触发生成/回填指定周复盘；缺省生成上一自然周。
+
+    周六定时未运行或历史周补生成走这里；已存在的周会覆盖自动区并保留人工区。
+    """
+    service = PortfolioWeeklyReviewService()
+    try:
+        anchor = _parse_period_start(request.period_start) if request.period_start else None
+        payload = service.run(period_end=anchor, push=request.push)
+        if payload.get("skipped"):
+            return WeeklyReviewGenerateResponse(
+                period_start=payload["period_start"],
+                period_end=payload["period_end"],
+                skipped=str(payload["skipped"]),
+            )
+        return WeeklyReviewGenerateResponse(
+            review_id=payload.get("review_id"),
+            period_start=payload["period"]["period_start"],
+            period_end=payload["period"]["period_end"],
+            feishu_sent=bool(payload.get("feishu_sent")),
+            summary=payload.get("summary") or {},
+        )
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise _bad_request(exc)
+    except Exception as exc:
+        raise _internal_error("Generate weekly review failed", exc)
+
+
+@router.put(
+    "/weekly-reviews/{period_start}/note",
+    response_model=WeeklyReviewDetailResponse,
+    responses={400: {"model": ErrorResponse}, 404: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
+    summary="Update weekly review note",
+)
+def update_weekly_review_note(
+    period_start: str,
+    request: WeeklyReviewNoteUpdateRequest,
+) -> WeeklyReviewDetailResponse:
+    service = PortfolioWeeklyReviewService()
+    try:
+        service.update_weekly_note(_parse_period_start(period_start), request.weekly_note)
+        data = service.get_review_detail(_parse_period_start(period_start))
+        data["plans"] = [WeeklyReviewPlanItem(**item) for item in data["plans"]]
+        data["prev_plans"] = [WeeklyReviewPlanItem(**item) for item in data["prev_plans"]]
+        return WeeklyReviewDetailResponse(**data)
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise api_error(404, "not_found", str(exc))
+    except Exception as exc:
+        raise _internal_error("Update weekly review note failed", exc)
+
+
+@router.post(
+    "/weekly-reviews/{period_start}/plans",
+    response_model=WeeklyReviewPlanItem,
+    responses={400: {"model": ErrorResponse}, 404: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
+    summary="Create a next-week plan item",
+)
+def create_weekly_review_plan(
+    period_start: str,
+    request: WeeklyReviewPlanCreateRequest,
+) -> WeeklyReviewPlanItem:
+    service = PortfolioWeeklyReviewService()
+    try:
+        data = service.create_plan(
+            _parse_period_start(period_start),
+            action=request.action,
+            content=request.content,
+            symbol=request.symbol,
+        )
+        return WeeklyReviewPlanItem(**data)
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        status_code = 404 if "not found" in str(exc) else 400
+        raise api_error(status_code, "validation_error" if status_code == 400 else "not_found", str(exc))
+    except Exception as exc:
+        raise _internal_error("Create weekly review plan failed", exc)
+
+
+@router.put(
+    "/weekly-reviews/{period_start}/plans/{plan_id}",
+    response_model=WeeklyReviewPlanItem,
+    responses={400: {"model": ErrorResponse}, 404: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
+    summary="Update a plan item (content/action/status)",
+)
+def update_weekly_review_plan(
+    period_start: str,
+    plan_id: int,
+    request: WeeklyReviewPlanUpdateRequest,
+) -> WeeklyReviewPlanItem:
+    service = PortfolioWeeklyReviewService()
+    try:
+        data = service.update_plan(
+            plan_id,
+            action=request.action,
+            content=request.content,
+            symbol=request.symbol,
+            status=request.status,
+        )
+        return WeeklyReviewPlanItem(**data)
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        status_code = 404 if "not found" in str(exc) else 400
+        raise api_error(status_code, "validation_error" if status_code == 400 else "not_found", str(exc))
+    except Exception as exc:
+        raise _internal_error("Update weekly review plan failed", exc)
+
+
+@router.delete(
+    "/weekly-reviews/{period_start}/plans/{plan_id}",
+    response_model=WeeklyReviewDeleteResponse,
+    responses={400: {"model": ErrorResponse}, 404: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
+    summary="Delete a plan item",
+)
+def delete_weekly_review_plan(period_start: str, plan_id: int) -> WeeklyReviewDeleteResponse:
+    service = PortfolioWeeklyReviewService()
+    try:
+        return WeeklyReviewDeleteResponse(**service.delete_plan(plan_id))
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise api_error(404, "not_found", str(exc))
+    except Exception as exc:
+        raise _internal_error("Delete weekly review plan failed", exc)

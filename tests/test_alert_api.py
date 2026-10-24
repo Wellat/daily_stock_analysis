@@ -626,6 +626,28 @@ class AlertApiTestCase(unittest.TestCase):
         self.assertEqual(self.client.get("/api/v1/alerts/triggers").json()["total"], 0)
         self.assertEqual(self.client.get("/api/v1/alerts/notifications").json()["total"], 0)
 
+    def test_rule_check_interval_roundtrip_and_validation(self) -> None:
+        rule = self._create_rule({"check_interval_minutes": 30})
+        self.assertEqual(rule["check_interval_minutes"], 30)
+
+        # PATCH 置空回落全局默认
+        resp = self.client.patch(f"/api/v1/alerts/rules/{rule['id']}", json={"check_interval_minutes": None})
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertIsNone(resp.json()["check_interval_minutes"])
+
+        # 非法值拒绝（pydantic 422 或 service 层 400）
+        for bad in (0, 1441):
+            body = {
+                "name": "Bad interval",
+                "target_scope": "single_symbol",
+                "target": "600519",
+                "alert_type": "price_cross",
+                "parameters": {"direction": "above", "price": 1800},
+                "check_interval_minutes": bad,
+            }
+            resp = self.client.post("/api/v1/alerts/rules", json=body)
+            self.assertIn(resp.status_code, (400, 422), resp.text)
+
     def test_dry_run_price_cross_not_triggered_keeps_observed_value(self) -> None:
         rule = self._create_rule()
 

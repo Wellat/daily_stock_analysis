@@ -157,6 +157,7 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
   const [dPeriod, setDPeriod] = useState('3');
   const [marketLightStatuses, setMarketLightStatuses] = useState<MarketLightStatus[]>(['red', 'yellow']);
   const [minDrop, setMinDrop] = useState('10');
+  const [checkInterval, setCheckInterval] = useState('');
   const [formError, setFormError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -391,6 +392,17 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
     const parameters = buildParameters();
     if (parameters == null) return;
 
+    let checkIntervalMinutes: number | undefined;
+    const intervalText = checkInterval.trim();
+    if (intervalText) {
+      const parsed = Number.parseInt(intervalText, 10);
+      if (!Number.isInteger(parsed) || parsed < 1 || parsed > 1440) {
+        setFormError(formatUiText(text.integerRange, { label: text.checkInterval, min: 1, max: 1440 }));
+        return;
+      }
+      checkIntervalMinutes = parsed;
+    }
+
     setFormError(null);
     const submitted = await onSubmit({
       name: name.trim() || undefined,
@@ -400,6 +412,7 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
       parameters,
       severity,
       enabled,
+      checkIntervalMinutes,
     });
     if (submitted === false) return;
     setName('');
@@ -419,6 +432,7 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
     setDPeriod('3');
     setMarketLightStatuses(['red', 'yellow']);
     setMinDrop('10');
+    setCheckInterval('');
     resetParameters(alertType);
     setEnabled(true);
   };
@@ -769,6 +783,17 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
             disabled={isSubmitting}
           />
         ) : null}
+
+        <Input
+          label={text.checkInterval}
+          type="number"
+          min={1}
+          max={1440}
+          value={checkInterval}
+          onChange={(event) => setCheckInterval(event.target.value)}
+          placeholder={text.checkIntervalPlaceholder}
+          disabled={isSubmitting}
+        />
 
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <Checkbox

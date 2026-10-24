@@ -253,6 +253,41 @@ def build_live_trade_summary_background_tasks(config: Config) -> List[Dict[str, 
     ]
 
 
+# 周度持仓复盘任务
+def build_weekly_review_background_tasks(config: Config) -> List[Dict[str, Any]]:
+    """每周六 WEEKLY_REVIEW_TIME 生成上一自然周的持仓复盘并推送飞书。
+
+    时刻仅支持 HH:MM（默认 01:00），星期固定周六、不做配置；周六非交易日，
+    因此不能复用 _is_cn_trading_day 门控。幂等由内存 state（ISO 周号）+
+    落库表 (period_start, period_end) 唯一键双保险；周六该时刻进程未运行
+    则本周跳过，可在 Web 周复盘页手动触发生成。
+    """
+    if not getattr(config, "weekly_review_enabled", True):
+        return []
+    from src.services.portfolio_weekly_review_service import PortfolioWeeklyReviewService
+    state = {"week": None}
+
+    def task() -> None:
+        now = datetime.now()
+        hhmm = str(getattr(config, "weekly_review_time", "01:00"))
+        iso = now.isocalendar()
+        week_key = f"{iso[0]}-W{iso[1]:02d}"
+        if now.weekday() != 5 or now.strftime("%H:%M") != hhmm or state["week"] == week_key:
+            return
+        try:
+            result = PortfolioWeeklyReviewService().run()
+            state["week"] = week_key
+            logger.info("[WeeklyReview] scheduled run ok: %s", {
+                key: result.get(key) for key in ("period_start", "period_end", "review_id", "feishu_sent")
+            })
+        except Exception:
+            logger.exception("Weekly portfolio review failed")
+
+    return [
+        {"task": task, "interval_seconds": 30, "run_immediately": False, "name": "weekly_portfolio_review"},
+    ]
+
+
 class RuntimeSchedulerService:
     """Manage scheduled analysis inside the current API/Web/Desktop process."""
 
@@ -374,6 +409,7 @@ class RuntimeSchedulerService:
         tasks.extend(build_convertible_bond_sync_background_tasks(config))
         tasks.extend(build_portfolio_snapshot_background_tasks(config))
         tasks.extend(build_live_trade_summary_background_tasks(config))
+        tasks.extend(build_weekly_review_background_tasks(config))
         return tasks
 
     def _current_agent_event_monitor_background_tasks(self, config: Config) -> List[Dict[str, Any]]:

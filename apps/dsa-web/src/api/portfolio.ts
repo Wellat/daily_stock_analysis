@@ -13,6 +13,7 @@ import type {
   PortfolioDeleteResponse,
   PortfolioEventCreatedResponse,
   PortfolioFxRefreshResponse,
+  PortfolioIndicatorResponse,
   PortfolioImportBrokerListResponse,
   PortfolioImportCommitResponse,
   PortfolioImportParseResponse,
@@ -27,6 +28,14 @@ import type {
   PortfolioTrendResponse,
   PortfolioTradeCreateRequest,
   PortfolioTradeListResponse,
+  WeeklyReviewDeleteResponse,
+  WeeklyReviewDetail,
+  WeeklyReviewGenerateRequest,
+  WeeklyReviewGenerateResponse,
+  WeeklyReviewListResponse,
+  WeeklyReviewPlanAction,
+  WeeklyReviewPlanItem,
+  WeeklyReviewPlanStatus,
 } from '../types/portfolio';
 
 type SnapshotQuery = {
@@ -185,6 +194,15 @@ export const portfolioApi = {
     return toCamelCase<TaskAccepted>(response.data);
   },
 
+  async getHoldingIndicators(query: { accountId?: number } = {}): Promise<PortfolioIndicatorResponse> {
+    const params: Record<string, string | number> = {};
+    if (query.accountId != null) {
+      params.account_id = query.accountId;
+    }
+    const response = await apiClient.get<Record<string, unknown>>('/api/v1/portfolio/positions/indicators', { params });
+    return toCamelCase<PortfolioIndicatorResponse>(response.data);
+  },
+
   async getRisk(query: SnapshotQuery = {}): Promise<PortfolioRiskResponse> {
     const response = await apiClient.get<Record<string, unknown>>('/api/v1/portfolio/risk', {
       params: buildSnapshotParams(query),
@@ -230,6 +248,12 @@ export const portfolioApi = {
     }
     if (payload.buyLogic !== undefined) {
       body.buy_logic = payload.buyLogic;
+    }
+    if (payload.buyLogicText !== undefined) {
+      body.buy_logic_text = payload.buyLogicText;
+    }
+    if (payload.stopLossPrice !== undefined) {
+      body.stop_loss_price = payload.stopLossPrice;
     }
     if (payload.note !== undefined) {
       body.note = payload.note;
@@ -356,5 +380,88 @@ export const portfolioApi = {
   async syncQmtPositions(request: PortfolioQmtSyncRequest = {}): Promise<PortfolioQmtSyncResponse> {
     const response = await apiClient.post<Record<string, unknown>>('/api/v1/portfolio/imports/qmt/sync', request);
     return toCamelCase<PortfolioQmtSyncResponse>(response.data);
+  },
+};
+
+export const weeklyReviewApi = {
+  async getReviews(query: { page?: number; pageSize?: number } = {}): Promise<WeeklyReviewListResponse> {
+    const response = await apiClient.get<Record<string, unknown>>('/api/v1/portfolio/weekly-reviews', {
+      params: { page: query.page ?? 1, page_size: query.pageSize ?? 20 },
+    });
+    return toCamelCase<WeeklyReviewListResponse>(response.data);
+  },
+
+  async getReviewDetail(periodStart: string): Promise<WeeklyReviewDetail> {
+    const response = await apiClient.get<Record<string, unknown>>(
+      `/api/v1/portfolio/weekly-reviews/${encodeURIComponent(periodStart)}`,
+    );
+    return toCamelCase<WeeklyReviewDetail>(response.data);
+  },
+
+  async generateReview(payload: WeeklyReviewGenerateRequest = {}): Promise<WeeklyReviewGenerateResponse> {
+    const response = await apiClient.post<Record<string, unknown>>(
+      '/api/v1/portfolio/weekly-reviews/generate',
+      {
+        period_start: payload.periodStart ?? null,
+        push: payload.push ?? true,
+      },
+    );
+    return toCamelCase<WeeklyReviewGenerateResponse>(response.data);
+  },
+
+  async updateWeeklyNote(periodStart: string, weeklyNote: string): Promise<WeeklyReviewDetail> {
+    const response = await apiClient.put<Record<string, unknown>>(
+      `/api/v1/portfolio/weekly-reviews/${encodeURIComponent(periodStart)}/note`,
+      { weekly_note: weeklyNote },
+    );
+    return toCamelCase<WeeklyReviewDetail>(response.data);
+  },
+
+  async createPlan(
+    periodStart: string,
+    payload: { action: WeeklyReviewPlanAction | string; content: string; symbol?: string },
+  ): Promise<WeeklyReviewPlanItem> {
+    const response = await apiClient.post<Record<string, unknown>>(
+      `/api/v1/portfolio/weekly-reviews/${encodeURIComponent(periodStart)}/plans`,
+      { action: payload.action, content: payload.content, symbol: payload.symbol ?? null },
+    );
+    return toCamelCase<WeeklyReviewPlanItem>(response.data);
+  },
+
+  async updatePlan(
+    periodStart: string,
+    planId: number,
+    payload: {
+      action?: WeeklyReviewPlanAction | string;
+      content?: string;
+      symbol?: string;
+      status?: WeeklyReviewPlanStatus | string;
+    },
+  ): Promise<WeeklyReviewPlanItem> {
+    const body: Record<string, unknown> = {};
+    if (payload.action !== undefined) {
+      body.action = payload.action;
+    }
+    if (payload.content !== undefined) {
+      body.content = payload.content;
+    }
+    if (payload.symbol !== undefined) {
+      body.symbol = payload.symbol;
+    }
+    if (payload.status !== undefined) {
+      body.status = payload.status;
+    }
+    const response = await apiClient.put<Record<string, unknown>>(
+      `/api/v1/portfolio/weekly-reviews/${encodeURIComponent(periodStart)}/plans/${planId}`,
+      body,
+    );
+    return toCamelCase<WeeklyReviewPlanItem>(response.data);
+  },
+
+  async deletePlan(periodStart: string, planId: number): Promise<WeeklyReviewDeleteResponse> {
+    const response = await apiClient.delete<Record<string, unknown>>(
+      `/api/v1/portfolio/weekly-reviews/${encodeURIComponent(periodStart)}/plans/${planId}`,
+    );
+    return toCamelCase<WeeklyReviewDeleteResponse>(response.data);
   },
 };

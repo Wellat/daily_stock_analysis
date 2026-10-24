@@ -25,6 +25,8 @@ class AlertRuleCreateRequest(BaseModel):
     parameters: Dict[str, Any] = Field(default_factory=dict)
     severity: SeverityValue = "warning"
     enabled: bool = True
+    # 巡检间隔（分钟）：空=沿用全局 AGENT_EVENT_MONITOR_INTERVAL_MINUTES
+    check_interval_minutes: Optional[int] = Field(None, ge=1, le=1440)
     cooldown_policy: Optional[Dict[str, Any]] = None
     notification_policy: Optional[Dict[str, Any]] = None
 
@@ -37,6 +39,7 @@ class AlertRuleUpdateRequest(BaseModel):
     parameters: Optional[Dict[str, Any]] = None
     severity: Optional[SeverityValue] = None
     enabled: Optional[bool] = None
+    check_interval_minutes: Optional[int] = Field(None, ge=1, le=1440)
     cooldown_policy: Optional[Dict[str, Any]] = None
     notification_policy: Optional[Dict[str, Any]] = None
 
@@ -51,6 +54,7 @@ class AlertRuleItem(BaseModel):
     severity: str
     enabled: bool
     source: str
+    check_interval_minutes: Optional[int] = None
     cooldown_policy: Optional[Dict[str, Any]] = None
     notification_policy: Optional[Dict[str, Any]] = None
     last_triggered_at: Optional[str] = None

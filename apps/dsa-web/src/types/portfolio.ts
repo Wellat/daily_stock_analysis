@@ -37,6 +37,8 @@ export interface PortfolioPositionItem {
   industry?: string | null;
   category?: string | null;
   buyLogic?: string | null;
+  buyLogicText?: string | null;
+  stopLossPrice?: number | null;
   note?: string | null;
   quantity: number;
   avgCost: number;
@@ -64,6 +66,8 @@ export interface PortfolioPositionMetaUpdateRequest {
   industry?: string;
   category?: PortfolioPositionCategory | string;
   buyLogic?: PortfolioBuyLogic | string;
+  buyLogicText?: string;
+  stopLossPrice?: number | null;
   note?: string;
 }
 
@@ -74,6 +78,8 @@ export interface PortfolioPositionMetaItem {
   industry?: string | null;
   category?: string | null;
   buyLogic?: string | null;
+  buyLogicText?: string | null;
+  stopLossPrice?: number | null;
   note?: string | null;
 }
 
@@ -428,4 +434,273 @@ export interface PortfolioQmtSyncAccountResult {
 export interface PortfolioQmtSyncResponse {
   dryRun: boolean;
   accounts: PortfolioQmtSyncAccountResult[];
+}
+
+export type WeeklyReviewPlanAction = 'add' | 'reduce' | 'clear' | 'watch';
+export type WeeklyReviewPlanStatus = 'pending' | 'done' | 'skipped';
+
+export interface WeeklyReviewPlanItem {
+  planId: number;
+  action: WeeklyReviewPlanAction | string;
+  symbol?: string | null;
+  content: string;
+  status: WeeklyReviewPlanStatus | string;
+}
+
+export interface WeeklyReviewListItem {
+  reviewId: number;
+  periodStart: string;
+  periodEnd: string;
+  status: string;
+  feishuSent: boolean;
+  hasNote: boolean;
+  planCounts: { pending?: number; done?: number; skipped?: number; total?: number };
+  summary: Record<string, unknown>;
+  error?: string | null;
+}
+
+export interface WeeklyReviewListResponse {
+  items: WeeklyReviewListItem[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
+export interface WeeklyReviewOverviewAccount {
+  accountId: number;
+  accountName: string;
+  equityStart?: number | null;
+  equityEnd?: number | null;
+  netFlowIn?: number | null;
+  weeklyReturnAmount?: number | null;
+  weeklyReturnPct?: number | null;
+  cashEnd?: number | null;
+  cashRatioPct?: number | null;
+  realizedDeltaWeek?: number | null;
+  drawdownFromPeakPct?: number | null;
+  dataStartInWeek?: boolean;
+}
+
+export interface WeeklyReviewOverview {
+  accounts: WeeklyReviewOverviewAccount[];
+  total: Omit<WeeklyReviewOverviewAccount, 'accountId' | 'accountName' | 'dataStartInWeek'>;
+}
+
+export interface WeeklyReviewAttributionItem {
+  symbol: string;
+  name?: string | null;
+  mvStart?: number | null;
+  mvEnd?: number | null;
+  buyAmount?: number | null;
+  sellAmount?: number | null;
+  pnl?: number | null;
+  weeklyPriceChangePct?: number | null;
+  accounts?: string[];
+  newPosition?: boolean;
+  exitedPosition?: boolean;
+}
+
+export interface WeeklyReviewAttribution {
+  items: WeeklyReviewAttributionItem[];
+  topContributors: WeeklyReviewAttributionItem[];
+  topDraggers: WeeklyReviewAttributionItem[];
+}
+
+export interface WeeklyReviewRealizedEvent {
+  accountId: number;
+  symbol: string;
+  tradeDate: string;
+  quantity: number;
+  realized?: number | null;
+  auto?: boolean;
+}
+
+export interface WeeklyReviewRealized {
+  weekEvents: WeeklyReviewRealizedEvent[];
+  weekRealizedTotal?: number | null;
+  autoRealized?: number | null;
+  manualRealized?: number | null;
+  oversellDetected?: boolean;
+}
+
+export interface WeeklyReviewDistributionItem {
+  label: string;
+  marketValue?: number | null;
+  pct?: number | null;
+}
+
+export interface WeeklyReviewStructure {
+  positionCount: number;
+  totalMarketValue?: number | null;
+  byCategory: WeeklyReviewDistributionItem[];
+  byAccount: WeeklyReviewDistributionItem[];
+  byIndustry: WeeklyReviewDistributionItem[];
+  concentration: {
+    top1?: { symbol: string; name?: string | null; pct?: number | null } | null;
+    top5Pct?: number | null;
+    top1Flagged?: boolean;
+  };
+  cashRatioPct?: number | null;
+  crossAccountOverlap: { symbol: string; name?: string | null; accounts: string[]; marketValue?: number | null }[];
+  missingBuyLogic: { accountId: number; symbol: string; name?: string | null }[];
+}
+
+export interface WeeklyReviewPositionTierItem {
+  accountId: number;
+  accountName: string;
+  symbol: string;
+  name?: string | null;
+  quantity: number;
+  marketValue?: number | null;
+  pnlPct?: number | null;
+  tier: 'deep_loss' | 'loss' | 'profit' | 'unknown' | string;
+  industry?: string | null;
+  holdingDays?: number | null;
+  durationCapped?: boolean;
+}
+
+export interface WeeklyReviewPositionTiers {
+  items: WeeklyReviewPositionTierItem[];
+  counts: Record<string, number>;
+  deepLossThresholdPct?: number;
+}
+
+export interface WeeklyReviewCbHeld {
+  symbol: string;
+  name?: string | null;
+  factorDate?: string | null;
+  close?: number | null;
+  premiumRate?: number | null;
+  priceBand?: string | null;
+  remainingSize?: number | null;
+  maturityDate?: string | null;
+  daysToMaturity?: number | null;
+  maturityWarn?: boolean;
+  forceRedeemCountdown?: string | null;
+}
+
+export interface WeeklyReviewCbZone {
+  held: WeeklyReviewCbHeld[];
+  events: { symbol: string; name?: string | null; eventDate: string; eventType: string; eventDetail?: string | null }[];
+  strategyRuns: {
+    runCount?: number;
+    modes?: Record<string, number>;
+    rebalanceEntries?: number;
+    buyEntries?: number;
+    sellEntries?: number;
+  };
+  tradesSplit: {
+    auto: { count?: number; buyAmount?: number | null; sellAmount?: number | null };
+    manual: { count?: number; buyAmount?: number | null; sellAmount?: number | null };
+    autoAccountNames?: string[];
+  };
+  realizedSplit: { autoRealized?: number | null; manualRealized?: number | null };
+}
+
+export interface WeeklyReviewSignalItem {
+  stockCode: string;
+  stockName?: string | null;
+  action: string;
+  actionLabel?: string | null;
+  createdDate?: string | null;
+  expiresDate?: string | null;
+  matchedBuys?: number;
+  matchedSells?: number;
+  followed?: boolean;
+}
+
+export interface WeeklyReviewSignals {
+  items: WeeklyReviewSignalItem[];
+  matchedTotal?: number;
+}
+
+export interface WeeklyReviewRiskItem {
+  type: string;
+  severity: 'high' | 'medium' | 'low' | string;
+  symbol?: string | null;
+  message: string;
+}
+
+export interface WeeklyReviewPayload {
+  period: { periodStart: string; periodEnd: string; tradingDays: string[] };
+  summary: Record<string, unknown>;
+  overview: WeeklyReviewOverview;
+  attribution: WeeklyReviewAttribution;
+  realized: WeeklyReviewRealized;
+  structure: WeeklyReviewStructure;
+  positionTiers: WeeklyReviewPositionTiers;
+  cbZone: WeeklyReviewCbZone;
+  signalsVsTrades: WeeklyReviewSignals;
+  riskList: { items: WeeklyReviewRiskItem[] };
+  limitations?: string[];
+}
+
+export interface WeeklyReviewDetail {
+  reviewId: number;
+  periodStart: string;
+  periodEnd: string;
+  status: string;
+  feishuSent: boolean;
+  weeklyNote: string;
+  error?: string | null;
+  plans: WeeklyReviewPlanItem[];
+  prevPeriod?: { periodStart: string; periodEnd: string } | null;
+  prevPlans: WeeklyReviewPlanItem[];
+  payload: WeeklyReviewPayload;
+}
+
+export interface WeeklyReviewGenerateRequest {
+  periodStart?: string;
+  push?: boolean;
+}
+
+export interface WeeklyReviewGenerateResponse {
+  reviewId?: number | null;
+  periodStart: string;
+  periodEnd: string;
+  skipped?: string | null;
+  feishuSent: boolean;
+  summary: Record<string, unknown>;
+}
+
+export interface WeeklyReviewDeleteResponse {
+  deleted: boolean;
+  planId: number;
+}
+
+export type PortfolioTrendPattern = 'bull' | 'bear' | 'mixed' | 'unknown';
+
+export interface PortfolioIndicatorCbExtra {
+  premiumRate?: number | null;
+  factorDate?: string | null;
+  priceBand?: string | null;
+  remainingSize?: number | null;
+  daysToMaturity?: number | null;
+  forceRedeemCountdown?: string | null;
+}
+
+export interface PortfolioIndicatorItem {
+  symbol: string;
+  lastBarDate?: string | null;
+  lastClose?: number | null;
+  ma5?: number | null;
+  ma10?: number | null;
+  ma20?: number | null;
+  biasMa5Pct?: number | null;
+  biasMa10Pct?: number | null;
+  biasMa20Pct?: number | null;
+  trendPattern: PortfolioTrendPattern | string;
+  streakDays?: number | null;
+  weekChangePct?: number | null;
+  monthChangePct?: number | null;
+  pos52wPct?: number | null;
+  volumeRatio?: number | null;
+  sparkline: { date: string; close: number }[];
+  holdingDaysByAccount: Record<string, number>;
+  cb?: PortfolioIndicatorCbExtra | null;
+}
+
+export interface PortfolioIndicatorResponse {
+  asOf: string;
+  items: PortfolioIndicatorItem[];
 }

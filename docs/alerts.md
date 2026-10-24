@@ -164,6 +164,13 @@ P2 将 schedule 运行时从启动时一次性构建 legacy `EventMonitor`，切
 - 实时行情缺失、字段缺失或非可评估场景记录 `skipped`；日线数据不可用或结构不完整记录 `degraded`；诊断信息会脱敏。
 - 触发后仍调用 `NotificationService.send(..., route_type="alert")`；进程内 fingerprint 只避免持续触发条件重复推送，不执行 `cooldown_policy`。
 
+### 巡检周期与交易日过滤
+
+- 全局轮询 tick 由 `AGENT_EVENT_MONITOR_INTERVAL_MINUTES` 控制（默认 5 分钟，最小 1），每轮 tick 对所有 active 规则做一轮过滤后评估。
+- 规则可选配置 `check_interval_minutes`（1~1440，创建/更新时可设，置空回落默认）：配置后该规则按自身间隔到期才评估；未配置的规则每轮都评估（实际频率即全局 tick），与历史行为一致。间隔的生效粒度是全局 tick——配置小于 tick 的间隔实际仍按 tick 评估。到期状态记在 worker 进程内存，进程重启后首轮全量评估一次。
+- 交易日过滤按**规则标的所属市场**逐条判断：A 股标的按 A 股日历、港股按港股日历、美股按美股日历（`market` 规则按目标 region、`portfolio_account` 按 A 股口径）；当日休市的规则本轮跳过（计入 `market_closed_skipped`）。市场无法解析或交易日历库不可用时不过滤（fail-open），不会把巡检停死。
+- 巡检间隔与冷却正交：间隔决定"多久评估一次"，冷却（默认 24 小时，`cooldown_policy.cooldown_seconds`）决定"多久最多通知一次"。
+
 P2 不做：
 
 - 不新增 Web 告警中心页面、路由或侧边栏入口。

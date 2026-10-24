@@ -44,6 +44,8 @@
 | [Bot 命令与接入](bot-command.md) | Bot 命令、Webhook、平台接入和回调说明 |
 | [Bot 平台配置](bot/) | 飞书、钉钉、Discord 等 Bot 配置截图和补充说明 |
 | [实时告警中心](alerts.md) | EventMonitor 基线、Web 规则管理、通知结果、冷却状态和 Phase 边界 |
+| [周度持仓复盘](weekly-review.md) | 每周六自动生成上一自然周多账户复盘：配置、报告内容、API、指标口径与数据边界、人工区（手记/计划） |
+| [持仓总览技术指标与止损位](position-indicators.md) | 持仓指标口径（均线/形态/连涨跌/52周/量比现算）、转债自适应列、行展开详情、止损价与周复盘联动 |
 | [DecisionSignal 决策信号专题](decision-signals.md) | AI 建议池字段语义、API、Web 展示、告警/通知/组合风险联动、后验评估、脱敏、迁移与回滚 |
 | [策略实验室迁移方案](strategy-lab-migration.md) | trading-backtest 迁入 DSA 的命名边界、数据/持仓/API/前端共识、阶段计划、验证命令和进度记录 |
 | [资讯 / 情报源](intelligence-sources.md) | RSS/Atom 合规资讯源配置、测试、拉取、去重、存储、查询与安全边界 |

@@ -584,6 +584,8 @@ class PortfolioPositionMeta(Base):
     industry = Column(String(64))
     category = Column(String(16))   # stock/etf/fund/convertible_bond；NULL=自动推导
     buy_logic = Column(String(16))  # dividend/index_tracking/automated/undefined；NULL=默认
+    buy_logic_text = Column(Text)   # 一句话自由文本买入逻辑，周复盘持有逻辑检查使用
+    stop_loss_price = Column(Float)  # 止损价（人工维护；喂持仓总览距止损列与周复盘风险清单）
     note = Column(String(255))
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
@@ -741,6 +743,52 @@ class PortfolioFxRate(Base):
             'rate_date',
             name='uix_portfolio_fx_pair_date',
         ),
+    )
+
+
+class PortfolioWeeklyReview(Base):
+    """Weekly portfolio review snapshot for one ISO week (Monday-Friday).
+
+    payload 存自动区各 section 的完整 JSON；weekly_note 与计划子表为人工区，
+    重复生成时 upsert 只覆盖自动区，不触碰人工区内容。
+    """
+
+    __tablename__ = 'portfolio_weekly_reviews'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    period_start = Column(Date, nullable=False, index=True)
+    period_end = Column(Date, nullable=False, index=True)
+    status = Column(String(16), nullable=False, default='completed')  # completed/failed
+    payload = Column(Text)
+    weekly_note = Column(Text)
+    feishu_sent = Column(Boolean, nullable=False, default=False)
+    feishu_sent_at = Column(DateTime)
+    error = Column(Text)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    __table_args__ = (
+        UniqueConstraint('period_start', 'period_end', name='uix_portfolio_weekly_review_period'),
+    )
+
+
+class PortfolioWeeklyPlan(Base):
+    """Manually maintained next-week plan item attached to a weekly review."""
+
+    __tablename__ = 'portfolio_weekly_review_plans'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    review_id = Column(Integer, ForeignKey('portfolio_weekly_reviews.id'), nullable=False, index=True)
+    sort_order = Column(Integer, nullable=False, default=0)
+    action = Column(String(16), nullable=False)  # add/reduce/clear/watch
+    symbol = Column(String(16))
+    content = Column(Text, nullable=False)
+    status = Column(String(16), nullable=False, default='pending')  # pending/done/skipped
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    __table_args__ = (
+        Index('ix_portfolio_weekly_plan_review_order', 'review_id', 'sort_order'),
     )
 
 
@@ -1431,6 +1479,9 @@ class AlertRuleRecord(Base):
     severity = Column(String(16), nullable=False, default='warning', index=True)
     enabled = Column(Boolean, nullable=False, default=True, index=True)
     source = Column(String(16), nullable=False, default='api', index=True)
+    # 巡检间隔（分钟，可空）：空=沿用全局 AGENT_EVENT_MONITOR_INTERVAL_MINUTES；
+    # 生效粒度为全局轮询 tick，实际评估间隔=max(全局 tick, 该值)
+    check_interval_minutes = Column(Integer)
     cooldown_policy = Column(Text)
     notification_policy = Column(Text)
     created_at = Column(DateTime, default=datetime.now, index=True)
@@ -1978,6 +2029,12 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             (StrategyLabRun.__tablename__, "instance_id", "INTEGER"),
             # presets 一次性迁移标记（旧表行级，置位后不再拷贝为实例）
             (StrategyLabStrategyConfig.__tablename__, "migrated_to_instance", "BOOLEAN NOT NULL DEFAULT 0"),
+            # 告警规则按规则巡检间隔（可空，空=全局默认间隔）
+            (AlertRuleRecord.__tablename__, "check_interval_minutes", "INTEGER"),
+            # 周复盘持有逻辑检查：一句话自由文本买入逻辑（可空）
+            (PortfolioPositionMeta.__tablename__, "buy_logic_text", "TEXT"),
+            # 持仓止损价（可空，正数；喂持仓总览距止损列与周复盘风险清单）
+            (PortfolioPositionMeta.__tablename__, "stop_loss_price", "FLOAT"),
         ]
         for table_name, column_name, ddl in migrations:
             if not inspector.has_table(table_name):

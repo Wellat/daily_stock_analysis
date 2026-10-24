@@ -162,6 +162,12 @@ class PortfolioPositionItem(BaseModel):
         None,
         description="dividend/index_tracking/automated/undefined；人工覆盖值，缺省按账户来源默认",
     )
+    buy_logic_text: Optional[str] = Field(
+        None, description="一句话自由文本买入逻辑，周复盘持有逻辑检查使用"
+    )
+    stop_loss_price: Optional[float] = Field(
+        None, description="人工维护的止损价；持仓总览距止损列与周复盘风险清单使用"
+    )
     note: Optional[str] = None
     quantity: float
     avg_cost: float
@@ -186,6 +192,8 @@ class PortfolioPositionMetaUpdateRequest(BaseModel):
     industry: Optional[str] = Field(None, max_length=64)
     category: Optional[str] = Field(None, max_length=16)
     buy_logic: Optional[str] = Field(None, max_length=16)
+    buy_logic_text: Optional[str] = Field(None, max_length=500)
+    stop_loss_price: Optional[float] = Field(None, gt=0)
     note: Optional[str] = Field(None, max_length=255)
 
 
@@ -196,6 +204,8 @@ class PortfolioPositionMetaItem(BaseModel):
     industry: Optional[str] = None
     category: Optional[str] = None
     buy_logic: Optional[str] = None
+    buy_logic_text: Optional[str] = None
+    stop_loss_price: Optional[float] = None
     note: Optional[str] = None
 
 
@@ -392,3 +402,117 @@ class PortfolioRiskResponse(BaseModel):
     drawdown: Dict[str, Any] = Field(default_factory=dict)
     stop_loss: Dict[str, Any] = Field(default_factory=dict)
     decision_signal_risk: PortfolioDecisionSignalRiskBlock = Field(default_factory=PortfolioDecisionSignalRiskBlock)
+
+
+class WeeklyReviewPlanItem(BaseModel):
+    plan_id: int
+    action: str = Field(..., description="add/reduce/clear/watch")
+    symbol: Optional[str] = None
+    content: str
+    status: str = Field("pending", description="pending/done/skipped")
+
+
+class WeeklyReviewListItem(BaseModel):
+    review_id: int
+    period_start: str
+    period_end: str
+    status: str
+    feishu_sent: bool
+    has_note: bool = False
+    plan_counts: Dict[str, int] = Field(default_factory=dict)
+    summary: Dict[str, Any] = Field(default_factory=dict)
+    error: Optional[str] = None
+
+
+class WeeklyReviewListResponse(BaseModel):
+    items: List[WeeklyReviewListItem] = Field(default_factory=list)
+    total: int
+    page: int
+    page_size: int
+
+
+class WeeklyReviewDetailResponse(BaseModel):
+    review_id: int
+    period_start: str
+    period_end: str
+    status: str
+    feishu_sent: bool
+    weekly_note: str = ""
+    error: Optional[str] = None
+    plans: List[WeeklyReviewPlanItem] = Field(default_factory=list)
+    prev_period: Optional[Dict[str, Any]] = None
+    prev_plans: List[WeeklyReviewPlanItem] = Field(default_factory=list)
+    payload: Dict[str, Any] = Field(default_factory=dict)
+
+
+class WeeklyReviewGenerateRequest(BaseModel):
+    period_start: Optional[str] = Field(
+        None, description="目标周内任意一天 YYYY-MM-DD；缺省生成上一自然周"
+    )
+    push: bool = Field(True, description="生成后是否推送飞书摘要")
+
+
+class WeeklyReviewGenerateResponse(BaseModel):
+    review_id: Optional[int] = None
+    period_start: str
+    period_end: str
+    skipped: Optional[str] = None
+    feishu_sent: bool = False
+    summary: Dict[str, Any] = Field(default_factory=dict)
+
+
+class WeeklyReviewNoteUpdateRequest(BaseModel):
+    weekly_note: str = Field(..., max_length=5000)
+
+
+class WeeklyReviewPlanCreateRequest(BaseModel):
+    action: str
+    symbol: Optional[str] = Field(None, max_length=16)
+    content: str = Field(..., min_length=1, max_length=1000)
+
+
+class WeeklyReviewPlanUpdateRequest(BaseModel):
+    action: Optional[str] = None
+    symbol: Optional[str] = Field(None, max_length=16)
+    content: Optional[str] = Field(None, min_length=1, max_length=1000)
+    status: Optional[str] = None
+
+
+class WeeklyReviewDeleteResponse(BaseModel):
+    deleted: bool
+    plan_id: int
+
+
+class PortfolioIndicatorCbExtra(BaseModel):
+    premium_rate: Optional[float] = Field(None, description="转股溢价率（百分数，最新因子日）")
+    factor_date: Optional[str] = None
+    price_band: Optional[str] = Field(None, description="价格带：<=110 / 110-130 / 130-150 / >150")
+    remaining_size: Optional[float] = Field(None, description="剩余规模（亿元）")
+    days_to_maturity: Optional[int] = Field(None, description="距到期天数")
+    force_redeem_countdown: Optional[str] = Field(None, description="强赎进度原文（如 0/15 | 30）")
+
+
+class PortfolioIndicatorItem(BaseModel):
+    symbol: str
+    last_bar_date: Optional[str] = Field(None, description="最近一根日线日期（数据新鲜度）")
+    last_close: Optional[float] = None
+    ma5: Optional[float] = None
+    ma10: Optional[float] = None
+    ma20: Optional[float] = None
+    bias_ma5_pct: Optional[float] = Field(None, description="最近收盘相对 MA5 乖离（%）")
+    bias_ma10_pct: Optional[float] = None
+    bias_ma20_pct: Optional[float] = None
+    trend_pattern: str = Field("unknown", description="bull/bear/mixed/unknown")
+    streak_days: Optional[int] = Field(None, description="带符号连涨/连跌天数（正=连涨）")
+    week_change_pct: Optional[float] = None
+    month_change_pct: Optional[float] = None
+    pos_52w_pct: Optional[float] = Field(None, description="52 周高低区间位置（0~100）")
+    volume_ratio: Optional[float] = Field(None, description="最新量/前5日均量；场外基金为空")
+    sparkline: List[Dict[str, Any]] = Field(default_factory=list, description="近 60 日 {date, close}")
+    holding_days_by_account: Dict[str, int] = Field(default_factory=dict)
+    cb: Optional[PortfolioIndicatorCbExtra] = None
+
+
+class PortfolioIndicatorResponse(BaseModel):
+    as_of: str = Field(..., description="计算日期（今天）")
+    items: List[PortfolioIndicatorItem] = Field(default_factory=list)

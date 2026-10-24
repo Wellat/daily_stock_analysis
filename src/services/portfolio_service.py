@@ -348,7 +348,7 @@ class PortfolioService:
         """
         if not updates:
             raise ValueError("No fields provided for update")
-        allowed = {"industry", "category", "buy_logic", "note"}
+        allowed = {"industry", "category", "buy_logic", "buy_logic_text", "stop_loss_price", "note"}
         unknown = set(updates) - allowed
         if unknown:
             raise ValueError(f"Unknown position meta fields: {sorted(unknown)}")
@@ -365,8 +365,11 @@ class PortfolioService:
             raise ValueError("symbol is required")
         fields: Dict[str, Any] = {}
         for key, value in updates.items():
+            if key == "stop_loss_price":
+                fields[key] = self._parse_stop_loss_price(value)
+                continue
             text = (value or "").strip()
-            limit = 255 if key == "note" else 64
+            limit = 255 if key == "note" else (500 if key == "buy_logic_text" else 64)
             if len(text) > limit:
                 raise ValueError(f"{key} exceeds {limit} characters")
             fields[key] = text or None
@@ -392,8 +395,31 @@ class PortfolioService:
             "industry": row.industry,
             "category": row.category,
             "buy_logic": row.buy_logic,
+            "buy_logic_text": row.buy_logic_text,
+            "stop_loss_price": row.stop_loss_price,
             "note": row.note,
         }
+
+    @staticmethod
+    def _parse_stop_loss_price(value: Any) -> Optional[float]:
+        """止损价入参规整：空/None 清除；必须为正数。"""
+        if value is None:
+            return None
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return None
+            try:
+                parsed = float(text)
+            except ValueError as exc:
+                raise ValueError("stop_loss_price must be a positive number") from exc
+        elif isinstance(value, (int, float)):
+            parsed = float(value)
+        else:
+            raise ValueError("stop_loss_price must be a positive number")
+        if parsed <= 0:
+            raise ValueError("stop_loss_price must be a positive number")
+        return parsed
 
     def autofill_position_meta(self, *, account_id: Optional[int] = None) -> Dict[str, Any]:
         """为当前持仓自动补全元数据空字段（只填空，绝不覆盖人工值）。
@@ -1310,6 +1336,8 @@ class PortfolioService:
                 "industry": ((meta.industry or "").strip() or None) if meta else None,
                 "category": ((meta.category or "").strip() or None) if meta else None,
                 "buy_logic": ((meta.buy_logic or "").strip() or None) if meta else None,
+                "buy_logic_text": ((meta.buy_logic_text or "").strip() or None) if meta else None,
+                "stop_loss_price": float(meta.stop_loss_price) if meta and meta.stop_loss_price else None,
                 "note": ((meta.note or "").strip() or None) if meta else None,
             }
         for key, fields in overlay.items():
@@ -1437,6 +1465,8 @@ class PortfolioService:
                     "industry": position_meta.get("industry"),
                     "category": position_meta.get("category"),
                     "buy_logic": position_meta.get("buy_logic"),
+                    "buy_logic_text": position_meta.get("buy_logic_text"),
+                    "stop_loss_price": position_meta.get("stop_loss_price"),
                     "note": position_meta.get("note"),
                     "quantity": round(qty, 8),
                     "avg_cost": round(avg_cost, 8),

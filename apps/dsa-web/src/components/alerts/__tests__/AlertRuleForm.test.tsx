@@ -55,6 +55,33 @@ describe('AlertRuleForm', () => {
     });
   });
 
+  it('submits optional check interval and rejects out-of-range values', async () => {
+    render(<AlertRuleForm onSubmit={onSubmit} />);
+
+    fireEvent.change(screen.getByLabelText('标的代码'), { target: { value: '600519' } });
+    fireEvent.change(screen.getByLabelText('价格阈值'), { target: { value: '1800' } });
+    fireEvent.change(screen.getByLabelText('巡检间隔（分钟）'), { target: { value: '30' } });
+    fireEvent.click(screen.getByRole('button', { name: '创建规则' }));
+
+    await waitFor(() => {
+      expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ checkIntervalMinutes: 30 }));
+    });
+  });
+
+  it('blocks submit when check interval is out of range', async () => {
+    render(<AlertRuleForm onSubmit={onSubmit} />);
+
+    fireEvent.change(screen.getByLabelText('标的代码'), { target: { value: '600519' } });
+    fireEvent.change(screen.getByLabelText('价格阈值'), { target: { value: '1800' } });
+    fireEvent.change(screen.getByLabelText('巡检间隔（分钟）'), { target: { value: '2000' } });
+    fireEvent.click(screen.getByRole('button', { name: '创建规则' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toHaveTextContent('巡检间隔（分钟）必须是 1 到 1440 的整数');
+    });
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
   it('submits a price_change_percent rule payload', async () => {
     render(<AlertRuleForm onSubmit={onSubmit} />);
 

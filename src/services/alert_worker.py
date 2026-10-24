@@ -60,6 +60,7 @@ class RuntimeAlertRule:
     cooldown_policy: Optional[Dict[str, Any]] = None
     effective_target: Optional[str] = None
     display_target: Optional[str] = None
+    check_interval_minutes: Optional[int] = None
 
 
 @dataclass
@@ -96,6 +97,9 @@ class AlertWorker:
         self.fingerprint_ttl_seconds = max(1, int(fingerprint_ttl_seconds))
         self._trigger_fingerprints: Dict[str, float] = {}
         self._trigger_fingerprint_ttls: Dict[str, int] = {}
+        # 规则上次评估时刻（进程内存）；用于按规则巡检间隔的到期判断，
+        # 重启后首轮全量评估一次，属预期行为
+        self._last_evaluated_at: Dict[str, float] = {}
         self._analysis_visibility_cache: Dict[str, Optional[Dict[str, Any]]] = {}
 
     @staticmethod
@@ -121,6 +125,8 @@ class AlertWorker:
             "failed": 0,
             "notification_attempts": 0,
             "cooldown_suppressed": 0,
+            "market_closed_skipped": 0,
+            "interval_deferred": 0,
         }
 
         try:
@@ -143,7 +149,18 @@ class AlertWorker:
         monitor = EventMonitor()
         daily_cache: Dict[Any, Any] = {}
         self._analysis_visibility_cache = {}
+        now_ts = self.now_provider()
+        today = datetime.fromtimestamp(now_ts).date()
+        market_open_cache: Dict[str, bool] = {}
         for runtime_rule in runtime_rules:
+            # 交易日过滤：按规则标的所属市场逐条判断，当日休市的规则跳过本轮
+            if not self._is_rule_market_open_today(runtime_rule, today, market_open_cache):
+                stats["market_closed_skipped"] += 1
+                continue
+            # 到期过滤：未满该规则巡检间隔的规则本轮不评估
+            if not self._is_rule_due(runtime_rule, now_ts, config):
+                stats["interval_deferred"] += 1
+                continue
             stats["evaluated"] += 1
             try:
                 result = asyncio.run(self.service._evaluate_rule(runtime_rule.rule, monitor, daily_cache=daily_cache))
@@ -197,8 +214,89 @@ class AlertWorker:
                     if bool(dispatch.success):
                         self._mark_notified(runtime_rule.key)
                         stats["notified"] += 1
+            self._last_evaluated_at[runtime_rule.key] = now_ts
 
         return stats
+
+    @staticmethod
+    def _optional_int_or_none(value: Any) -> Optional[int]:
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _is_rule_due(self, runtime_rule: RuntimeAlertRule, now_ts: float, config: Any) -> bool:
+        """按规则巡检间隔判断本轮是否到期。
+
+        未配置 ``check_interval_minutes`` 的规则每轮都评估（与历史行为一致，
+        实际频率即全局轮询 tick）；配置了间隔的规则按间隔到期，
+        生效粒度=全局轮询 tick。
+        """
+        interval_minutes = runtime_rule.check_interval_minutes
+        if interval_minutes is None:
+            return True
+        last = self._last_evaluated_at.get(runtime_rule.key)
+        if last is None:
+            return True
+        return now_ts - last >= max(1, int(interval_minutes)) * 60
+
+    def _is_rule_market_open_today(
+        self,
+        runtime_rule: RuntimeAlertRule,
+        today: Any,
+        market_open_cache: Dict[str, bool],
+    ) -> bool:
+        """交易日过滤：休市市场的规则本轮跳过；市场解析不出时不过滤（fail-open）。"""
+        market = self._market_for_rule(runtime_rule)
+        if market is None:
+            return True
+        if market not in market_open_cache:
+            try:
+                from src.core.trading_calendar import is_market_open
+
+                market_open_cache[market] = is_market_open(market, today)
+            except Exception as exc:
+                logger.debug("[AlertWorker] trading calendar unavailable for %s: %s", market, exc)
+                market_open_cache[market] = True
+        return market_open_cache[market]
+
+    @staticmethod
+    def _market_for_rule(runtime_rule: RuntimeAlertRule) -> Optional[str]:
+        """解析规则标的所属市场（cn/hk/us）；无法解析返回 None（不过滤）。"""
+        rule = getattr(runtime_rule, "rule", runtime_rule)
+        metadata = getattr(rule, "metadata", None)
+        if not isinstance(metadata, dict):
+            metadata = {}
+        target_scope = str(
+            getattr(rule, "target_scope", None) or metadata.get("target_scope") or ""
+        ).strip()
+        if target_scope == "market":
+            region = str(getattr(rule, "target", None) or "").strip()
+            if not region:
+                return None
+            try:
+                return normalize_market_alert_region(region)
+            except Exception:
+                return None
+        if target_scope == "portfolio_account":
+            # 组合风险按 A 股组合口径评估
+            return "cn"
+        target = str(
+            metadata.get("effective_target")
+            or runtime_rule.effective_target
+            or getattr(rule, "stock_code", "")
+            or ""
+        ).strip()
+        if not target or ":" in target:
+            return None
+        try:
+            stock_code = normalize_stock_code(target)
+        except Exception:
+            return None
+        market = get_market_for_stock(stock_code)
+        return market if market in {"cn", "hk", "us"} else None
 
     def _load_runtime_rules(self, config: Any) -> List[RuntimeAlertRule]:
         runtime_rules: List[RuntimeAlertRule] = []
@@ -223,6 +321,9 @@ class AlertWorker:
                             cooldown_policy=cooldown_policy,
                             effective_target=payload.effective_target,
                             display_target=payload.display_target,
+                            check_interval_minutes=self._optional_int_or_none(
+                                getattr(row, "check_interval_minutes", None)
+                            ),
                         )
                     )
                     seen_keys.add(payload.key)

@@ -1,13 +1,16 @@
 import type React from 'react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Pie, PieChart, ResponsiveContainer, Tooltip, Legend, Cell } from 'recharts';
 import { decisionSignalsApi } from '../api/decisionSignals';
 import { portfolioApi } from '../api/portfolio';
 import type { ParsedApiError } from '../api/error';
 import { getParsedApiError } from '../api/error';
 import { Tabs } from 'antd';
-import { ApiErrorAlert, Card, ConfirmDialog, EmptyState, InlineAlert } from '../components/common';
+import { ChevronDown, ChevronRight } from 'lucide-react';
+import { ApiErrorAlert, Card, ConfirmDialog, EChart, EmptyState, InlineAlert } from '../components/common';
+import type { EChartOption } from '../components/common';
 import { PortfolioTrendTab } from '../components/portfolio/PortfolioTrendTab';
+import { WeeklyReviewTab } from '../components/portfolio/WeeklyReviewTab';
 import { PortfolioSignalSummary } from '../components/decision-signals/DecisionSignalDisplay';
 import { useUiLanguage } from '../contexts/UiLanguageContext';
 import { formatUiText } from '../i18n/uiText';
@@ -43,6 +46,7 @@ import type {
   PortfolioImportCommitResponse,
   PortfolioImportParseResponse,
   PortfolioPositionItem,
+  PortfolioIndicatorItem,
   PortfolioQmtSyncResponse,
   PortfolioRiskResponse,
   PortfolioSide,
@@ -69,6 +73,24 @@ type FlatPosition = PortfolioPositionItem & {
   accountId: number;
   accountName: string;
 };
+
+/** 行展开详情的 60 日收盘迷你曲线（无 text 依赖，组件外构建）。 */
+const buildSparklineOption = (points: { date: string; close: number }[]): EChartOption => ({
+  backgroundColor: 'transparent',
+  grid: { left: 48, right: 8, top: 8, bottom: 20 },
+  tooltip: { trigger: 'axis' },
+  xAxis: { type: 'category', data: points.map((point) => point.date) },
+  yAxis: { type: 'value', scale: true },
+  series: [
+    {
+      type: 'line',
+      showSymbol: false,
+      data: points.map((point) => point.close),
+      lineStyle: { width: 1.5, color: '#22d3ee' },
+      areaStyle: { color: 'rgba(34, 211, 238, 0.10)' },
+    },
+  ],
+});
 
 type PortfolioSignalLookup = {
   stockCode: string;
@@ -450,9 +472,112 @@ const PortfolioPage: React.FC = () => {
     await loadEventsPage(eventPage);
   }, [eventPage, loadEventsPage]);
 
+  // ---- 持仓技术指标（总览增强列 + 行展开详情；失败只降级为 -- 不阻塞快照） ----
+  const [indicatorMap, setIndicatorMap] = useState<Map<string, PortfolioIndicatorItem>>(new Map());
+  const [expandedRowKeys, setExpandedRowKeys] = useState<Set<string>>(new Set());
+
+  const loadIndicators = useCallback(async () => {
+    try {
+      const response = await portfolioApi.getHoldingIndicators({ accountId: queryAccountId });
+      setIndicatorMap(new Map((response.items || []).map((item) => [item.symbol, item])));
+    } catch {
+      setIndicatorMap(new Map());
+    }
+  }, [queryAccountId]);
+
+  const togglePositionRow = (rowKey: string) => {
+    setExpandedRowKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(rowKey)) {
+        next.delete(rowKey);
+      } else {
+        next.add(rowKey);
+      }
+      return next;
+    });
+  };
+
+  const renderMetricCell = (label: string, value: React.ReactNode) => (
+    <div className="flex items-baseline justify-between gap-3">
+      <span className="text-xs text-secondary">{label}</span>
+      <span className="text-sm text-foreground">{value}</span>
+    </div>
+  );
+
+  const isCbRow = (row: FlatPosition) => row.category === 'convertible_bond';
+
+  const renderPositionDetail = (row: FlatPosition, indicator?: PortfolioIndicatorItem) => {
+    const cb = indicator?.cb;
+    const holdingDays = indicator?.holdingDaysByAccount?.[String(row.accountId)];
+    const detailLine = (label: string, value: string) => (
+      <p className="text-sm">
+        <span className="mr-2 text-xs uppercase tracking-wider text-secondary">{label}</span>
+        <span className="text-foreground">{value}</span>
+      </p>
+    );
+    return (
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,320px)_1fr]">
+        <div>
+          <p className="mb-1 text-xs text-secondary">
+            {text.closeTrend}
+            {indicator?.lastBarDate
+              ? ` · ${formatUiText(text.indicatorStale, { date: indicator.lastBarDate })}`
+              : ''}
+          </p>
+          {indicator && indicator.sparkline.length > 1 ? (
+            <EChart option={buildSparklineOption(indicator.sparkline)} height={140} aria-label={`${row.symbol} ${text.closeTrend}`} />
+          ) : (
+            <p className="text-xs text-secondary">--</p>
+          )}
+        </div>
+        <div className="space-y-3">
+          <div className="grid gap-x-8 gap-y-1.5 sm:grid-cols-2 xl:grid-cols-3">
+            {renderMetricCell(text.biasMa5, indicator?.biasMa5Pct != null ? formatSignedPct(indicator.biasMa5Pct) : '--')}
+            {renderMetricCell(text.biasMa10, indicator?.biasMa10Pct != null ? formatSignedPct(indicator.biasMa10Pct) : '--')}
+            {renderMetricCell(text.biasMa20, indicator?.biasMa20Pct != null ? formatSignedPct(indicator.biasMa20Pct) : '--')}
+            {renderMetricCell(text.weekChange, indicator?.weekChangePct != null ? formatSignedPct(indicator.weekChangePct) : '--')}
+            {renderMetricCell(text.monthChange, indicator?.monthChangePct != null ? formatSignedPct(indicator.monthChangePct) : '--')}
+            {renderMetricCell(text.pos52w, indicator?.pos52wPct != null ? `${indicator.pos52wPct}` : '--')}
+            {renderMetricCell(text.holdingDaysCol, holdingDays != null ? `${holdingDays}` : '--')}
+            {renderMetricCell(
+              text.stopLossPrice,
+              row.stopLossPrice != null ? String(row.stopLossPrice) : text.noStopLoss,
+            )}
+            {isCbRow(row)
+              ? renderMetricCell(text.cbPremium, cb?.premiumRate != null ? `${cb.premiumRate}%` : '--')
+              : renderMetricCell(
+                  text.volumeRatio,
+                  indicator?.volumeRatio != null ? indicator.volumeRatio.toFixed(2) : '--',
+                )}
+          </div>
+          {isCbRow(row) && cb ? (
+            <div className="grid gap-x-8 gap-y-1.5 border-t border-white/10 pt-2 sm:grid-cols-2 xl:grid-cols-3">
+              {renderMetricCell(text.cbPriceBand, cb.priceBand || '--')}
+              {renderMetricCell(
+                text.cbRemainingSize,
+                cb.remainingSize != null ? `${cb.remainingSize}` : '--',
+              )}
+              {renderMetricCell(
+                text.daysToMaturityCol,
+                cb.daysToMaturity != null ? `${cb.daysToMaturity}` : '--',
+              )}
+              {cb.forceRedeemCountdown
+                ? renderMetricCell(text.cbRedeem, cb.forceRedeemCountdown)
+                : null}
+            </div>
+          ) : null}
+          <div className="space-y-1 border-t border-white/10 pt-2">
+            {row.buyLogicText ? detailLine(text.buyLogicText, row.buyLogicText) : null}
+            {row.note ? detailLine(text.note, row.note) : null}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   const refreshPortfolioData = useCallback(async (page = eventPage) => {
-    await Promise.all([loadSnapshotAndRisk(), loadEventsPage(page)]);
-  }, [eventPage, loadEventsPage, loadSnapshotAndRisk]);
+    await Promise.all([loadSnapshotAndRisk(), loadEventsPage(page), loadIndicators()]);
+  }, [eventPage, loadEventsPage, loadSnapshotAndRisk, loadIndicators]);
 
   useEffect(() => {
     void loadAccounts();
@@ -464,8 +589,16 @@ const PortfolioPage: React.FC = () => {
   }, [loadSnapshotAndRisk]);
 
   useEffect(() => {
+    void loadIndicators();
+  }, [loadIndicators]);
+
+  useEffect(() => {
     void loadEvents();
   }, [loadEvents]);
+
+  useEffect(() => {
+    void loadIndicators();
+  }, [loadIndicators]);
 
   useEffect(() => {
     setEventPage(1);
@@ -502,7 +635,7 @@ const PortfolioPage: React.FC = () => {
   const [editingMetaRow, setEditingMetaRow] = useState<FlatPosition | null>(null);
   const [metaSaving, setMetaSaving] = useState(false);
   const [metaMessage, setMetaMessage] = useState<string | null>(null);
-  const [metaForm, setMetaForm] = useState({ industry: '', category: 'stock', buyLogic: 'undefined', note: '' });
+  const [metaForm, setMetaForm] = useState({ industry: '', category: 'stock', buyLogic: 'undefined', buyLogicText: '', stopLossPrice: '', note: '' });
   const [autofillRunning, setAutofillRunning] = useState(false);
   const autofillAttemptedRef = useRef(false);
 
@@ -529,12 +662,24 @@ const PortfolioPage: React.FC = () => {
       industry: row.industry || '',
       category: row.category || 'stock',
       buyLogic: row.buyLogic || 'undefined',
+      buyLogicText: row.buyLogicText || '',
+      stopLossPrice: row.stopLossPrice != null ? String(row.stopLossPrice) : '',
       note: row.note || '',
     });
   };
 
   const handleSaveMeta = async () => {
     if (!editingMetaRow) return;
+    const stopLossText = metaForm.stopLossPrice.trim();
+    let stopLossValue: number | null = null;
+    if (stopLossText !== '') {
+      const parsed = Number(stopLossText);
+      if (!Number.isFinite(parsed) || parsed <= 0) {
+        setMetaMessage(text.positiveStopLossRequired);
+        return;
+      }
+      stopLossValue = parsed;
+    }
     setMetaSaving(true);
     try {
       await portfolioApi.updatePositionMeta({
@@ -543,6 +688,8 @@ const PortfolioPage: React.FC = () => {
         industry: metaForm.industry.trim(),
         category: metaForm.category,
         buyLogic: metaForm.buyLogic,
+        buyLogicText: metaForm.buyLogicText.trim(),
+        stopLossPrice: stopLossValue,
         note: metaForm.note.trim(),
       });
       setEditingMetaRow(null);
@@ -1336,9 +1483,10 @@ const PortfolioPage: React.FC = () => {
             <p className="py-6 text-center text-xs text-secondary">{text.noFilteredPositions}</p>
           ) : (
             <div className="overflow-x-auto">
-              <table className="min-w-[1180px] w-full text-sm">
+              <table className="min-w-[1400px] w-full text-sm">
                 <thead className="text-xs text-secondary border-b border-white/10">
                   <tr>
+                    <th className="w-8 py-2" aria-label={text.expandDetail} />
                     <th className="text-left py-2 pr-2">{text.account}</th>
                     <th className="text-left py-2 pr-2">{text.code}</th>
                     <th className="text-left py-2 pr-2">{text.industry}</th>
@@ -1351,6 +1499,10 @@ const PortfolioPage: React.FC = () => {
                     <th className="text-right py-2 pr-2">{text.marketValue}</th>
                     <th className="text-right py-2 pr-3">{text.unrealizedPnl}</th>
                     <th className="text-right py-2 pr-3">{text.returnPct}</th>
+                    <th className="text-right py-2 pr-2">{text.trendPattern}</th>
+                    <th className="text-right py-2 pr-2">{text.streakUp}/{text.streakDown}</th>
+                    <th className="text-right py-2 pr-2">{text.volumeRatio}</th>
+                    <th className="text-right py-2 pr-3">{text.distToStop}</th>
                     <th className="min-w-[9rem] text-right py-2 pr-3">{t('decisionSignals.portfolioColumn')}</th>
                     <th className="w-28 text-right py-2">{text.action}</th>
                   </tr>
@@ -1360,8 +1512,26 @@ const PortfolioPage: React.FC = () => {
                     const rowKey = `${row.accountId}-${row.symbol}-${row.market}`;
                     const analyzing = positionAnalysisLoadingKey === rowKey;
                     const signal = signalByPositionKey.get(rowKey);
+                    const indicator = indicatorMap.get(row.symbol);
+                    const isCb = row.category === 'convertible_bond';
+                    const expanded = expandedRowKeys.has(rowKey);
+                    const stopDistancePct =
+                      row.stopLossPrice != null && row.stopLossPrice > 0 && hasPositionPrice(row)
+                        ? (row.lastPrice / row.stopLossPrice - 1) * 100
+                        : null;
                     return (
-                    <tr key={rowKey} className="border-b border-white/5">
+                    <Fragment key={rowKey}>
+                    <tr className="border-b border-white/5">
+                      <td className="py-2 text-center">
+                        <button
+                          type="button"
+                          className="text-secondary hover:text-foreground"
+                          aria-label={text.expandDetail}
+                          onClick={() => togglePositionRow(rowKey)}
+                        >
+                          {expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                        </button>
+                      </td>
                       <td className="py-2 pr-2 text-secondary">{row.accountName}</td>
                       <td className="py-2 pr-2 font-mono text-foreground">
                         {row.symbolName ? `${row.symbolName}（${row.symbol}）` : row.symbol}
@@ -1409,6 +1579,70 @@ const PortfolioPage: React.FC = () => {
                       >
                         {formatSignedPct(row.unrealizedPnlPct)}
                       </td>
+                      <td className="py-2 pr-2 text-right whitespace-nowrap">
+                        {isCb ? (
+                          indicator?.cb?.premiumRate != null ? (
+                            <span className="text-secondary" title={text.cbPremium}>
+                              {formatSignedPct(indicator.cb.premiumRate)}
+                            </span>
+                          ) : (
+                            '--'
+                          )
+                        ) : !indicator || !indicator.trendPattern || indicator.trendPattern === 'unknown' ? (
+                          <span className="text-secondary">{text.trendUnknown}</span>
+                        ) : indicator.trendPattern === 'bull' ? (
+                          <span className="text-success">{text.trendBull}</span>
+                        ) : indicator.trendPattern === 'bear' ? (
+                          <span className="text-danger">{text.trendBear}</span>
+                        ) : (
+                          <span className="text-secondary">{text.trendMixed}</span>
+                        )}
+                      </td>
+                      <td className="py-2 pr-2 text-right whitespace-nowrap">
+                        {indicator?.streakDays == null ? (
+                          '--'
+                        ) : (
+                          <span
+                            className={
+                              indicator.streakDays > 0
+                                ? 'text-success'
+                                : indicator.streakDays < 0
+                                  ? 'text-danger'
+                                  : 'text-secondary'
+                            }
+                          >
+                            {indicator.streakDays > 0
+                              ? `↑${indicator.streakDays}`
+                              : indicator.streakDays < 0
+                                ? `↓${Math.abs(indicator.streakDays)}`
+                                : '0'}
+                          </span>
+                        )}
+                      </td>
+                      <td className="py-2 pr-2 text-right whitespace-nowrap" title={indicator?.cb?.forceRedeemCountdown || undefined}>
+                        {isCb ? (
+                          indicator?.cb?.daysToMaturity != null && indicator.cb.daysToMaturity <= 90 ? (
+                            <span className="text-warning font-medium">
+                              {indicator.cb.daysToMaturity}{text.daysToMaturityShort}
+                            </span>
+                          ) : (
+                            '--'
+                          )
+                        ) : indicator?.volumeRatio != null ? (
+                          indicator.volumeRatio.toFixed(2)
+                        ) : (
+                          '--'
+                        )}
+                      </td>
+                      <td className="py-2 pr-3 text-right whitespace-nowrap">
+                        {stopDistancePct == null ? (
+                          <span className="text-secondary" title={text.noStopLoss}>--</span>
+                        ) : (
+                          <span className={stopDistancePct <= 5 ? 'text-danger font-medium' : 'text-secondary'}>
+                            {formatSignedPct(stopDistancePct)}
+                          </span>
+                        )}
+                      </td>
                       <td className="py-2 pr-3 text-right align-top">
                         <PortfolioSignalSummary item={signal} loading={portfolioSignalsLoading} />
                       </td>
@@ -1430,6 +1664,14 @@ const PortfolioPage: React.FC = () => {
                         </button>
                       </td>
                     </tr>
+                    {expanded ? (
+                      <tr className="border-b border-white/5 bg-black/10">
+                        <td colSpan={19} className="px-4 py-3">
+                          {renderPositionDetail(row, indicator)}
+                        </td>
+                      </tr>
+                    ) : null}
+                    </Fragment>
                     );
                   })}
                 </tbody>
@@ -1911,6 +2153,11 @@ const PortfolioPage: React.FC = () => {
               <PortfolioTrendTab accountId={queryAccountId} costMethod={costMethod} />
             ),
           },
+          {
+            key: 'weekly-review',
+            label: '周复盘',
+            children: <WeeklyReviewTab />,
+          },
         ]}
       />
       {editingMetaRow ? (
@@ -1970,6 +2217,26 @@ const PortfolioPage: React.FC = () => {
                     </option>
                   ))}
                 </select>
+              </label>
+              <label className="block text-xs text-secondary">
+                {text.buyLogicText}
+                <input
+                  className={`${PORTFOLIO_INPUT_CLASS} mt-1`}
+                  value={metaForm.buyLogicText}
+                  onChange={(e) => setMetaForm((form) => ({ ...form, buyLogicText: e.target.value }))}
+                  maxLength={500}
+                  placeholder={text.buyLogicTextPlaceholder}
+                />
+              </label>
+              <label className="block text-xs text-secondary">
+                {text.stopLossPrice}
+                <input
+                  className={`${PORTFOLIO_INPUT_CLASS} mt-1`}
+                  value={metaForm.stopLossPrice}
+                  onChange={(e) => setMetaForm((form) => ({ ...form, stopLossPrice: e.target.value }))}
+                  inputMode="decimal"
+                  placeholder={text.stopLossPlaceholder}
+                />
               </label>
               <label className="block text-xs text-secondary">
                 {text.note}
