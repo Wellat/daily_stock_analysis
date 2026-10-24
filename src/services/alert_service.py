@@ -253,7 +253,9 @@ class AlertService:
                 content="\n".join(lines),
                 alert_type="info",
             )
-            dispatch = NotificationService().send_with_results(alert_text, route_type="alert")
+            dispatch = NotificationService().send_with_results(
+                alert_text, route_type="alert", feishu_title="【测试】巡检信号"
+            )
             response["notification_status"] = str(getattr(dispatch, "status", None) or "unknown")
             response["notification_message"] = self._sanitize_text(
                 getattr(dispatch, "message", None) or ""

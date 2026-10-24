@@ -10,16 +10,23 @@
     python scripts/backup_db.py --dry-run
     python scripts/backup_db.py --db-path ./data/stock_analysis.db \
         --backup-dir ./data/backups --keep 5
+    python scripts/backup_db.py --mirror-dir /mnt/e/backups/dsa_db
+
+``--mirror-dir`` 指定镜像目录时（如 WSL 下挂载的 Windows 盘），本地备份
+完成后会把新备份额外复制一份过去，并按 ``--mirror-keep``（默认同 ``--keep``）
+独立轮转；镜像失败（目录不可写、盘未挂载等）只打警告，不影响本地备份结果。
 
 建议通过系统 cron 每 3 天执行一次（``crontab -e``）：
 
     0 2 */3 * * cd /home/ubuntu/code/daily_stock_analysis && \
-        python scripts/backup_db.py >> logs/backup_db.log 2>&1
+        python scripts/backup_db.py --mirror-dir /mnt/e/backups/dsa_db \
+        >> logs/backup_db.log 2>&1
 """
 from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import sqlite3
 import sys
 from datetime import datetime
@@ -28,7 +35,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 DEFAULT_DB_PATH = "./data/stock_analysis.db"
-DEFAULT_KEEP = 5
+DEFAULT_KEEP = 3
 BACKUP_PREFIX = "stock_analysis_"
 
 
@@ -58,6 +65,20 @@ def _prune_plan(backup_dir: Path, new_backup_name: str, keep: int) -> list[Path]
     return [backup_dir / name for name in names[keep:]]
 
 
+def _mirror_backup(backup_path: Path, mirror_dir: Path, mirror_keep: int) -> None:
+    """把新备份复制到镜像目录并轮转；OSError 由调用方降级为警告。"""
+    mirror_dir.mkdir(parents=True, exist_ok=True)
+    mirror_path = mirror_dir / backup_path.name
+    shutil.copy2(backup_path, mirror_path)
+    print(f"镜像备份完成: {mirror_path}")
+    for path in _prune_plan(mirror_dir, backup_path.name, mirror_keep):
+        try:
+            path.unlink()
+            print(f"已删除镜像旧备份: {path}")
+        except OSError as exc:
+            print(f"警告: 删除镜像旧备份失败 {path}: {exc}", file=sys.stderr)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="对项目 SQLite 数据库执行在线备份并轮转保留最近 N 份。",
@@ -79,6 +100,18 @@ def main() -> int:
         help=f"保留份数（默认 {DEFAULT_KEEP}）",
     )
     parser.add_argument(
+        "--mirror-dir",
+        default=None,
+        help="镜像备份目录（如 WSL 下挂载的 Windows 盘 /mnt/e/backups/dsa_db，"
+             "本地备份完成后额外复制一份并独立轮转）",
+    )
+    parser.add_argument(
+        "--mirror-keep",
+        type=int,
+        default=None,
+        help="镜像目录保留份数（默认与 --keep 一致）",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="只打印将执行的操作，不实际备份或删除",
@@ -88,9 +121,14 @@ def main() -> int:
     if args.keep < 1:
         print("错误: --keep 必须为正整数", file=sys.stderr)
         return 2
+    if args.mirror_keep is not None and args.mirror_keep < 1:
+        print("错误: --mirror-keep 必须为正整数", file=sys.stderr)
+        return 2
 
     db_path = _resolve_path(args.db_path)
     backup_dir = _resolve_path(args.backup_dir) if args.backup_dir else db_path.parent / "backups"
+    mirror_dir = _resolve_path(args.mirror_dir) if args.mirror_dir else None
+    mirror_keep = args.mirror_keep if args.mirror_keep is not None else args.keep
     new_name = _backup_filename()
     backup_path = backup_dir / new_name
 
@@ -103,6 +141,8 @@ def main() -> int:
     print(f"数据库: {db_path}")
     print(f"备份目录: {backup_dir}")
     print(f"新备份文件: {backup_path}")
+    if mirror_dir:
+        print(f"镜像目录: {mirror_dir}")
 
     if args.dry_run:
         if to_delete:
@@ -111,6 +151,14 @@ def main() -> int:
                 print(f"  - {path}")
         else:
             print("无需删除旧备份")
+        if mirror_dir:
+            mirror_to_delete = _prune_plan(mirror_dir, new_name, mirror_keep)
+            if mirror_to_delete:
+                print("将删除以下超出保留份数的镜像旧备份:")
+                for path in mirror_to_delete:
+                    print(f"  - {path}")
+            else:
+                print("镜像目录无需删除旧备份")
         print("[dry-run] 未执行任何写入或删除")
         return 0
 
@@ -136,6 +184,12 @@ def main() -> int:
             print(f"已删除旧备份: {path}")
         except OSError as exc:
             print(f"警告: 删除旧备份失败 {path}: {exc}", file=sys.stderr)
+
+    if mirror_dir:
+        try:
+            _mirror_backup(backup_path, mirror_dir, mirror_keep)
+        except OSError as exc:
+            print(f"警告: 镜像备份失败，本地备份不受影响: {exc}", file=sys.stderr)
 
     remaining = _existing_backups(backup_dir)
     print(f"当前备份数量: {len(remaining)}")

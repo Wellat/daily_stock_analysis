@@ -757,7 +757,9 @@ class AlertWorker:
             content = f"{content}\n\n{signal_excerpt}"
         alert_text = NotificationBuilder.build_simple_alert(title=title, content=content, alert_type="warning")
 
-        return notification_service.send_with_results(alert_text, route_type="alert")
+        return notification_service.send_with_results(
+            alert_text, route_type="alert", feishu_title="巡检信号"
+        )
 
     def _send_notification_safely(self, runtime_rule: RuntimeAlertRule, result: Dict[str, Any]) -> "NotificationDispatchResult":
         try:

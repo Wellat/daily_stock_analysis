@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [新功能] `scripts/backup_db.py` 新增 `--mirror-dir` / `--mirror-keep`：本地备份完成后将新备份额外复制到镜像目录（如 WSL 下挂载的 Windows 盘 `/mnt/e/backups/dsa_db`）并独立轮转；镜像失败（盘未挂载、目录不可写等）仅输出警告，不影响本地备份结果与退出码。
 - [新功能] 持仓总览技术指标增强：新增 `GET /portfolio/positions/indicators`（服务端由 `stock_daily` 收盘序列现算，单窗口查询全持仓），持仓明细表新增均线形态（多头/空头/纠缠）、连涨连跌徽标（↑N/↓N）、量比、距止损四列，点击行首 chevron 展开详情面板（近 60 日收盘迷你曲线、乖离 MA5/10/20、周/月涨跌、52 周位置、持有天数、买入逻辑与止损全文）；转债行自适应——均线形态列显示转股溢价率、量比列显示临期提醒（距到期 ≤90 天，悬浮显示强赎进度原文），展开面板含价格带/剩余规模/到期/强赎进度；场外基金量比恒为空；指标接口失败仅新列降级为 `--` 不阻塞持仓总览；口径详见 `docs/position-indicators.md`。
 - [新功能] 持仓止损价：`portfolio_position_meta` 新增 `stop_loss_price` 列（正数可空，老库自动补列），持仓编辑弹窗可维护；持仓总览「距止损」列（现价÷止损价−1，≤5% 红色），周复盘风险清单新增 `stop_loss_near` 条目（距止损 ≤5%，severity=high）。
 - [文档] 新增 `docs/position-indicators.md`：持仓指标口径（收盘序列现算/基金无量比/52 周位置）、转债自适应列、行展开详情、止损位字段与周复盘联动。

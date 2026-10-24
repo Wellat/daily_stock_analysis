@@ -532,6 +532,11 @@ const PortfolioPage: React.FC = () => {
         </div>
         <div className="space-y-3">
           <div className="grid gap-x-8 gap-y-1.5 sm:grid-cols-2 xl:grid-cols-3">
+            {renderMetricCell(text.account, row.accountName)}
+            {renderMetricCell(text.quantity, row.quantity.toFixed(2))}
+            {renderMetricCell(text.industry, row.industry || text.unclassified)}
+            {renderMetricCell(text.category, categoryLabels[row.category || 'stock'] || row.category || '--')}
+            {renderMetricCell(text.buyLogic, buyLogicLabels[row.buyLogic || 'undefined'] || row.buyLogic || '--')}
             {renderMetricCell(text.biasMa5, indicator?.biasMa5Pct != null ? formatSignedPct(indicator.biasMa5Pct) : '--')}
             {renderMetricCell(text.biasMa10, indicator?.biasMa10Pct != null ? formatSignedPct(indicator.biasMa10Pct) : '--')}
             {renderMetricCell(text.biasMa20, indicator?.biasMa20Pct != null ? formatSignedPct(indicator.biasMa20Pct) : '--')}
@@ -1483,17 +1488,12 @@ const PortfolioPage: React.FC = () => {
             <p className="py-6 text-center text-xs text-secondary">{text.noFilteredPositions}</p>
           ) : (
             <div className="overflow-x-auto">
-              <table className="min-w-[1400px] w-full text-sm">
+              <table className="min-w-[1180px] w-full text-sm">
                 <thead className="text-xs text-secondary border-b border-white/10">
                   <tr>
                     <th className="w-8 py-2" aria-label={text.expandDetail} />
-                    <th className="text-left py-2 pr-2">{text.account}</th>
                     <th className="text-left py-2 pr-2">{text.code}</th>
-                    <th className="text-left py-2 pr-2">{text.industry}</th>
-                    <th className="text-left py-2 pr-2">{text.category}</th>
-                    <th className="text-left py-2 pr-2">{text.buyLogic}</th>
                     <th className="text-left py-2 pr-2">{text.note}</th>
-                    <th className="text-right py-2 pr-2">{text.quantity}</th>
                     <th className="text-right py-2 pr-2">{text.avgCost}</th>
                     <th className="text-right py-2 pr-2">{text.lastPrice}</th>
                     <th className="text-right py-2 pr-2">{text.marketValue}</th>
@@ -1532,23 +1532,12 @@ const PortfolioPage: React.FC = () => {
                           {expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
                         </button>
                       </td>
-                      <td className="py-2 pr-2 text-secondary">{row.accountName}</td>
                       <td className="py-2 pr-2 font-mono text-foreground">
                         {row.symbolName ? `${row.symbolName}（${row.symbol}）` : row.symbol}
-                      </td>
-                      <td className="py-2 pr-2 text-secondary" title={row.industry || undefined}>
-                        {row.industry || '--'}
-                      </td>
-                      <td className="py-2 pr-2 text-secondary">
-                        {categoryLabels[row.category || 'stock'] || row.category || '--'}
-                      </td>
-                      <td className="py-2 pr-2 text-secondary">
-                        {buyLogicLabels[row.buyLogic || 'undefined'] || row.buyLogic || '--'}
                       </td>
                       <td className="py-2 pr-2 max-w-[10rem] truncate text-secondary" title={row.note || undefined}>
                         {row.note || '--'}
                       </td>
-                      <td className="py-2 pr-2 text-right">{row.quantity.toFixed(2)}</td>
                       <td className="py-2 pr-2 text-right">{row.avgCost.toFixed(4)}</td>
                       <td className="py-2 pr-2 text-right">
                         <div>{formatPositionPrice(row)}</div>
@@ -1666,7 +1655,7 @@ const PortfolioPage: React.FC = () => {
                     </tr>
                     {expanded ? (
                       <tr className="border-b border-white/5 bg-black/10">
-                        <td colSpan={19} className="px-4 py-3">
+                        <td colSpan={14} className="px-4 py-3">
                           {renderPositionDetail(row, indicator)}
                         </td>
                       </tr>
@@ -2220,8 +2209,9 @@ const PortfolioPage: React.FC = () => {
               </label>
               <label className="block text-xs text-secondary">
                 {text.buyLogicText}
-                <input
-                  className={`${PORTFOLIO_INPUT_CLASS} mt-1`}
+                <textarea
+                  className="input-surface input-focus-glow mt-1 w-full resize-y rounded-xl border bg-transparent px-4 py-2.5 text-sm transition-all focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
+                  rows={3}
                   value={metaForm.buyLogicText}
                   onChange={(e) => setMetaForm((form) => ({ ...form, buyLogicText: e.target.value }))}
                   maxLength={500}
