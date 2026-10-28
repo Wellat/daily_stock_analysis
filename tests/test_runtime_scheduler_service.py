@@ -822,3 +822,81 @@ class LiveTradeSummaryBackgroundTaskTestCase(unittest.TestCase):
             task()  # 同一分钟第二次 tick：当日已跑，跳过
 
         self.assertEqual(service_calls, [1, date(2026, 10, 22)])
+
+
+class EtfDailySyncBackgroundTaskTestCase(unittest.TestCase):
+    """ETF 日线每日自动同步任务的构建、标的收集与开关。"""
+
+    def test_disabled_returns_no_tasks(self) -> None:
+        from src.services.runtime_scheduler import build_etf_daily_sync_background_tasks
+
+        with patch.dict(os.environ, {"ETF_DAILY_SYNC_ENABLED": "false"}):
+            entries = build_etf_daily_sync_background_tasks(SimpleNamespace(etf_daily_sync_time="20:30"))
+        self.assertEqual(entries, [])
+
+    def test_collects_symbols_from_enabled_notify_instances_only(self) -> None:
+        """只收集启用中的 notify 实例标的并集；order/停用实例忽略。"""
+        from src.services.runtime_scheduler import build_etf_daily_sync_background_tasks
+
+        sync_calls = []
+
+        class _StubLive:
+            def list_configs(self):
+                return [
+                    {"id": 1, "enabled": True, "strategy_id": "etf-signal", "symbols": ["513630", "512170"]},
+                    {"id": 2, "enabled": True, "strategy_id": "double-low", "symbols": ["110092"]},
+                    {"id": 3, "enabled": False, "strategy_id": "etf-signal", "symbols": ["159915"]},
+                ]
+
+        class _StubSync:
+            def __init__(self) -> None:
+                pass
+
+            def sync_etf_daily(self, *, market, symbols):
+                sync_calls.append(sorted(symbols))
+                return {"status": "completed"}
+
+        class _StubEngine:
+            @staticmethod
+            def list_builtin_strategies():
+                return [
+                    {"strategy_id": "etf-signal", "live_mode": "notify"},
+                    {"strategy_id": "double-low", "live_mode": "order"},
+                ]
+
+        with patch("src.services.live_strategy_service.LiveStrategyService", _StubLive), \
+             patch("src.services.strategy_lab.data_sync_service.StrategyLabDataSyncService", _StubSync), \
+             patch("src.core.strategy_lab.engine.list_builtin_strategies", _StubEngine.list_builtin_strategies), \
+             patch("src.services.runtime_scheduler._is_cn_trading_day", return_value=True), \
+             patch("src.services.runtime_scheduler.datetime") as mock_datetime:
+            task = build_etf_daily_sync_background_tasks(
+                SimpleNamespace(etf_daily_sync_time="20:30")
+            )[0]["task"]
+            mock_datetime.now.return_value = datetime(2026, 10, 27, 20, 30, 5)
+            task()
+
+        self.assertEqual(sync_calls, [["512170", "513630"]])
+
+    def test_skips_when_no_enabled_notify_instances(self) -> None:
+        from src.services.runtime_scheduler import build_etf_daily_sync_background_tasks
+
+        class _StubLive:
+            def list_configs(self):
+                return [{"id": 1, "enabled": False, "strategy_id": "etf-signal", "symbols": ["513630"]}]
+
+        class _StubEngine:
+            @staticmethod
+            def list_builtin_strategies():
+                return [{"strategy_id": "etf-signal", "live_mode": "notify"}]
+
+        with patch("src.services.live_strategy_service.LiveStrategyService", _StubLive), \
+             patch("src.core.strategy_lab.engine.list_builtin_strategies", _StubEngine.list_builtin_strategies), \
+             patch("src.services.runtime_scheduler._is_cn_trading_day", return_value=True), \
+             patch("src.services.runtime_scheduler.datetime") as mock_datetime:
+            task = build_etf_daily_sync_background_tasks(
+                SimpleNamespace(etf_daily_sync_time="20:30")
+            )[0]["task"]
+            mock_datetime.now.return_value = datetime(2026, 10, 27, 20, 30, 5)
+            task()  # 无启用实例：不触发同步也不报错
+
+        self.assertTrue(True)

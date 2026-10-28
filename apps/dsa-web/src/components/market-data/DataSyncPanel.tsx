@@ -4,6 +4,8 @@ import type { ColumnsType } from 'antd/es/table';
 import { ApiErrorAlert } from '../common';
 import type { ParsedApiError } from '../../api/error';
 import { getParsedApiError } from '../../api/error';
+import { systemConfigApi } from '../../api/systemConfig';
+import type { ScheduledTaskItem } from '../../types/systemConfig';
 import { strategyLabApi, type StrategyLabSyncRunItem } from '../../api/strategyLab';
 import { SL_INPUT_CLASS, SL_PANEL_CLASS, parseSymbols } from '../strategy-lab/utils';
 
@@ -40,6 +42,7 @@ const WrappedCell: React.FC<{ text: string; className?: string }> = ({ text, cla
 
 export const DataSyncPanel: React.FC = () => {
   const [syncRuns, setSyncRuns] = useState<StrategyLabSyncRunItem[]>([]);
+  const [scheduledTasks, setScheduledTasks] = useState<ScheduledTaskItem[]>([]);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
   const [total, setTotal] = useState(0);
@@ -75,7 +78,17 @@ export const DataSyncPanel: React.FC = () => {
     }
   }, []);
 
+  const refreshScheduledTasks = useCallback(async () => {
+    try {
+      const resp = await systemConfigApi.getScheduledTasks();
+      setScheduledTasks(resp.items ?? []);
+    } catch {
+      // 总览加载失败不打断同步记录；下一次轮询重试
+    }
+  }, []);
+
   useEffect(() => { void refresh(page, pageSize); }, [page, pageSize, refresh]);
+  useEffect(() => { void refreshScheduledTasks(); }, [refreshScheduledTasks]);
 
   useEffect(() => {
     try {
@@ -89,9 +102,10 @@ export const DataSyncPanel: React.FC = () => {
     if (!pollingEnabled) return undefined;
     const timer = window.setInterval(() => {
       void refresh(page, pageSize, false);
+      void refreshScheduledTasks();
     }, SYNC_RUN_POLL_INTERVAL_MS);
     return () => window.clearInterval(timer);
-  }, [page, pageSize, pollingEnabled, refresh]);
+  }, [page, pageSize, pollingEnabled, refresh, refreshScheduledTasks]);
 
   const waitSyncRun = async (runId: number): Promise<StrategyLabSyncRunItem | null> => {
     for (let attempt = 0; attempt < 120; attempt += 1) {
@@ -147,6 +161,35 @@ export const DataSyncPanel: React.FC = () => {
           取消
         </Button>
       ) : '--'
+    ) },
+  ];
+
+  const formatTimestamp = (value: string | null | undefined): string =>
+    value ? value.replace('T', ' ').slice(0, 19) : '--';
+
+  const scheduledTaskColumns: ColumnsType<ScheduledTaskItem> = [
+    { title: '任务', dataIndex: 'label', width: 150, render: (_, item) => (
+      <div>
+        <div className="font-medium">{item.label}</div>
+        <div className="text-xs text-muted-text">{item.name}</div>
+      </div>
+    ) },
+    { title: '频率', dataIndex: 'schedule', width: 170 },
+    { title: '内容', dataIndex: 'description', ellipsis: { showTitle: true } },
+    { title: '状态', key: 'state', width: 110, render: (_, item) => {
+      if (!item.enabled) return <Tag>已停用</Tag>;
+      if (item.lastRunStatus === 'failed') return <Tag color="error">最近失败</Tag>;
+      if (!item.lastRunAt) return <Tag color="default">从未运行</Tag>;
+      return <Tag color="success">正常</Tag>;
+    } },
+    { title: '最近成功', key: 'lastSuccess', width: 150, render: (_, item) => formatTimestamp(item.lastSuccessAt) },
+    { title: '最近运行', key: 'lastRun', width: 150, render: (_, item) => (
+      <Tooltip title={item.lastRunDetail || undefined}>
+        <span>
+          {formatTimestamp(item.lastRunAt)}
+          {item.lastRunStatus === 'failed' ? ' ⚠️' : ''}
+        </span>
+      </Tooltip>
     ) },
   ];
 
@@ -234,6 +277,22 @@ export const DataSyncPanel: React.FC = () => {
         <Button type="primary" htmlType="submit" className="mt-4" loading={actionLoading === 'sync'}>开始同步</Button>
         {error ? <ApiErrorAlert error={error} className="mt-4" /> : null}
       </form>
+
+      <div className={SL_PANEL_CLASS}>
+        <h2 className="text-base font-semibold text-foreground">定时任务总览</h2>
+        <p className="mt-1 text-xs text-secondary-text">
+          后台定时任务一览（频率、内容与最近运行心跳；记录保留 7 天，空跳的 tick 不记录）。
+        </p>
+        <Table
+          rowKey="name"
+          size="small"
+          className="mt-3"
+          columns={scheduledTaskColumns}
+          dataSource={scheduledTasks}
+          pagination={false}
+          locale={{ emptyText: '暂无任务' }}
+        />
+      </div>
 
       <div className={SL_PANEL_CLASS}>
         <div className="flex flex-wrap items-center justify-between gap-2">

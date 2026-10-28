@@ -1027,6 +1027,9 @@ class Config:
     agent_context_protected_turns: int = 4
     agent_event_monitor_enabled: bool = False  # Enable periodic event-driven alert checks in schedule mode
     agent_event_monitor_interval_minutes: int = 5  # Polling interval for event monitor background checks
+    # 仅在各标的所属市场的盘中时段（含收盘竞价，跳过午休/盘前/盘后/节假日）执行巡检评估；
+    # 时段判定失败时放行（fail-open），不把巡检停死
+    agent_event_monitor_trading_sessions_only: bool = True
     agent_event_alert_rules_json: str = ""  # JSON array of serialized EventMonitor rules
 
     # === 通知配置（可同时配置多个，全部推送）===
@@ -1197,6 +1200,10 @@ class Config:
     cb_sync_enabled: bool = True
     cb_intraday_sync_time: str = "14:20"
     cb_after_close_sync_time: str = "20:00"
+    # ETF 日线（strategy_lab_etf_daily）每日盘后自动同步：标的取启用中的
+    # notify 实例（ETF 信号通知）symbols 并集，无实例则跳过
+    etf_daily_sync_enabled: bool = True
+    etf_daily_sync_time: str = "20:30"
     portfolio_snapshot_time: str = "20:05"     # 持仓每日快照生成时间（趋势图数据源，须晚于盘后行情同步）
     cb_intraday_data_max_age_minutes: int = 15
     # 可转债数据同步完成通知（发飞书群；兼容旧键 CB_SYNC_NOTIFY_EMAIL_ENABLED）
@@ -2009,6 +2016,9 @@ class Config:
                 field_name='AGENT_EVENT_MONITOR_INTERVAL_MINUTES',
                 minimum=1,
             ),
+            agent_event_monitor_trading_sessions_only=(
+                os.getenv('AGENT_EVENT_MONITOR_TRADING_SESSIONS_ONLY', 'true').strip().lower() != 'false'
+            ),
             agent_event_alert_rules_json=os.getenv('AGENT_EVENT_ALERT_RULES_JSON', ''),
             wechat_webhook_url=os.getenv('WECHAT_WEBHOOK_URL'),
             feishu_webhook_url=os.getenv('FEISHU_WEBHOOK_URL'),
@@ -2169,6 +2179,8 @@ class Config:
             cb_sync_enabled=parse_env_bool(os.getenv('CB_SYNC_ENABLED'), default=True),
             cb_intraday_sync_time=(os.getenv('CB_INTRADAY_SYNC_TIME') or '14:20').strip(),
             cb_after_close_sync_time=(os.getenv('CB_AFTER_CLOSE_SYNC_TIME') or '20:00').strip(),
+            etf_daily_sync_enabled=parse_env_bool(os.getenv('ETF_DAILY_SYNC_ENABLED'), default=True),
+            etf_daily_sync_time=(os.getenv('ETF_DAILY_SYNC_TIME') or '20:30').strip(),
             portfolio_snapshot_time=(os.getenv('PORTFOLIO_SNAPSHOT_TIME') or '20:05').strip(),
             cb_intraday_data_max_age_minutes=parse_env_int(os.getenv('CB_INTRADAY_DATA_MAX_AGE_MINUTES'), 15, field_name='CB_INTRADAY_DATA_MAX_AGE_MINUTES', minimum=1),
             # 新键未设置时回落旧键 CB_SYNC_NOTIFY_EMAIL_ENABLED（旧配置语义=开关通知）

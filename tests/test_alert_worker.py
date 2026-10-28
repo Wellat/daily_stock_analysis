@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pandas as pd
 
 from src.config import Config
+from src.core.trading_calendar import MarketPhase
 from src.notification import ChannelAttemptResult, NotificationDispatchResult
 from src.services.alert_indicators import (
     _calculate_rsi,
@@ -261,6 +262,13 @@ class AlertWorkerTestCase(unittest.TestCase):
         calendar_patcher = patch("src.core.trading_calendar.is_market_open", return_value=True)
         calendar_patcher.start()
         self.addCleanup(calendar_patcher.stop)
+        # 盘中时段过滤默认放行（视为盘中），非交易时段行为由个别用例覆盖
+        session_patcher = patch(
+            "src.core.trading_calendar.infer_market_phase",
+            return_value=MarketPhase.INTRADAY,
+        )
+        session_patcher.start()
+        self.addCleanup(session_patcher.stop)
 
     def tearDown(self) -> None:
         DatabaseManager.reset_instance()
@@ -269,12 +277,14 @@ class AlertWorkerTestCase(unittest.TestCase):
         os.environ.pop("DATABASE_PATH", None)
         self.temp_dir.cleanup()
 
-    def _config(self, raw_rules: str = "") -> SimpleNamespace:
-        return SimpleNamespace(
-            agent_event_monitor_enabled=True,
-            agent_event_alert_rules_json=raw_rules,
-            trading_day_check_enabled=False,
-        )
+    def _config(self, raw_rules: str = "", **overrides) -> SimpleNamespace:
+        values = {
+            "agent_event_monitor_enabled": True,
+            "agent_event_alert_rules_json": raw_rules,
+            "trading_day_check_enabled": False,
+        }
+        values.update(overrides)
+        return SimpleNamespace(**values)
 
     def _create_rule(self, **overrides) -> dict:
         payload = {
@@ -864,6 +874,127 @@ class AlertWorkerTestCase(unittest.TestCase):
         self.assertEqual(stats["evaluated"], 1)
         self.assertEqual(stats["market_closed_skipped"], 0)
         self.assertEqual(stats["triggered"], 1)
+
+    def test_premarket_rule_skipped_without_evaluation(self) -> None:
+        """盘前时段：规则跳过评估，不写触发历史。"""
+        self._create_rule(target="600519")
+        worker = AlertWorker(
+            config_provider=lambda: self._config(),
+            service=self.service,
+            notifier=self._notifier(),
+        )
+
+        with patch(
+            "src.core.trading_calendar.infer_market_phase", return_value=MarketPhase.PREMARKET
+        ), patch(
+            "src.agent.events.EventMonitor._get_realtime_quote",
+            new=AsyncMock(return_value=SimpleNamespace(price=1810.0)),
+        ) as quote:
+            stats = worker.run_once()
+
+        self.assertEqual(stats["evaluated"], 0)
+        self.assertEqual(stats["trading_session_skipped"], 1)
+        quote.assert_not_awaited()
+        self.assertEqual(self._triggers(), [])
+
+    def test_unknown_session_phase_fails_open_and_evaluates(self) -> None:
+        """时段判定失败（UNKNOWN）放行评估，不把巡检停死。"""
+        self._create_rule(target="600519")
+        worker = AlertWorker(
+            config_provider=lambda: self._config(),
+            service=self.service,
+            notifier=self._notifier(),
+        )
+
+        with patch(
+            "src.core.trading_calendar.infer_market_phase", return_value=MarketPhase.UNKNOWN
+        ), patch(
+            "src.agent.events.EventMonitor._get_realtime_quote",
+            new=AsyncMock(return_value=SimpleNamespace(price=1810.0)),
+        ):
+            stats = worker.run_once()
+
+        self.assertEqual(stats["evaluated"], 1)
+        self.assertEqual(stats["trading_session_skipped"], 0)
+
+    def test_trading_session_filter_disabled_evaluates_off_hours(self) -> None:
+        """开关关闭（TRADING_SESSIONS_ONLY=false）恢复 7×24 全时段评估。"""
+        self._create_rule(target="600519")
+        worker = AlertWorker(
+            config_provider=lambda: self._config(
+                agent_event_monitor_trading_sessions_only=False
+            ),
+            service=self.service,
+            notifier=self._notifier(),
+        )
+
+        with patch(
+            "src.core.trading_calendar.infer_market_phase", return_value=MarketPhase.PREMARKET
+        ), patch(
+            "src.agent.events.EventMonitor._get_realtime_quote",
+            new=AsyncMock(return_value=SimpleNamespace(price=1810.0)),
+        ):
+            stats = worker.run_once()
+
+        # 开关关闭：盘前时段仍评估（infer_market_phase 仅被通知的阶段摘要链路调用）
+        self.assertEqual(stats["evaluated"], 1)
+        self.assertEqual(stats["trading_session_skipped"], 0)
+
+    def test_notification_title_includes_resolved_symbol_name(self) -> None:
+        """通知标题把名称缀在代码后（持仓 - 512170 医疗ETF）。"""
+        self._create_rule(
+            name="医疗ETF减仓",
+            target="512170",
+            alert_type="price_cross",
+            parameters={"direction": "above", "price": 0.30},
+        )
+        notifier = self._notifier()
+        worker = AlertWorker(
+            config_provider=lambda: self._config(),
+            service=self.service,
+            notifier=notifier,
+        )
+
+        with patch.object(
+            AlertService, "resolve_symbol_name", staticmethod(lambda code: "医疗ETF" if code == "512170" else None)
+        ), patch(
+            "src.agent.events.EventMonitor._get_realtime_quote",
+            new=AsyncMock(return_value=SimpleNamespace(price=0.36)),
+        ):
+            worker.run_once()
+
+        alert_text = notifier.send_with_results.call_args.args[0]
+        self.assertIn("512170 医疗ETF", alert_text)
+
+    def test_notification_title_falls_back_to_code_when_name_unresolved(self) -> None:
+        """名称解析失败时通知标题保持仅代码，不阻断发送。"""
+        self._create_rule(
+            name="医疗ETF减仓",
+            target="512170",
+            alert_type="price_cross",
+            parameters={"direction": "above", "price": 0.30},
+        )
+        notifier = self._notifier()
+        worker = AlertWorker(
+            config_provider=lambda: self._config(),
+            service=self.service,
+            notifier=notifier,
+        )
+
+        def _raise(code):
+            raise RuntimeError("token=secret-token name lookup failed")
+
+        with patch.object(AlertService, "resolve_symbol_name", staticmethod(_raise)), patch(
+            "src.agent.events.EventMonitor._get_realtime_quote",
+            new=AsyncMock(return_value=SimpleNamespace(price=0.36)),
+        ):
+            stats = worker.run_once()
+
+        self.assertEqual(stats["triggered"], 1)
+        alert_text = notifier.send_with_results.call_args.args[0]
+        self.assertIn("512170", alert_text)
+        self.assertNotIn("医疗ETF", alert_text)
+        self.assertNotIn("secret-token", alert_text)
 
     def test_service_test_rule_exception_uses_same_sanitized_reason_and_message(self) -> None:
         rule = self._create_rule(target="600519")

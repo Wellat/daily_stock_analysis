@@ -46,7 +46,7 @@ if TYPE_CHECKING:
     from src.notification import ChannelAttemptResult, NotificationDispatchResult
 
 ALERT_WORKER_FINGERPRINT_TTL_SECONDS = 24 * 60 * 60
-DEFAULT_DB_ALERT_COOLDOWN_SECONDS = 24 * 60 * 60
+DEFAULT_DB_ALERT_COOLDOWN_SECONDS = 6 * 60 * 60
 ALERT_WORKER_RULE_LIMIT = 1000
 WRITABLE_TRIGGER_STATUSES = frozenset({"triggered", "skipped", "degraded", "failed"})
 
@@ -126,6 +126,7 @@ class AlertWorker:
             "notification_attempts": 0,
             "cooldown_suppressed": 0,
             "market_closed_skipped": 0,
+            "trading_session_skipped": 0,
             "interval_deferred": 0,
         }
 
@@ -151,11 +152,18 @@ class AlertWorker:
         self._analysis_visibility_cache = {}
         now_ts = self.now_provider()
         today = datetime.fromtimestamp(now_ts).date()
+        trading_sessions_only = getattr(config, "agent_event_monitor_trading_sessions_only", True)
         market_open_cache: Dict[str, bool] = {}
+        market_session_cache: Dict[str, bool] = {}
         for runtime_rule in runtime_rules:
             # 交易日过滤：按规则标的所属市场逐条判断，当日休市的规则跳过本轮
             if not self._is_rule_market_open_today(runtime_rule, today, market_open_cache):
                 stats["market_closed_skipped"] += 1
+                continue
+            # 盘中时段过滤：盘前/午休/盘后等非交易时段跳过评估；
+            # 时段判定失败（UNKNOWN）放行（fail-open），不把巡检停死
+            if trading_sessions_only and not self._is_rule_in_trading_session(runtime_rule, market_session_cache):
+                stats["trading_session_skipped"] += 1
                 continue
             # 到期过滤：未满该规则巡检间隔的规则本轮不评估
             if not self._is_rule_due(runtime_rule, now_ts, config):
@@ -261,6 +269,35 @@ class AlertWorker:
                 logger.debug("[AlertWorker] trading calendar unavailable for %s: %s", market, exc)
                 market_open_cache[market] = True
         return market_open_cache[market]
+
+    def _is_rule_in_trading_session(
+        self,
+        runtime_rule: RuntimeAlertRule,
+        market_session_cache: Dict[str, bool],
+    ) -> bool:
+        """盘中时段过滤：仅 INTRADAY / 收盘竞价阶段评估。
+
+        LUNCH_BREAK / PREMARKET / POSTMARKET / NON_TRADING 跳过；
+        时段判定失败（UNKNOWN / 异常）放行，与交易日过滤同 fail-open 语义。
+        """
+        market = self._market_for_rule(runtime_rule)
+        if market is None:
+            return True
+        if market not in market_session_cache:
+            market_session_cache[market] = self._market_in_trading_session(market)
+        return market_session_cache[market]
+
+    @staticmethod
+    def _market_in_trading_session(market: str) -> bool:
+        try:
+            from src.core.trading_calendar import MarketPhase, infer_market_phase
+
+            phase = infer_market_phase(market)
+            # INTRADAY / 收盘竞价评估；UNKNOWN 判定不了时放行（fail-open）
+            return phase in {MarketPhase.INTRADAY, MarketPhase.CLOSING_AUCTION, MarketPhase.UNKNOWN}
+        except Exception as exc:
+            logger.debug("[AlertWorker] trading session check unavailable for %s: %s", market, exc)
+            return True
 
     @staticmethod
     def _market_for_rule(runtime_rule: RuntimeAlertRule) -> Optional[str]:
@@ -739,7 +776,16 @@ class AlertWorker:
         from src.notification import NotificationBuilder, NotificationService
 
         notification_service = self.notifier or NotificationService()
-        title = f"Event Alert | {self._display_target(runtime_rule)}"
+        display_target = self._display_target(runtime_rule)
+        # best-effort 名称缀在代码后（如「持仓 - 512170 医疗ETF」）；任何失败保持仅代码
+        effective_target = self._effective_target(runtime_rule)
+        try:
+            symbol_name = self.service.resolve_symbol_name(effective_target)
+        except Exception:
+            symbol_name = None
+        if symbol_name and effective_target and effective_target in display_target:
+            display_target = display_target.replace(effective_target, f"{effective_target} {symbol_name}", 1)
+        title = f"Event Alert | {display_target}"
         content = result.get("reason") or result.get("message") or runtime_rule.rule.description or "Alert triggered"
         diagnostics = self._diagnostics_payload(result.get("diagnostics"))
         visibility = diagnostics.get("analysis_visibility") if isinstance(diagnostics.get("analysis_visibility"), dict) else None

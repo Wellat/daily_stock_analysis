@@ -61,7 +61,7 @@ class TencentFetcher(BaseFetcher):
         )
         response.raise_for_status()
         payload = response.json()
-        rows = _extract_kline_rows(payload, symbol=symbol)
+        rows = _extract_kline_rows(payload, symbol=symbol, is_hk=_is_hk_tencent_symbol(stock_code))
         if not rows:
             logger.info("TencentFetcher empty daily history for %s", stock_code)
             return _empty_daily_frame()
@@ -106,6 +106,13 @@ class TencentFetcher(BaseFetcher):
 
 def _to_tencent_symbol(stock_code: str) -> str:
     code = normalize_stock_code(stock_code)
+    upper = (code or "").upper()
+    # 港股：HK 前缀 + 4~5 位数字（HK01810 / 01810.HK 归一后均为 HKxxxxx）
+    if upper.startswith("HK"):
+        digits = upper[2:]
+        if digits.isdigit() and 4 <= len(digits) <= 5:
+            return f"hk{digits}"
+        return ""
     if not code or not code.isdigit() or len(code) != 6:
         return ""
     if is_bse_code(code):
@@ -113,6 +120,10 @@ def _to_tencent_symbol(stock_code: str) -> str:
     if code.startswith(("6", "5", "9")):
         return f"sh{code}"
     return f"sz{code}"
+
+
+def _is_hk_tencent_symbol(stock_code: str) -> bool:
+    return (normalize_stock_code(stock_code) or "").upper().startswith("HK")
 
 
 def _read_tencent_priority() -> int:
@@ -198,7 +209,7 @@ def _lots_to_shares(volume: Any) -> Any:
         return volume
 
 
-def _extract_kline_rows(payload: dict[str, Any], *, symbol: str) -> list[dict[str, Any]]:
+def _extract_kline_rows(payload: dict[str, Any], *, symbol: str, is_hk: bool = False) -> list[dict[str, Any]]:
     data = payload.get("data") if isinstance(payload, dict) else None
     item = data.get(symbol) if isinstance(data, dict) else None
     if not isinstance(item, dict):
@@ -209,6 +220,8 @@ def _extract_kline_rows(payload: dict[str, Any], *, symbol: str) -> list[dict[st
         if not isinstance(row, list) or len(row) < 6:
             continue
         amount: Optional[Any] = row[6] if len(row) > 6 else None
+        # A 股返回单位为手（×100 股）；港股返回已是股数，不做换算
+        volume = row[5] if is_hk else _lots_to_shares(row[5])
         result.append(
             {
                 "date": str(row[0]),
@@ -216,7 +229,7 @@ def _extract_kline_rows(payload: dict[str, Any], *, symbol: str) -> list[dict[st
                 "close": row[2],
                 "high": row[3],
                 "low": row[4],
-                "volume": _lots_to_shares(row[5]),
+                "volume": volume,
                 "amount": amount,
             }
         )

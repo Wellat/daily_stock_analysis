@@ -236,6 +236,23 @@ export interface SchedulerRunNowResponse {
   reason?: string;
 }
 
+export interface ScheduledTaskItem {
+  name: string;
+  label: string;
+  description: string;
+  schedule: string;
+  enabled: boolean;
+  lastRunStatus?: string | null;
+  lastRunDetail?: string | null;
+  lastRunAt?: string | null;
+  lastRunDurationMs?: number | null;
+  lastSuccessAt?: string | null;
+}
+
+export interface ScheduledTasksResponse {
+  items: ScheduledTaskItem[];
+}
+
 export interface TestLLMChannelRequest {
   name: string;
   protocol: string;

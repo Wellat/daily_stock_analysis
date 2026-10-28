@@ -1565,6 +1565,23 @@ class AlertCooldownRecord(Base):
     )
 
 
+class ScheduledTaskRunRecord(Base):
+    """Heartbeat row for scheduler background tasks (定时任务总览数据源).
+
+    只记录"实际做了事"的执行：任务返回真值记 success，返回失败标记记
+    failed，返回 None（时刻未到的空 tick）不记录。保留 7 天，写入时顺带清理。
+    """
+
+    __tablename__ = 'scheduled_task_runs'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    task_name = Column(String(64), nullable=False, index=True)
+    status = Column(String(16), nullable=False, index=True)
+    detail = Column(Text)
+    duration_ms = Column(Integer)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+
+
 class DecisionSignalRecord(Base):
     """Persisted AI decision signal asset for Issue #1390 P1."""
 

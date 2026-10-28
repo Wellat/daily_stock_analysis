@@ -13,6 +13,7 @@ from typing import Any, Callable, Dict, List, Optional, Set
 
 from src.config import Config, get_config
 from src.scheduler import Scheduler, normalize_schedule_times
+from src.services.scheduled_task_registry import task_failed, wrap_background_task
 
 logger = logging.getLogger(__name__)
 CLI_SCHEDULER_OWNER_ENV = "DSA_CLI_SCHEDULER_OWNS_SCHEDULE"
@@ -100,6 +101,7 @@ def build_agent_event_monitor_background_tasks(
         triggered_count = stats.get("triggered", 0)
         if triggered_count:
             logger.info("[EventMonitor] triggered %d alert(s)", triggered_count)
+        return stats
 
     return [{
         "task": event_monitor_task,
@@ -107,6 +109,57 @@ def build_agent_event_monitor_background_tasks(
         "run_immediately": True,
         "name": "agent_event_monitor",
     }]
+
+
+def build_etf_daily_sync_background_tasks(config: Config) -> List[Dict[str, Any]]:
+    """Sync ETF hfq daily bars (strategy_lab_etf_daily) once per trading day.
+
+    标的自动收集自启用中的 notify 实例（ETF 信号通知）symbols 并集；
+    无实例则跳过。缺省 20:30（可转债盘后链 20:00 与持仓快照 20:05 之后），
+    etf_daily 同步按库内最新日期次日增量，保证次日信号评估的过期守卫可放行。
+    """
+    if os.getenv("ETF_DAILY_SYNC_ENABLED", "true").strip().lower() in {"0", "false", "no", "off"}:
+        logger.info("ETF daily sync disabled")
+        return []
+    state = {"date": None}
+
+    def etf_daily_sync_task() -> None:
+        now = datetime.now()
+        hhmm = str(getattr(config, "etf_daily_sync_time", "20:30") or "20:30")
+        if now.strftime("%H:%M") != hhmm or state["date"] == now.date():
+            return
+        # 仅 A 股交易日运行（exchange-calendars 不可用时 fail-open 视为交易日）
+        if not _is_cn_trading_day(now.date()):
+            logger.info("Skip ETF daily sync on non-trading day %s", now.date())
+            return
+        from src.core.strategy_lab.engine import list_builtin_strategies
+        from src.services.live_strategy_service import LiveStrategyService
+        from src.services.strategy_lab.data_sync_service import StrategyLabDataSyncService
+
+        try:
+            live_modes = {s["strategy_id"]: s.get("live_mode") for s in list_builtin_strategies()}
+            symbols: set = set()
+            for live_config in LiveStrategyService().list_configs():
+                if not live_config.get("enabled"):
+                    continue
+                if live_modes.get(live_config.get("strategy_id")) != "notify":
+                    continue
+                symbols.update(str(item).strip() for item in (live_config.get("symbols") or []) if str(item).strip())
+            if not symbols:
+                logger.info("[EtfDailySync] no enabled notify instances; skip")
+                state["date"] = now.date()
+                return
+            result = StrategyLabDataSyncService().sync_etf_daily(market="cn", symbols=sorted(symbols))
+            state["date"] = now.date()
+            logger.info("[EtfDailySync] scheduled run ok: %s", result.get("status"))
+            return result
+        except Exception as exc:
+            logger.exception("[EtfDailySync] scheduled run failed")
+            return task_failed(exc)
+
+    return [
+        {"task": etf_daily_sync_task, "interval_seconds": 30, "run_immediately": False, "name": "etf_daily_sync"},
+    ]
 
 
 def build_live_strategy_background_tasks(config: Config) -> List[Dict[str, Any]]:
@@ -128,6 +181,8 @@ def build_live_strategy_background_tasks(config: Config) -> List[Dict[str, Any]]
     def live_strategy_task() -> None:
         now = datetime.now()
         service = LiveStrategyService()
+        ran_any = False
+        failures: list = []
         for live_config in service.list_configs():
             if not live_config.get("enabled"):
                 continue
@@ -155,8 +210,13 @@ def build_live_strategy_background_tasks(config: Config) -> List[Dict[str, Any]]
                 else:
                     service.run(trade_date=now.date(), config_id=config_id)
                 last_run_keys["value"][key] = True
-            except Exception:
+                ran_any = True
+            except Exception as exc:
                 logger.exception("[LiveStrategySchedule] run failed for config=%s", config_id)
+                failures.append(f"config={config_id}: {exc}")
+        if failures:
+            return task_failed("; ".join(failures))
+        return True if ran_any else None
 
     return [{"task": live_strategy_task, "interval_seconds": 30, "run_immediately": False, "name": "live_strategy_schedule"}]
 
@@ -177,8 +237,10 @@ def build_convertible_bond_sync_background_tasks(config: Config) -> List[Dict[st
             try:
                 StrategyLabDataSyncService().run_scheduled_sync(run_kind=kind, trade_date=now.date())
                 state[kind] = now.date()
-            except Exception:
+                return True
+            except Exception as exc:
                 logger.exception("CB %s sync failed", kind)
+                return task_failed(exc)
         return task
     return [
         {"task": make_task("intraday", getattr(config, "cb_intraday_sync_time", "14:25")), "interval_seconds": 30, "run_immediately": False, "name": "cb_intraday_sync"},
@@ -209,8 +271,10 @@ def build_portfolio_snapshot_background_tasks(config: Config) -> List[Dict[str, 
             result = PortfolioTrendService().run_daily_snapshot(trade_date=now.date())
             state["date"] = now.date()
             logger.info("[PortfolioSnapshot] scheduled run ok: %s", result)
-        except Exception:
+            return True
+        except Exception as exc:
             logger.exception("Portfolio daily snapshot failed")
+            return task_failed(exc)
 
     return [
         {"task": task, "interval_seconds": 30, "run_immediately": False, "name": "portfolio_daily_snapshot"},
@@ -245,8 +309,10 @@ def build_live_trade_summary_background_tasks(config: Config) -> List[Dict[str, 
             state["date"] = now.date()
             logger.info("[LiveTradeSummary] scheduled run ok: trades=%s sent=%s",
                         result.get("trade_count"), result.get("feishu_sent"))
-        except Exception:
+            return True
+        except Exception as exc:
             logger.exception("Live trade summary failed")
+            return task_failed(exc)
 
     return [
         {"task": task, "interval_seconds": 30, "run_immediately": False, "name": "live_trade_summary"},
@@ -280,8 +346,10 @@ def build_weekly_review_background_tasks(config: Config) -> List[Dict[str, Any]]
             logger.info("[WeeklyReview] scheduled run ok: %s", {
                 key: result.get(key) for key in ("period_start", "period_end", "review_id", "feishu_sent")
             })
-        except Exception:
+            return True
+        except Exception as exc:
             logger.exception("Weekly portfolio review failed")
+            return task_failed(exc)
 
     return [
         {"task": task, "interval_seconds": 30, "run_immediately": False, "name": "weekly_portfolio_review"},
@@ -407,6 +475,7 @@ class RuntimeSchedulerService:
         tasks = self._current_agent_event_monitor_background_tasks(config)
         tasks.extend(build_live_strategy_background_tasks(config))
         tasks.extend(build_convertible_bond_sync_background_tasks(config))
+        tasks.extend(build_etf_daily_sync_background_tasks(config))
         tasks.extend(build_portfolio_snapshot_background_tasks(config))
         tasks.extend(build_live_trade_summary_background_tasks(config))
         tasks.extend(build_weekly_review_background_tasks(config))
@@ -487,7 +556,7 @@ class RuntimeSchedulerService:
                 scheduler.set_daily_task(self._run_analysis_once, run_immediately=run_immediately)
             for entry in background_tasks:
                 scheduler.add_background_task(
-                    entry["task"],
+                    wrap_background_task(entry["task"], entry.get("name")),
                     interval_seconds=entry["interval_seconds"],
                     run_immediately=entry.get("run_immediately", False),
                     name=entry.get("name"),

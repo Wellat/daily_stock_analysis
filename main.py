@@ -1569,6 +1569,7 @@ def main() -> int:
             background_tasks = []
             if getattr(config, 'agent_event_monitor_enabled', False):
                 from src.services.alert_worker import AlertWorker
+                from src.services.scheduled_task_registry import wrap_background_task
 
                 interval_minutes = max(1, getattr(config, 'agent_event_monitor_interval_minutes', 5))
                 alert_worker = AlertWorker(config_provider=_reload_runtime_config)
@@ -1578,9 +1579,10 @@ def main() -> int:
                     triggered_count = stats.get("triggered", 0)
                     if triggered_count:
                         logger.info("[EventMonitor] 本轮触发 %d 条提醒", triggered_count)
+                    return stats
 
                 background_tasks.append({
-                    "task": event_monitor_task,
+                    "task": wrap_background_task(event_monitor_task, "agent_event_monitor"),
                     "interval_seconds": interval_minutes * 60,
                     "run_immediately": True,
                     "name": "agent_event_monitor",

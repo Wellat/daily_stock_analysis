@@ -224,6 +224,14 @@ class AlertService:
             from src.notification import NotificationBuilder, NotificationService
 
             display_target = self._test_notification_display_target(row, payloads)
+            # best-effort 名称缀在代码后；任何失败保持仅代码
+            first_target = str(payloads[0].effective_target) if payloads and payloads[0].effective_target else ""
+            try:
+                symbol_name = self.resolve_symbol_name(first_target)
+            except Exception:
+                symbol_name = None
+            if symbol_name and first_target and first_target in display_target:
+                display_target = display_target.replace(first_target, f"{first_target} {symbol_name}", 1)
             title = f"【测试】Event Alert | {display_target}"
             lines = [
                 "【测试】告警规则试跑结果（不写入触发历史）",
@@ -1426,3 +1434,50 @@ class AlertService:
     @staticmethod
     def _sanitize_text(text: Any) -> str:
         return sanitize_diagnostic_text(text)
+
+    @staticmethod
+    def resolve_symbol_name(stock_code: str) -> Optional[str]:
+        """Best-effort 标的名称解析：本地股票索引 → 实时行情。
+
+        查不到或数据源异常返回 None，调用方回退为仅显示代码；
+        仅在发送通知前调用（触发/dry-run 通知频率低），不给巡检轮询增加成本。
+        """
+        code = str(stock_code or "").strip()
+        if not code or ":" in code:
+            return None
+
+        candidates = [code]
+        try:
+            from data_provider.base import normalize_stock_code
+
+            normalized = normalize_stock_code(code)
+            if normalized and normalized not in candidates:
+                candidates.append(normalized)
+        except Exception:
+            pass
+
+        try:
+            from src.data.stock_index_loader import get_index_stock_name
+
+            for candidate in candidates:
+                name = str(get_index_stock_name(candidate) or "").strip()
+                if name:
+                    return name
+        except Exception:
+            pass
+
+        try:
+            from data_provider import DataFetcherManager
+
+            quote = DataFetcherManager().get_realtime_quote(code)
+            if quote is not None:
+                for field_name in ("name", "stock_name", "symbol_name"):
+                    raw_name = getattr(quote, field_name, None) or (
+                        quote.get(field_name) if isinstance(quote, dict) else None
+                    )
+                    name = str(raw_name or "").strip()
+                    if name:
+                        return name
+        except Exception:
+            pass
+        return None

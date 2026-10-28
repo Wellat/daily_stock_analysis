@@ -12,6 +12,7 @@ import type {
   ImportSystemConfigRequest,
   SchedulerRunNowResponse,
   SchedulerStatusResponse,
+  ScheduledTasksResponse,
   SetupStatusResponse,
   SystemConfigConflictResponse,
   SystemConfigResponse,
@@ -249,6 +250,11 @@ export const systemConfigApi = {
   async getSchedulerStatus(): Promise<SchedulerStatusResponse> {
     const response = await apiClient.get<Record<string, unknown>>('/api/v1/system/scheduler/status');
     return toCamelCase<SchedulerStatusResponse>(response.data);
+  },
+
+  async getScheduledTasks(): Promise<ScheduledTasksResponse> {
+    const response = await apiClient.get<Record<string, unknown>>('/api/v1/system/scheduled-tasks');
+    return toCamelCase<ScheduledTasksResponse>(response.data);
   },
 
   async runSchedulerNow(): Promise<SchedulerRunNowResponse> {

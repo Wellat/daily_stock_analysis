@@ -177,6 +177,7 @@ export const AlertRuleList: React.FC<AlertRuleListProps> = ({
                 <th className="px-3 py-2 font-medium">{text.target}</th>
                 <th className="px-3 py-2 font-medium">{text.type}</th>
                 <th className="px-3 py-2 font-medium">{text.parameters}</th>
+                <th className="px-3 py-2 font-medium">{text.interval}</th>
                 <th className="px-3 py-2 font-medium">{text.status}</th>
                 <th className="px-3 py-2 font-medium">{text.cooldown}</th>
                 <th className="px-3 py-2 font-medium">{text.updatedAt}</th>
@@ -202,11 +203,11 @@ export const AlertRuleList: React.FC<AlertRuleListProps> = ({
                       </Badge>
                     </div>
                   </td>
+                  <td className="px-3 py-3 text-secondary-text">{formatParameters(rule, language)}</td>
                   <td className="px-3 py-3 text-secondary-text">
-                    {formatParameters(rule, language)}
-                    {rule.checkIntervalMinutes ? (
-                      <span className="ml-1 text-xs text-muted-text">· 每 {rule.checkIntervalMinutes} 分钟</span>
-                    ) : null}
+                    {rule.checkIntervalMinutes
+                      ? formatUiText(text.intervalMinutes, { minutes: rule.checkIntervalMinutes })
+                      : text.intervalDefault}
                   </td>
                   <td className="px-3 py-3">
                     <Badge variant={rule.enabled ? 'success' : 'default'}>

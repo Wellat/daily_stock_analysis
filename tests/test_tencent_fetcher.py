@@ -109,6 +109,64 @@ def test_tencent_symbol_conversion_supports_a_share_markets() -> None:
     assert _to_tencent_symbol("920748") == "bj920748"
 
 
+def test_tencent_symbol_conversion_supports_hk_codes() -> None:
+    assert _to_tencent_symbol("HK01810") == "hk01810"
+    assert _to_tencent_symbol("01810.HK") == "hk01810"
+    assert _to_tencent_symbol("HK0700") == "hk00700"  # normalize_stock_code 补零到 5 位
+    # 非法形态：非数字 / 超位数（normalize 会把 HK 码补零到 5 位）
+    assert _to_tencent_symbol("HKABC") == ""
+    assert _to_tencent_symbol("HK123456") == ""
+
+
+def test_tencent_fetcher_parses_hk_daily_response_without_lot_conversion() -> None:
+    """港股日线：day 键、成交量已是股数（不做 ×100 手换算）。"""
+    payload = {
+        "data": {
+            "hk01810": {
+                "day": [
+                    ["2026-10-26", "26.90", "27.10", "27.30", "26.60", "93020945", "251000000"],
+                    ["2026-10-27", "27.10", "25.66", "27.15", "25.60", "138526488", "359000000"],
+                ]
+            }
+        }
+    }
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self):
+            return payload
+
+    captured = {}
+
+    def fake_get(url, **kwargs):
+        captured["url"] = url
+        captured.update(kwargs)
+        return FakeResponse()
+
+    fetcher = TencentFetcher()
+    with patch("data_provider.tencent_fetcher.requests.get", fake_get):
+        df = fetcher.get_daily_data("HK01810", start_date="2026-10-20", end_date="2026-10-27")
+
+    assert captured["params"]["param"].startswith("hk01810,day,")
+    assert len(df) == 2
+    assert float(df.iloc[-1]["close"]) == 25.66
+    # 港股股数口径：不乘 100
+    assert float(df.iloc[-1]["volume"]) == 138526488.0
+    # A 股手数口径仍 ×100
+    assert float(df.iloc[0]["volume"]) == 93020945.0
+
+
+def test_hk_daily_routing_includes_tencent_fetcher() -> None:
+    """港股日线 fallback 链包含腾讯（此前东财断连+akshare/yfinance 失效时全灭）。"""
+    from data_provider.base import DataFetcherManager
+
+    fetchers = DataFetcherManager()._get_fetchers_snapshot()
+    kept = DataFetcherManager._filter_daily_fetchers_for_market(fetchers, "hk")
+    assert any(fetcher.name == "TencentFetcher" for fetcher in kept)
+
+
 def test_tencent_fetcher_parses_qfq_daily_response() -> None:
     payload = {
         "data": {

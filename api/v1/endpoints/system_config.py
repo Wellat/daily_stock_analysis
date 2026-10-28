@@ -60,6 +60,24 @@ def get_scheduler_status(
     return scheduler.status()
 
 
+@router.get(
+    "/scheduled-tasks",
+    summary="List scheduled background tasks",
+    description="Return the background task registry merged with heartbeat state (schedule, enabled flag, last run / last success).",
+)
+def list_scheduled_tasks() -> dict:
+    """定时任务总览：注册表 + 最近运行心跳。"""
+    from src.services.scheduled_task_registry import build_scheduled_task_overview
+
+    try:
+        from src.config import get_config
+
+        config = get_config()
+    except Exception:  # pragma: no cover - defensive: config 不可用时仍可返回注册表
+        config = None
+    return {"items": build_scheduled_task_overview(config)}
+
+
 @router.post(
     "/scheduler/run-now",
     summary="Run scheduled analysis now",
