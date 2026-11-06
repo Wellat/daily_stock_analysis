@@ -142,10 +142,13 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
     def test_load_from_env_keeps_default_behavior_without_tickflow_api_key(
         self, _mock_parse_litellm_yaml, _mock_setup_env
     ):
+        # QMT_QUOTES_ENABLED 默认开启会前置 qmt 令牌；本测试关注 tickflow 缺省，
+        # 显式关掉 QMT 保持原断言语境（qmt 注入行为见 tests/test_qmt_fetcher.py）
         with patch.dict(
             os.environ,
             {
                 "STOCK_LIST": "600519",
+                "QMT_QUOTES_ENABLED": "false",
             },
             clear=True,
         ):

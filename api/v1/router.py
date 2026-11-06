@@ -18,6 +18,7 @@ from api.v1.endpoints import (
     analysis,
     auth,
     backtest,
+    qmt_quotes,
     decision_signals,
     health,
     history,
@@ -126,6 +127,12 @@ router.include_router(
     trading.router,
     prefix="/trading",
     tags=["Trading"]
+)
+
+router.include_router(
+    qmt_quotes.router,
+    prefix="/qmt-quotes",
+    tags=["QmtQuotes"],
 )
 
 router.include_router(

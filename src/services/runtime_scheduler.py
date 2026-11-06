@@ -162,6 +162,36 @@ def build_etf_daily_sync_background_tasks(config: Config) -> List[Dict[str, Any]
     ]
 
 
+def build_qmt_subscription_sync_background_tasks(config: Config) -> List[Dict[str, Any]]:
+    """Keep the QMT quotes-bridge subscription list (qmt:cfg:symbols) in sync.
+
+    每 ``QMT_SUBSCRIPTION_SYNC_MINUTES`` 分钟（默认 5）合并 持仓 ∪ 告警标的 ∪
+    手动列表并整组写回 Redis；``QMT_QUOTES_ENABLED`` 关闭时不注册任务。
+    启动即跑一次，尽快让订阅覆盖当前持仓与告警标的。
+    """
+    raw_minutes = getattr(config, "qmt_subscription_sync_minutes", 5)
+    try:
+        # 显式区分 None 与 0：0 会被钳到 1 分钟，而不是回落默认值
+        interval_minutes = int(raw_minutes) if raw_minutes is not None else 5
+    except (TypeError, ValueError):
+        interval_minutes = 5
+    interval_minutes = max(1, interval_minutes)
+
+    def qmt_subscription_sync_task():
+        from src.services.qmt_quotes_service import sync_subscription_safely
+
+        return sync_subscription_safely()
+
+    return [
+        {
+            "task": qmt_subscription_sync_task,
+            "interval_seconds": interval_minutes * 60,
+            "run_immediately": True,
+            "name": "qmt_subscription_sync",
+        },
+    ]
+
+
 def build_live_strategy_background_tasks(config: Config) -> List[Dict[str, Any]]:
     """Run enabled live configs once per trading day at each configured schedule_time.
 
@@ -476,6 +506,8 @@ class RuntimeSchedulerService:
         tasks.extend(build_live_strategy_background_tasks(config))
         tasks.extend(build_convertible_bond_sync_background_tasks(config))
         tasks.extend(build_etf_daily_sync_background_tasks(config))
+        if getattr(config, "qmt_quotes_enabled", False):
+            tasks.extend(build_qmt_subscription_sync_background_tasks(config))
         tasks.extend(build_portfolio_snapshot_background_tasks(config))
         tasks.extend(build_live_trade_summary_background_tasks(config))
         tasks.extend(build_weekly_review_background_tasks(config))

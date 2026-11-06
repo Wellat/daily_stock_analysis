@@ -900,3 +900,49 @@ class EtfDailySyncBackgroundTaskTestCase(unittest.TestCase):
             task()  # 无启用实例：不触发同步也不报错
 
         self.assertTrue(True)
+
+
+class QmtSubscriptionSyncTaskTestCase(unittest.TestCase):
+    """QMT 订阅同步后台任务构建与委托。"""
+
+    def test_builder_interval_and_run_immediately(self) -> None:
+        from src.services.runtime_scheduler import build_qmt_subscription_sync_background_tasks
+
+        entries = build_qmt_subscription_sync_background_tasks(
+            SimpleNamespace(qmt_subscription_sync_minutes=5)
+        )
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["name"], "qmt_subscription_sync")
+        self.assertEqual(entries[0]["interval_seconds"], 300)
+        self.assertTrue(entries[0]["run_immediately"])
+
+        # 过小间隔钳制到 1 分钟；非法值回落默认 5 分钟
+        clamped = build_qmt_subscription_sync_background_tasks(
+            SimpleNamespace(qmt_subscription_sync_minutes=0)
+        )
+        self.assertEqual(clamped[0]["interval_seconds"], 60)
+        fallback = build_qmt_subscription_sync_background_tasks(
+            SimpleNamespace(qmt_subscription_sync_minutes="bad")
+        )
+        self.assertEqual(fallback[0]["interval_seconds"], 300)
+
+    def test_task_delegates_to_safe_sync(self) -> None:
+        from src.services.runtime_scheduler import build_qmt_subscription_sync_background_tasks
+
+        calls = []
+
+        def _fake_safe_sync(service=None):
+            calls.append(service)
+            return {"status": "ok", "changed": False}
+
+        with patch(
+            "src.services.qmt_quotes_service.sync_subscription_safely",
+            side_effect=_fake_safe_sync,
+        ):
+            task = build_qmt_subscription_sync_background_tasks(
+                SimpleNamespace(qmt_subscription_sync_minutes=1)
+            )[0]["task"]
+            result = task()
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(result, {"status": "ok", "changed": False})

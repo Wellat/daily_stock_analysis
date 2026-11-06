@@ -172,6 +172,7 @@ P2 将 schedule 运行时从启动时一次性构建 legacy `EventMonitor`，切
 - 盘中时段过滤（默认开启，`AGENT_EVENT_MONITOR_TRADING_SESSIONS_ONLY=false` 关闭）：交易日内仅在各标的所属市场的**盘中时段**（INTRADAY / 收盘竞价）执行评估，午休、盘前、盘后跳过（计入 `trading_session_skipped`）——实时行情类规则盘中才有效，日线类规则盘中重复评估拿到的也是同一根 K 线。时段判定失败（UNKNOWN）放行（fail-open）。关闭后恢复 7×24 全时段评估。
 - 通知标题会把标的名称缀在代码后（如「Event Alert | 持仓 - 512170 医疗ETF」）：名称按 本地股票索引 → 实时行情 兜底解析，仅发送通知前 best-effort 查询，解析失败保持仅代码，且任何解析异常不影响通知发送。
 - 巡检间隔与冷却正交：间隔决定"多久评估一次"，冷却（默认 6 小时，`cooldown_policy.cooldown_seconds`）决定"多久最多通知一次"。
+- 行情数据源：巡检的实时/日线查询统一走 `DataFetcherManager` fallback 链；启用 QMT 本地行情桥（Redis）时沪深标的**优先本地源**（快照停滞自动降级外部源），告警规则标的会被订阅同步任务自动纳入订阅列表，详见 [`docs/qmt-local-source.md`](./qmt-local-source.md)。
 
 P2 不做：
 

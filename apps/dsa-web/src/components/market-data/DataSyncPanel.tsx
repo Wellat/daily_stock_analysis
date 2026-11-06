@@ -7,6 +7,7 @@ import { getParsedApiError } from '../../api/error';
 import { systemConfigApi } from '../../api/systemConfig';
 import type { ScheduledTaskItem } from '../../types/systemConfig';
 import { strategyLabApi, type StrategyLabSyncRunItem } from '../../api/strategyLab';
+import { QmtSourcePanel } from './QmtSourcePanel';
 import { SL_INPUT_CLASS, SL_PANEL_CLASS, parseSymbols } from '../strategy-lab/utils';
 
 const TEXT_LIMIT = 200;
@@ -277,6 +278,8 @@ export const DataSyncPanel: React.FC = () => {
         <Button type="primary" htmlType="submit" className="mt-4" loading={actionLoading === 'sync'}>开始同步</Button>
         {error ? <ApiErrorAlert error={error} className="mt-4" /> : null}
       </form>
+
+      <QmtSourcePanel />
 
       <div className={SL_PANEL_CLASS}>
         <h2 className="text-base font-semibold text-foreground">定时任务总览</h2>

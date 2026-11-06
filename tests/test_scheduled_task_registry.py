@@ -181,6 +181,18 @@ class ScheduledTaskRegistryDriftTestCase(unittest.TestCase):
             text = resolve_schedule_text("etf_daily_sync", SimpleNamespace())
             self.assertIn("20:30", text)
 
+    def test_resolve_schedule_interval_env_and_attr(self) -> None:
+        # interval_env 覆盖（QMT 订阅同步）
+        with patch.dict(os.environ, {"QMT_SUBSCRIPTION_SYNC_MINUTES": "15"}):
+            self.assertIn("每 15 分钟", resolve_schedule_text("qmt_subscription_sync", SimpleNamespace()))
+        os.environ.pop("QMT_SUBSCRIPTION_SYNC_MINUTES", None)
+        self.assertIn("每 5 分钟", resolve_schedule_text("qmt_subscription_sync", SimpleNamespace()))
+        # interval_attr（告警巡检，沿用既有语义）
+        self.assertIn(
+            "每 3 分钟",
+            resolve_schedule_text("agent_event_monitor", SimpleNamespace(agent_event_monitor_interval_minutes=3)),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

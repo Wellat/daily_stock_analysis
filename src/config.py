@@ -884,6 +884,16 @@ class Config:
     tickflow_priority: int = 2
     tickflow_batch_daily_enabled: bool = True
     tickflow_batch_size: int = 100
+    # === QMT 本地行情桥（Redis，docs/qmt-quotes-link-01.md）===
+    # 未安装 redis / Redis 不可达 / 心跳缺失时本地源自动不可用，行为零变化
+    qmt_quotes_enabled: bool = True
+    qmt_redis_url: str = "redis://localhost:6379/0"
+    qmt_priority: int = 0
+    qmt_stale_seconds: int = 120
+    qmt_auto_include_holdings: bool = True
+    qmt_include_alert_symbols: bool = True
+    qmt_manual_symbols: str = ""
+    qmt_subscription_sync_minutes: int = 5
     finnhub_api_key: Optional[str] = None
     alphavantage_api_key: Optional[str] = None
     longbridge_app_key: Optional[str] = None
@@ -1814,6 +1824,19 @@ class Config:
             tickflow_priority=parse_env_int(os.getenv('TICKFLOW_PRIORITY'), 2, field_name='TICKFLOW_PRIORITY', minimum=0),
             tickflow_batch_daily_enabled=parse_env_bool(os.getenv('TICKFLOW_BATCH_DAILY_ENABLED'), default=True),
             tickflow_batch_size=parse_env_int(os.getenv('TICKFLOW_BATCH_SIZE'), 100, field_name='TICKFLOW_BATCH_SIZE', minimum=1),
+            qmt_quotes_enabled=parse_env_bool(os.getenv('QMT_QUOTES_ENABLED'), default=True),
+            qmt_redis_url=os.getenv('QMT_REDIS_URL') or "redis://localhost:6379/0",
+            qmt_priority=parse_env_int(os.getenv('QMT_PRIORITY'), 0, field_name='QMT_PRIORITY', minimum=0),
+            qmt_stale_seconds=parse_env_int(os.getenv('QMT_STALE_SECONDS'), 120, field_name='QMT_STALE_SECONDS', minimum=10),
+            qmt_auto_include_holdings=parse_env_bool(os.getenv('QMT_AUTO_INCLUDE_HOLDINGS'), default=True),
+            qmt_include_alert_symbols=parse_env_bool(os.getenv('QMT_INCLUDE_ALERT_SYMBOLS'), default=True),
+            qmt_manual_symbols=os.getenv('QMT_MANUAL_SYMBOLS') or "",
+            qmt_subscription_sync_minutes=parse_env_int(
+                os.getenv('QMT_SUBSCRIPTION_SYNC_MINUTES'),
+                5,
+                field_name='QMT_SUBSCRIPTION_SYNC_MINUTES',
+                minimum=1,
+            ),
             finnhub_api_key=os.getenv('FINNHUB_API_KEY') or None,
             alphavantage_api_key=os.getenv('ALPHAVANTAGE_API_KEY') or None,
             longbridge_app_key=os.getenv('LONGBRIDGE_APP_KEY') or None,
@@ -2966,11 +2989,14 @@ class Config:
     @classmethod
     def _resolve_realtime_source_priority(cls) -> str:
         """
-        Resolve realtime source priority with automatic tushare injection.
+        Resolve realtime source priority with automatic source injection.
 
-        When TUSHARE_TOKEN is configured but REALTIME_SOURCE_PRIORITY is not
-        explicitly set, automatically prepend 'tushare' to the default priority
-        so that the paid data source is utilized for realtime quotes as well.
+        When REALTIME_SOURCE_PRIORITY is not explicitly set:
+        - prepend 'qmt' when the QMT local quotes bridge is enabled (local
+          authoritative source; the token self-skips when the heartbeat is
+          missing, so it is safe to always lead with it)
+        - prepend 'tushare' when TUSHARE_TOKEN is configured so that the paid
+          data source is utilized for realtime quotes as well
         """
         explicit = os.getenv('REALTIME_SOURCE_PRIORITY')
         default_priority = 'tencent,akshare_sina,efinance,akshare_em'
@@ -2979,15 +3005,18 @@ class Config:
             # User explicitly set priority, respect it
             return explicit
 
-        tushare_token = os.getenv('TUSHARE_TOKEN', '').strip()
-        if tushare_token:
-            # Token configured but no explicit priority override
-            # Prepend tushare so the paid source is tried first
+        prefixes = []
+        if parse_env_bool(os.getenv('QMT_QUOTES_ENABLED'), default=True):
+            prefixes.append('qmt')
+        if os.getenv('TUSHARE_TOKEN', '').strip():
+            prefixes.append('tushare')
+
+        if prefixes:
             import logging
             logger = logging.getLogger(__name__)
-            resolved = f'tushare,{default_priority}'
+            resolved = ','.join([*prefixes, default_priority])
             logger.info(
-                f"TUSHARE_TOKEN detected, auto-injecting tushare into realtime priority: {resolved}"
+                f"{','.join(prefixes).upper()} detected, auto-injecting into realtime priority: {resolved}"
             )
             return resolved
 

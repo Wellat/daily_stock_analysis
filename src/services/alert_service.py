@@ -253,6 +253,8 @@ class AlertService:
                         response.get("skipped_count") or 0,
                     )
                 )
+            # 批量 scope：逐个列出触发标的（聚合结果里已有明细，此前只展示总数）
+            self._append_triggered_target_lines(lines, response)
             message = response.get("message") or response.get("reason")
             if message:
                 lines.append(f"详情：{message}")
@@ -276,6 +278,41 @@ class AlertService:
             )
             response["notification_status"] = "exception"
             response["notification_message"] = self._sanitize_text(str(exc) or "dry-run notification failed")
+
+    _TEST_TRIGGERED_TARGET_LIMIT = 5
+
+    def _append_triggered_target_lines(
+        self,
+        lines: List[str],
+        response: Dict[str, Any],
+    ) -> None:
+        """把聚合试跑结果中触发标的的明细列进通知（最多 5 个，超出给总数）。
+
+        明细行的名称 best-effort 解析（每个触发标的至多一次实时行情查询，
+        已按上限截断）；解析失败保持仅代码，不影响通知发送。
+        """
+        triggered_targets = [
+            str(item.get("target") or "")
+            for item in (response.get("target_results") or [])
+            if item.get("triggered") and item.get("target")
+        ]
+        if not triggered_targets:
+            return
+        observed_by_target = {
+            str(item.get("target")): item.get("observed_value")
+            for item in (response.get("target_results") or [])
+        }
+        for target in triggered_targets[: self._TEST_TRIGGERED_TARGET_LIMIT]:
+            try:
+                symbol_name = self.resolve_symbol_name(target)
+            except Exception:
+                symbol_name = None
+            label = f"{target} {symbol_name}" if symbol_name else target
+            observed = observed_by_target.get(target)
+            observed_text = f"observed={observed:.4f}" if isinstance(observed, (int, float)) else "observed=--"
+            lines.append(f"触发标的：{label}（{observed_text}）")
+        if len(triggered_targets) > self._TEST_TRIGGERED_TARGET_LIMIT:
+            lines.append(f"……另有 {len(triggered_targets) - self._TEST_TRIGGERED_TARGET_LIMIT} 个触发标的")
 
     @staticmethod
     def _test_notification_display_target(row: AlertRuleRecord, payloads: List[RuntimeAlertPayload]) -> str:

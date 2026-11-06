@@ -411,6 +411,36 @@ class AlertApiTestCase(unittest.TestCase):
         self.assertEqual(payload["triggered_count"], 1)
         self.assertEqual(payload["target_results"][0]["target"], "600519")
 
+    def test_dry_run_batch_notification_lists_triggered_targets(self) -> None:
+        """批量 scope 试跑通知逐个列出触发标的（含名称与观察值），不再只给总数。"""
+        rule = self._create_rule({
+            "name": "Watchlist breakout",
+            "target_scope": "watchlist",
+            "target": "default",
+            "alert_type": "price_cross",
+            "parameters": {"direction": "above", "price": 10},
+        })
+
+        async def _quote(_monitor, stock_code):
+            # 600519 触发（11 > 10），其余标的未触发
+            return SimpleNamespace(price=11.0 if stock_code == "600519" else 9.0)
+
+        with patch("src.agent.events.EventMonitor._get_realtime_quote", new=_quote), \
+             patch("src.notification.NotificationService") as notification_cls:
+            notification_cls.return_value.send_with_results.return_value = SimpleNamespace(
+                status="sent", message="ok"
+            )
+            resp = self.client.post(f"/api/v1/alerts/rules/{rule['id']}/test")
+
+        self.assertEqual(resp.status_code, 200, resp.text)
+        payload = resp.json()
+        self.assertTrue(payload["triggered"])
+
+        send_call = notification_cls.return_value.send_with_results.call_args
+        alert_text = send_call.args[0]
+        self.assertIn("触发标的：600519", alert_text)
+        self.assertIn("observed=", alert_text)
+
     def test_p6_watchlist_dry_run_timeout_counts_target_as_skipped(self) -> None:
         rule = self._create_rule({
             "name": "Watchlist slow",

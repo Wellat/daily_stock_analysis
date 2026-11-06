@@ -154,7 +154,13 @@ class TestTickFlowManagerRouting(unittest.TestCase):
         self.assertEqual(config.tickflow_priority, 0)
 
     def test_tickflow_api_key_does_not_auto_inject_realtime_priority(self):
-        with patch.dict(os.environ, {"TICKFLOW_API_KEY": "tk-test"}, clear=True):
+        # QMT_QUOTES_ENABLED 默认开启会前置 qmt 令牌；本测试关注 tickflow，
+        # 显式关掉 QMT 以保持原断言语境（qmt 注入行为见 tests/test_qmt_fetcher.py）
+        with patch.dict(
+            os.environ,
+            {"TICKFLOW_API_KEY": "tk-test", "QMT_QUOTES_ENABLED": "false"},
+            clear=True,
+        ):
             self.assertEqual(
                 Config._resolve_realtime_source_priority(),
                 "tencent,akshare_sina,efinance,akshare_em",

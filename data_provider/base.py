@@ -633,6 +633,7 @@ class DataFetcherManager:
         "TickFlowFetcher": {"cn"},
         "PytdxFetcher": {"cn"},
         "BaostockFetcher": {"cn"},
+        "QmtFetcher": {"cn"},
         "YfinanceFetcher": {"cn", "hk", "us", "jp", "kr", "tw"},
         "LongbridgeFetcher": {"hk", "us"},
         "FinnhubFetcher": {"us"},
@@ -1156,6 +1157,7 @@ class DataFetcherManager:
         优先级动态调整逻辑：
         - 如果配置了 TUSHARE_TOKEN：实例化 TushareFetcher，并按其内部逻辑提升优先级
         - 如果配置了 Longbridge OAuth 或 Legacy 凭据：实例化 LongbridgeFetcher 作为美股/港股兜底
+        - QMT_QUOTES_ENABLED 开启时实例化 QmtFetcher（Redis 本地源）置于链首
         - 未配置的可选数据源不实例化，避免在批量拉取时反复探测无效源
         - 默认优先级：
           0. AkshareFetcher (Priority 0) - 最高优先级
@@ -1184,6 +1186,20 @@ class DataFetcherManager:
         baostock = BaostockFetcher()
         yfinance = YfinanceFetcher()
         optional_fetchers: List[BaseFetcher] = []
+
+        # QMT 本地行情桥（Redis）：心跳缺失/Redis 不可达时 fetcher 自身不可用，
+        # 管理器能力探测会跳过它，不影响其他源。放在列表头部，与 Akshare 同
+        # 优先级（默认 0）时依靠稳定排序保持本地源在前。
+        local_fetchers: List[BaseFetcher] = []
+        if getattr(config, "qmt_quotes_enabled", False):
+            try:
+                from .qmt_fetcher import QmtFetcher
+
+                local_fetchers.append(QmtFetcher())
+            except Exception as exc:  # noqa: BLE001 - 本地源初始化失败不阻断其他源
+                logger.warning("[数据源初始化] QmtFetcher 初始化失败，跳过: %s", exc)
+        else:
+            logger.debug("[数据源初始化] 跳过未启用的 QmtFetcher")
 
         tushare_token = (getattr(config, "tushare_token", None) or "").strip()
         if tushare_token:
@@ -1228,6 +1244,7 @@ class DataFetcherManager:
         self._ensure_concurrency_guards()
         with self._fetchers_lock:
             self._fetchers = [
+                *local_fetchers,
                 efinance,
                 akshare,
                 pytdx,
@@ -1915,6 +1932,18 @@ class DataFetcherManager:
                             operation="get_realtime_quote",
                         )
                         quote = self._call_fetcher_method(fetcher, 'get_realtime_quote', raw_stock_code or stock_code)
+
+                elif source == "qmt":
+                    # QMT 本地行情桥（Redis）：心跳缺失时 _get_fetcher_by_name 直接返回 None，
+                    # 静默滑到下一个外部源
+                    fetcher = self._get_fetcher_by_name("QmtFetcher", capability="realtime_quote")
+                    if fetcher is not None and hasattr(fetcher, 'get_realtime_quote'):
+                        record_provider_run_started(
+                            data_type="realtime_quote",
+                            provider=fetcher.name,
+                            operation="get_realtime_quote",
+                        )
+                        quote = self._call_fetcher_method(fetcher, 'get_realtime_quote', stock_code)
 
                 provider_name = fetcher.name if fetcher is not None else source
                 

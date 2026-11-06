@@ -174,6 +174,8 @@ SCHEDULED_TASK_METADATA: Dict[str, Dict[str, Any]] = {
         "label": "告警巡检",
         "description": "评估启用的告警规则并推送触发通知（盘中时段）",
         "schedule": "每 {interval} 分钟",
+        "interval_attr": "agent_event_monitor_interval_minutes",
+        "interval_default": 5,
         "enabled_resolver": lambda config: bool(getattr(config, "agent_event_monitor_enabled", False)),
     },
     "live_strategy_schedule": {
@@ -205,6 +207,14 @@ SCHEDULED_TASK_METADATA: Dict[str, Dict[str, Any]] = {
         "time_env": "ETF_DAILY_SYNC_TIME",
         "time_default": "20:30",
         "enabled_resolver": lambda _config: _env_flag("ETF_DAILY_SYNC_ENABLED", True),
+    },
+    "qmt_subscription_sync": {
+        "label": "QMT 订阅同步",
+        "description": "合并持仓/告警/手动标的，整组写回 QMT 行情桥订阅列表（Redis）",
+        "schedule": "每 {interval} 分钟",
+        "interval_env": "QMT_SUBSCRIPTION_SYNC_MINUTES",
+        "interval_default": 5,
+        "enabled_resolver": lambda config: bool(getattr(config, "qmt_quotes_enabled", False)),
     },
     "portfolio_daily_snapshot": {
         "label": "持仓每日快照",
@@ -246,8 +256,14 @@ def resolve_schedule_text(name: str, config: Any) -> str:
             time_value = getattr(config, meta["time_attr"], None)
         template = template.replace("{time}", str(time_value or meta.get("time_default") or "--"))
     if "{interval}" in template:
-        interval = getattr(config, "agent_event_monitor_interval_minutes", 5) or 5
-        template = template.replace("{interval}", str(interval))
+        interval_value = None
+        if meta.get("interval_env"):
+            raw = os.getenv(meta["interval_env"])
+            if raw and str(raw).strip():
+                interval_value = raw
+        if interval_value is None and meta.get("interval_attr"):
+            interval_value = getattr(config, meta["interval_attr"], None)
+        template = template.replace("{interval}", str(interval_value or meta.get("interval_default") or "--"))
     return template
 
 
