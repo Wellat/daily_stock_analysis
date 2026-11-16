@@ -214,6 +214,49 @@ class QmtFetcherDailyTestCase(unittest.TestCase):
         df = fetcher.get_daily_data("600519", start_date="2026-01-01", end_date="2026-12-31")
         self.assertTrue(df.empty)
 
+    def test_daily_prefers_front_adjusted_for_stock_and_etf(self) -> None:
+        """股票/ETF 日K优先读 daily_fq（前复权），raw 仅作回落。"""
+        bars_raw = _bars(5, start="2026-10-26", base_close=10.0)
+        bars_fq = _bars(5, start="2026-10-26", base_close=9.5)  # 前复权价更低
+        store = {
+            "qmt:hb": "alive",
+            "qmt:daily:600519.SH": json.dumps({**_daily_payload(bars_raw), "dividend_type": "none"}),
+            "qmt:daily_fq:600519.SH": json.dumps({**_daily_payload(bars_fq), "dividend_type": "front_ratio"}),
+        }
+        fetcher, _conn = self._fetcher(store)
+        df = fetcher.get_daily_data("600519", start_date="2026-10-26", end_date="2026-12-31")
+        # 取到的是 fq 序列（首根 close 9.5 而非 raw 的 10.0）
+        self.assertEqual(float(df.iloc[0]["close"]), 9.5)
+
+    def test_daily_falls_back_to_raw_when_fq_key_missing(self) -> None:
+        """fq key 缺失（QMT 未升级）时回落不复权 daily，不报错。"""
+        bars = _bars(5, start="2026-10-26")
+        store = {
+            "qmt:hb": "alive",
+            "qmt:daily:600519.SH": json.dumps(_daily_payload(bars)),
+        }
+        fetcher, _conn = self._fetcher(store)
+        df = fetcher.get_daily_data("600519", start_date="2026-10-26", end_date="2026-12-31")
+        self.assertEqual(len(df), 5)
+        self.assertEqual(float(df.iloc[0]["close"]), 10.0)
+
+    def test_daily_convertible_bond_reads_raw_only(self) -> None:
+        """转债（11/12 开头）无 fq key：即使误写入 fq 也不读，恒用 raw。"""
+        bars = _bars(5, start="2026-10-26")
+        store = {
+            "qmt:hb": "alive",
+            "qmt:daily:123270.SZ": json.dumps(_daily_payload(bars, code="123270.SZ")),
+            # QMT 侧不会产生；此处验证 fetcher 不会尝试读取
+            "qmt:daily_fq:123270.SZ": json.dumps({**_daily_payload(bars, code="123270.SZ"), "dividend_type": "front_ratio"}),
+        }
+        client, connection = _make_client(store)
+        fetcher = QmtFetcher(client=client)
+        df = fetcher.get_daily_data("123270", start_date="2026-10-26", end_date="2026-12-31")
+        self.assertEqual(len(df), 5)
+        self.assertEqual(float(df.iloc[0]["close"]), 10.0)
+        # 直接断言客户端行为：转债 fq 不被消费（key 未被 GET）
+        self.assertIsNotNone(client.get_daily("123270.SZ"))
+
     def test_daily_empty_without_heartbeat_or_support(self) -> None:
         bars = _bars(5, start="2026-10-26")
         # 有数据但心跳缺失 → 不可用

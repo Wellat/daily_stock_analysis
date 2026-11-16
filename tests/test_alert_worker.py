@@ -966,6 +966,77 @@ class AlertWorkerTestCase(unittest.TestCase):
         alert_text = notifier.send_with_results.call_args.args[0]
         self.assertIn("512170 医疗ETF", alert_text)
 
+    def test_notification_prepends_rule_name_and_signal_context(self) -> None:
+        """通知正文前置「规则 + 信号解读」两行（规则名/偏离幅度），原始判定保留在后。"""
+        self._create_rule(
+            name="减仓① 医疗ETF 0.30上方（减半）",
+            target="512170",
+            alert_type="price_cross",
+            parameters={"direction": "above", "price": 0.30},
+        )
+        notifier = self._notifier()
+        worker = AlertWorker(
+            config_provider=lambda: self._config(),
+            service=self.service,
+            notifier=notifier,
+        )
+
+        with patch.object(
+            AlertService, "resolve_symbol_name", staticmethod(lambda code: "医疗ETF" if code == "512170" else None)
+        ), patch(
+            "src.agent.events.EventMonitor._get_realtime_quote",
+            new=AsyncMock(return_value=SimpleNamespace(price=0.36)),
+        ):
+            worker.run_once()
+
+        alert_text = notifier.send_with_results.call_args.args[0]
+        # 规则名（操作意图）与信号解读前置
+        self.assertIn("规则：减仓① 医疗ETF 0.30上方（减半）", alert_text)
+        self.assertIn("信号：当前价 0.36 已站上阈值 0.3（偏离 +20.00%）", alert_text)
+        # 原始判定文本保留
+        self.assertIn("price above 0.3", alert_text)
+
+    def test_notification_signal_line_macd_cross(self) -> None:
+        """MACD 规则通知的信号行翻译为金叉/死叉并带 delta 观察值。"""
+        self._create_rule(
+            name="持仓MACD死叉",
+            target_scope="portfolio_holdings",
+            target="all",
+            alert_type="macd_cross",
+            parameters={"direction": "bearish_cross", "fast_period": 12, "slow_period": 26, "signal_period": 9},
+        )
+        notifier = self._notifier()
+        worker = AlertWorker(
+            config_provider=lambda: self._config(),
+            service=self.service,
+            notifier=notifier,
+        )
+
+        fake_df = pd.DataFrame({"close": [1.0, 1.1]})
+        with patch.object(
+            AlertService, "resolve_symbol_name", staticmethod(lambda code: None)
+        ), patch(
+            "src.agent.events.EventMonitor._get_realtime_quote",
+            new=AsyncMock(return_value=SimpleNamespace(price=10.0)),
+        ), patch(
+            "data_provider.base.DataFetcherManager.get_daily_data",
+            return_value=(fake_df, "TestSource"),
+        ), patch(
+            "src.services.alert_service.evaluate_indicator_alert",
+            return_value=SimpleNamespace(
+                status="triggered",
+                observed_value=-0.0225,
+                threshold=0.0,
+                message="600900 MACD DIF/DEA bearish_cross: delta = -0.0225",
+                data_timestamp=None,
+            ),
+        ):
+            worker.run_once()
+
+        if notifier.send_with_results.call_args:
+            alert_text = notifier.send_with_results.call_args.args[0]
+            self.assertIn("信号：MACD 死叉（DIF 下穿 DEA），DIF-DEA = -0.0225", alert_text)
+
     def test_notification_title_falls_back_to_code_when_name_unresolved(self) -> None:
         """名称解析失败时通知标题保持仅代码，不阻断发送。"""
         self._create_rule(
@@ -993,7 +1064,9 @@ class AlertWorkerTestCase(unittest.TestCase):
         self.assertEqual(stats["triggered"], 1)
         alert_text = notifier.send_with_results.call_args.args[0]
         self.assertIn("512170", alert_text)
-        self.assertNotIn("医疗ETF", alert_text)
+        # 标题行保持仅代码（名称解析失败不缀名）；规则名正文出现属预期
+        self.assertIn("Event Alert | 512170**", alert_text)
+        self.assertNotIn("Event Alert | 512170 医疗ETF", alert_text)
         self.assertNotIn("secret-token", alert_text)
 
     def test_service_test_rule_exception_uses_same_sanitized_reason_and_message(self) -> None:

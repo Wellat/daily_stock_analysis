@@ -6,6 +6,7 @@ import logging
 import os
 import socket
 import tempfile
+import time
 import unittest
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -237,6 +238,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
              patch("main.parse_arguments", return_value=args), \
              patch("main.get_config", return_value=config), \
              patch("main.prepare_webui_frontend_assets", return_value=True), \
+             patch("main._wait_for_api_port_available", return_value=True), \
              patch("main.start_api_server", side_effect=fake_start_api_server), \
              patch("main.start_bot_stream_clients"), \
              patch("main.time.sleep", side_effect=KeyboardInterrupt):
@@ -257,6 +259,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
              patch("main.parse_arguments", return_value=args), \
              patch("main.get_config", return_value=config), \
              patch("main.prepare_webui_frontend_assets", return_value=True), \
+             patch("main._wait_for_api_port_available", return_value=True), \
              patch("main.start_api_server", side_effect=fake_start_api_server), \
              patch("main.start_bot_stream_clients"), \
              patch("main.time.sleep", side_effect=KeyboardInterrupt):
@@ -283,6 +286,81 @@ class MainScheduleModeTestCase(unittest.TestCase):
         socket_factory.assert_called_once_with(socket.AF_INET, socket.SOCK_STREAM)
         self.assertIn("127.0.0.1:8000", str(caught.exception))
         thread_cls.assert_not_called()
+
+    def test_wait_for_api_port_available_returns_true_when_free(self) -> None:
+        probe = socket.socket()
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+        probe.close()
+
+        self.assertTrue(
+            main._wait_for_api_port_available("127.0.0.1", port, timeout_seconds=0.5, poll_interval=0.1)
+        )
+
+    def test_wait_for_api_port_available_times_out_when_busy(self) -> None:
+        holder = socket.socket()
+        holder.bind(("127.0.0.1", 0))
+        holder.listen(1)
+        port = holder.getsockname()[1]
+        try:
+            started = time.monotonic()
+            available = main._wait_for_api_port_available(
+                "127.0.0.1", port, timeout_seconds=0.5, poll_interval=0.1
+            )
+            elapsed = time.monotonic() - started
+        finally:
+            holder.close()
+
+        self.assertFalse(available)
+        self.assertLess(elapsed, 5.0)
+
+    def test_serve_mode_exits_nonzero_when_api_startup_fails(self) -> None:
+        args = self._make_args(serve=True)
+        config = self._make_config(webui_host="127.0.0.1", webui_port=18000)
+        wait_calls = []
+
+        def fake_wait(host, port, timeout_seconds, poll_interval=1.0):
+            wait_calls.append((host, port))
+            return True
+
+        def failing_start_api_server(host, port, config):
+            raise RuntimeError(f"FastAPI port is not available: {host}:{port}")
+
+        with patch.dict(os.environ, {"GITHUB_ACTIONS": "false"}, clear=False), \
+             patch("main.parse_arguments", return_value=args), \
+             patch("main.get_config", return_value=config), \
+             patch("main.prepare_webui_frontend_assets", return_value=True), \
+             patch("main._wait_for_api_port_available", side_effect=fake_wait), \
+             patch("main.start_api_server", side_effect=failing_start_api_server):
+            exit_code = main.main()
+
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(wait_calls, [("127.0.0.1", 18000)])
+
+    def test_serve_mode_waits_for_port_before_starting(self) -> None:
+        args = self._make_args(serve=True)
+        # run_immediately=False 避免测试触发真实分析；serve 成功后进入保活循环，
+        # 由 sleep 抛 KeyboardInterrupt 退出（与既有 serve_only 用例同一手法）
+        config = self._make_config(webui_host="127.0.0.1", webui_port=18000, run_immediately=False)
+        observed_bind = []
+
+        def fake_wait(host, port, timeout_seconds, poll_interval=1.0):
+            return True
+
+        def fake_start_api_server(host, port, config):
+            observed_bind.append((host, port))
+
+        with patch.dict(os.environ, {"GITHUB_ACTIONS": "false"}, clear=False), \
+             patch("main.parse_arguments", return_value=args), \
+             patch("main.get_config", return_value=config), \
+             patch("main.prepare_webui_frontend_assets", return_value=True), \
+             patch("main._wait_for_api_port_available", side_effect=fake_wait), \
+             patch("main.start_api_server", side_effect=fake_start_api_server), \
+             patch("main.time.sleep", side_effect=KeyboardInterrupt):
+            exit_code = main.main()
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(observed_bind, [("127.0.0.1", 18000)])
 
     def test_start_api_server_fails_when_uvicorn_background_startup_fails(self) -> None:
         config = self._make_config(log_level="INFO")
@@ -652,6 +730,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
              patch("main.parse_arguments", return_value=args), \
              patch("main.get_config", return_value=config), \
              patch("main.prepare_webui_frontend_assets", return_value=True), \
+             patch("main._wait_for_api_port_available", return_value=True), \
              patch("main.start_api_server", side_effect=RuntimeError("port busy")), \
              patch("main.start_bot_stream_clients") as start_bots, \
              patch("main.logger.error") as error_log:
@@ -669,6 +748,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
              patch("main.parse_arguments", return_value=args), \
              patch("main.get_config", return_value=config), \
              patch("main.prepare_webui_frontend_assets", return_value=True), \
+             patch("main._wait_for_api_port_available", return_value=True), \
              patch("main.start_api_server", side_effect=RuntimeError("port busy")), \
              patch("main.start_bot_stream_clients") as start_bots, \
              patch("main.run_full_analysis") as run_full_analysis, \
@@ -680,7 +760,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
         run_full_analysis.assert_not_called()
         error_log.assert_called_once()
 
-    def test_serve_mode_continues_single_analysis_when_api_server_start_fails(self) -> None:
+    def test_serve_mode_exits_nonzero_when_api_server_start_fails(self) -> None:
         args = self._make_args(serve=True, host="127.0.0.1", port=8000)
         config = self._make_config(webui_enabled=False, run_immediately=True)
 
@@ -688,6 +768,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
              patch("main.parse_arguments", return_value=args), \
              patch("main.get_config", return_value=config), \
              patch("main.prepare_webui_frontend_assets", return_value=True), \
+             patch("main._wait_for_api_port_available", return_value=True), \
              patch("main.start_api_server", side_effect=RuntimeError("port busy")), \
              patch("main.start_bot_stream_clients") as start_bots, \
              patch("main.run_full_analysis") as run_full_analysis, \
@@ -695,28 +776,17 @@ class MainScheduleModeTestCase(unittest.TestCase):
              patch("main.logger.error") as error_log:
             exit_code = main.main()
 
-        self.assertEqual(exit_code, 0)
+        # --serve 启动失败必须响亮退出：静默降级为单次分析会让 runtime
+        # scheduler 里的实盘调度等后台任务全部缺失（2026-11-12~13 事故）
+        self.assertEqual(exit_code, 1)
         start_bots.assert_not_called()
-        run_with_lock.assert_called_once_with(config, args, None)
+        run_with_lock.assert_not_called()
         run_full_analysis.assert_not_called()
         error_log.assert_called_once()
 
-    def test_serve_schedule_mode_continues_scheduler_when_api_server_start_fails(self) -> None:
+    def test_serve_schedule_mode_exits_nonzero_when_api_server_start_fails(self) -> None:
         args = self._make_args(serve=True, schedule=True, host="127.0.0.1", port=8000)
         config = self._make_config(webui_enabled=False, schedule_enabled=False)
-        scheduled_call = {}
-
-        def fake_run_with_schedule(
-            task,
-            schedule_time,
-            run_immediately,
-            background_tasks=None,
-            schedule_time_provider=None,
-        ):
-            scheduled_call["schedule_time"] = schedule_time
-            scheduled_call["run_immediately"] = run_immediately
-            scheduled_call["background_tasks"] = background_tasks or []
-            task()
 
         with patch.dict(os.environ, {"GITHUB_ACTIONS": "false"}, clear=False), \
              patch("main.parse_arguments", return_value=args), \
@@ -724,19 +794,20 @@ class MainScheduleModeTestCase(unittest.TestCase):
              patch("main._reload_runtime_config", return_value=config), \
              patch("main._build_schedule_time_provider", return_value=lambda: "18:00"), \
              patch("main.prepare_webui_frontend_assets", return_value=True), \
+             patch("main._wait_for_api_port_available", return_value=True), \
              patch("main.start_api_server", side_effect=RuntimeError("port busy")), \
              patch("main.start_bot_stream_clients") as start_bots, \
              patch("main.run_full_analysis") as run_full_analysis, \
-             patch("src.scheduler.run_with_schedule", side_effect=fake_run_with_schedule), \
+             patch("src.scheduler.run_with_schedule") as run_with_schedule, \
              patch("main.logger.error") as error_log:
             exit_code = main.main()
 
-        self.assertEqual(exit_code, 0)
+        # --serve + --schedule 启动失败同样响亮退出：API runtime scheduler 未
+        # 就绪时 CLI 调度分支只注册告警监控，实盘调度等任务会静默缺失
+        self.assertEqual(exit_code, 1)
         start_bots.assert_not_called()
-        run_full_analysis.assert_called_once_with(config, args, None)
-        self.assertEqual(scheduled_call["schedule_time"], "18:00")
-        self.assertEqual(scheduled_call["run_immediately"], True)
-        self.assertEqual(scheduled_call["background_tasks"], [])
+        run_with_schedule.assert_not_called()
+        run_full_analysis.assert_not_called()
         error_log.assert_called_once()
 
     def test_serve_with_enabled_schedule_uses_api_runtime_scheduler(self) -> None:
@@ -777,6 +848,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
              patch("main.parse_arguments", return_value=args), \
              patch("main.get_config", return_value=config), \
              patch("main.prepare_webui_frontend_assets", return_value=True), \
+             patch("main._wait_for_api_port_available", return_value=True), \
              patch("main.start_api_server", side_effect=fake_start_api_server), \
              patch("main.start_bot_stream_clients") as start_bots, \
              patch("main.time.sleep", side_effect=KeyboardInterrupt), \
@@ -813,6 +885,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
             patch("main.parse_arguments", return_value=args),
             patch("main.get_config", return_value=config),
             patch("main.prepare_webui_frontend_assets", return_value=True),
+            patch("main._wait_for_api_port_available", return_value=True),
             patch("main.start_api_server"),
             patch("main.start_bot_stream_clients") as start_bots,
             patch("main.time.sleep", side_effect=KeyboardInterrupt),
@@ -843,6 +916,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
             patch("main.parse_arguments", return_value=args),
             patch("main.get_config", return_value=config),
             patch("main.prepare_webui_frontend_assets", return_value=True),
+            patch("main._wait_for_api_port_available", return_value=True),
             patch("main.start_api_server"),
             patch("main.start_bot_stream_clients") as start_bots,
             patch("main.time.sleep", side_effect=KeyboardInterrupt),
@@ -899,6 +973,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
              patch("main.parse_arguments", return_value=args), \
              patch("main.get_config", return_value=config), \
              patch("main.prepare_webui_frontend_assets", return_value=True), \
+             patch("main._wait_for_api_port_available", return_value=True), \
              patch("main.start_api_server", side_effect=fake_start_api_server), \
              patch("main.start_bot_stream_clients"), \
              patch("main.time.sleep", side_effect=KeyboardInterrupt), \
@@ -941,6 +1016,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
              patch("main.parse_arguments", return_value=args), \
              patch("main.get_config", return_value=config), \
              patch("main.prepare_webui_frontend_assets", return_value=True), \
+             patch("main._wait_for_api_port_available", return_value=True), \
              patch("main.start_api_server", side_effect=fake_start_api_server), \
              patch("main.start_bot_stream_clients"), \
              patch("main.time.sleep", side_effect=KeyboardInterrupt), \
@@ -977,6 +1053,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
              patch("main.parse_arguments", return_value=args), \
              patch("main.get_config", return_value=config), \
              patch("main.prepare_webui_frontend_assets", return_value=True), \
+             patch("main._wait_for_api_port_available", return_value=True), \
              patch("main.start_api_server", side_effect=fake_start_api_server), \
              patch("main.start_bot_stream_clients") as start_bots, \
              patch("main.time.sleep", side_effect=KeyboardInterrupt), \

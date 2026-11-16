@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 from src.agent.events import (
+    AlertType,
     EventMonitor,
     PriceAlert,
     PriceChangeAlert,
@@ -20,6 +21,7 @@ from src.agent.events import (
     parse_event_alert_rules,
     validate_event_alert_rule,
 )
+from src.services.alert_indicators import TechnicalIndicatorAlert
 from data_provider.base import normalize_stock_code
 from data_provider.us_index_mapping import is_us_index_code
 from src.analysis_context_pack_overview import (
@@ -772,6 +774,111 @@ class AlertWorker:
     def _db_cooldown_fallback_key(rule_key: str) -> str:
         return f"db_cooldown:{rule_key}"
 
+    def _rule_persisted_name(self, runtime_rule: RuntimeAlertRule) -> Optional[str]:
+        """规则名称 best-effort（创建者填的名称通常即操作意图）。
+
+        经 metadata.persisted_rule_id 回查 DB；失败返回 None，不影响通知。
+        """
+        try:
+            metadata = getattr(runtime_rule.rule, "metadata", None)
+            persisted_id = (metadata or {}).get("persisted_rule_id")
+            if not persisted_id:
+                return None
+            row = self.service.repo.get_rule(int(persisted_id))
+            name = str(row.name or "").strip() if row is not None else ""
+            return name or None
+        except Exception:
+            return None
+
+    def _format_distance(self, observed: Any, threshold: Any) -> Optional[str]:
+        """观察值相对阈值的偏离百分比（阈值 0/缺失时不产生）。"""
+        try:
+            o = float(observed)
+            t = float(threshold)
+        except (TypeError, ValueError):
+            return None
+        if t == 0:
+            return None
+        pct = (o - t) / abs(t) * 100
+        return f"{pct:+.2f}%"
+
+    def _trigger_context_lines(
+        self,
+        runtime_rule: RuntimeAlertRule,
+        result: Dict[str, Any],
+    ) -> List[str]:
+        """通知正文前置的「规则 + 信号解读」两行，让告警可读、可执行。
+
+        - 规则行：创建规则时填写的名称（操作意图的载体，如「减仓① …（减1/4）」）
+        - 信号行：按 alert_type 翻译观察值/阈值并给出偏离幅度；
+          未识别的类型回落为通用「观察值/阈值」表述
+        """
+        rule = runtime_rule.rule
+        lines: List[str] = []
+        rule_name = self._rule_persisted_name(runtime_rule)
+        if rule_name:
+            lines.append(f"规则：{rule_name}")
+
+        observed = result.get("observed_value")
+        threshold = result.get("threshold")
+        signal = self._human_signal_text(rule, observed, threshold)
+        if signal:
+            lines.append(f"信号：{signal}")
+        return lines
+
+    def _human_signal_text(
+        self,
+        rule: Any,
+        observed: Any,
+        threshold: Any,
+    ) -> Optional[str]:
+        alert_type = getattr(rule, "alert_type", None)
+        alert_type_value = getattr(alert_type, "value", alert_type)
+        distance = self._format_distance(observed, threshold)
+        distance_text = f"（偏离 {distance}）" if distance else ""
+
+        # 价格穿越阈值：direction=above → 站上/突破；below → 跌破
+        if alert_type_value in {"price_cross", AlertType.PRICE_CROSS.value}:
+            direction = str(getattr(rule, "direction", "") or "").lower()
+            verb = "站上" if direction == "above" else "跌破"
+            return f"当前价 {observed} 已{verb}阈值 {threshold}{distance_text}"
+
+        if alert_type_value in {"price_change_percent", AlertType.PRICE_CHANGE_PERCENT.value}:
+            direction = str(getattr(rule, "direction", "") or "").lower()
+            verb = "涨幅达到" if direction in {"up", "above"} else "跌幅达到"
+            return f"{verb} {observed}%（阈值 ±{threshold}%）"
+
+        if alert_type_value in {"volume_spike", AlertType.VOLUME_SPIKE.value}:
+            multiplier = getattr(rule, "multiplier", threshold)
+            return f"成交量放大至均量约 {observed} 倍（触发线 {multiplier} 倍）"
+
+        if isinstance(rule, TechnicalIndicatorAlert):
+            params = rule.indicator_params or {}
+            if rule.alert_type == "macd_cross":
+                cross = str(params.get("direction") or "").lower()
+                label = "MACD 金叉（DIF 上穿 DEA）" if cross == "bullish_cross" else "MACD 死叉（DIF 下穿 DEA）"
+                observed_text = f"{observed:.4f}" if isinstance(observed, (int, float)) else observed
+                return f"{label}，DIF-DEA = {observed_text}"
+            if rule.alert_type == "ma_price_cross":
+                window = params.get("window")
+                direction = str(params.get("direction") or "").lower()
+                verb = "跌破" if direction == "below" else "站上"
+                return f"现价已{verb} MA{window}"
+            if rule.alert_type == "kdj_cross":
+                cross = str(params.get("direction") or "").lower()
+                label = "KDJ 金叉" if cross == "bullish_cross" else "KDJ 死叉"
+                return f"{label}（K 上穿/下穿 D，J={observed}）"
+            if rule.alert_type == "cci_threshold":
+                return f"CCI = {observed}，越过阈值 {threshold}"
+            if rule.alert_type == "rsi_threshold":
+                return f"RSI = {observed}，越过阈值 {threshold}"
+
+        # 兜底：通用观察值/阈值
+        if observed is not None:
+            threshold_text = f"，阈值 {threshold}" if threshold is not None else ""
+            return f"观察值 {observed}{threshold_text}{distance_text}"
+        return None
+
     def _send_notification(self, runtime_rule: RuntimeAlertRule, result: Dict[str, Any]) -> "NotificationDispatchResult":
         from src.notification import NotificationBuilder, NotificationService
 
@@ -787,6 +894,11 @@ class AlertWorker:
             display_target = display_target.replace(effective_target, f"{effective_target} {symbol_name}", 1)
         title = f"Event Alert | {display_target}"
         content = result.get("reason") or result.get("message") or runtime_rule.rule.description or "Alert triggered"
+        # 规则名与信号解读前置（规则名即创建者写的操作意图，如「减仓① 小米 28.8上方（减1/4）」）；
+        # 任何拼装失败都不影响通知发送，回落为原始 reason
+        context_lines = self._trigger_context_lines(runtime_rule, result)
+        if context_lines:
+            content = "\n".join(context_lines) + f"\n\n{content}"
         diagnostics = self._diagnostics_payload(result.get("diagnostics"))
         visibility = diagnostics.get("analysis_visibility") if isinstance(diagnostics.get("analysis_visibility"), dict) else None
         if visibility is None:

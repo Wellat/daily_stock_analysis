@@ -5,13 +5,19 @@
 
 - ``qmt:hb``            心跳（TTL 30s），``EXISTS`` 即链路存活
 - ``qmt:quote:{code}``  实时快照 JSON（30s 一档，TTL 300s）
-- ``qmt:daily:{code}``  最近 30 根日K（不复权，TTL 3 天）
+- ``qmt:daily:{code}``  最近 300 根日K（不复权，TTL 3 天）
+- ``qmt:daily_fq:{code}`` 最近 300 根日K（等比前复权，dividend_type=front_ratio；
+  每日 15:10 全量重写，基准随除权动态漂移——只现算，不持久化）
 - ``qmt:cfg:symbols``   订阅列表 hash（由 ``src/services/qmt_quotes_service.py`` 维护）
 
 限制与策略：
 - 仅支持沪深 6 位码（A 股/ETF/可转债）；北交所、港美股不接入
-- 日线只有 30 根不复权数据：请求窗口盖不住时返回空帧，静默滑落到
-  下一个数据源（TencentFetcher 同款 ``allow_empty_daily_data`` 模式）
+- 日K读取优先级：股票/ETF 优先前复权 ``daily_fq``（指标计算需要价格连续性，
+  使 MACD/MA 口径与回测 qfq/hfq 一致）；可转债无除权概念（QMT 不产生 fq
+  key，以 key 存在性判断、不当异常）直接用不复权 ``daily``；非转债标的 fq
+  缺失时（QMT 未升级等）回落 ``daily`` 不报错。请求窗口盖不住 300 根时返回
+  空帧，静默滑落到下一个数据源（TencentFetcher 同款 ``allow_empty_daily_data``
+  模式）
 - 实时快照在盘中停滞超过 ``QMT_STALE_SECONDS``（默认 120s）时返回
   ``None`` 降级到外部源（桥接文档 §5.4 建议）；非交易时段的定格快照
   是合法最新价，照常返回
@@ -128,6 +134,7 @@ class QmtRedisClient:
     HEARTBEAT_KEY = "qmt:hb"
     QUOTE_KEY_PREFIX = "qmt:quote:"
     DAILY_KEY_PREFIX = "qmt:daily:"
+    DAILY_FQ_KEY_PREFIX = "qmt:daily_fq:"
     CONFIG_KEY = "qmt:cfg:symbols"
     CONFIG_FIELD = "symbols"
 
@@ -225,6 +232,18 @@ class QmtRedisClient:
             return None
         return payload if isinstance(payload, dict) else None
 
+    def get_daily_fq(self, symbol: str) -> Optional[Dict[str, Any]]:
+        """前复权日K（dividend_type=front_ratio）；转债无此 key，缺缺失返回 None。"""
+        raw = self._execute(lambda conn: conn.get(f"{self.DAILY_FQ_KEY_PREFIX}{symbol}"))
+        if not raw:
+            return None
+        try:
+            payload = json.loads(raw)
+        except (TypeError, ValueError):
+            logger.debug("[QMT行情桥] daily_fq %s JSON 解析失败", symbol)
+            return None
+        return payload if isinstance(payload, dict) else None
+
     def get_subscription(self) -> List[str]:
         """当前订阅列表；key 不存在/解析失败返回空列表。"""
         raw = self._execute(
@@ -284,7 +303,7 @@ def reset_qmt_client_cache() -> None:
 
 
 class QmtFetcher(BaseFetcher):
-    """Redis 本地源 fetcher：A 股/ETF/可转债的实时快照与最近 30 根日K。"""
+    """Redis 本地源 fetcher：A 股/ETF/可转债的实时快照与最近 300 根日K（股票/ETF 前复权优先）。"""
 
     name = "QmtFetcher"
     # 本地源优先（与 AkshareFetcher 同为 0 时依赖初始化列表中的插入序居前）
@@ -316,9 +335,14 @@ class QmtFetcher(BaseFetcher):
         if not self._client.is_alive():
             return _empty_daily_frame()
 
-        payload = self._client.get_daily(symbol)
-        bars = (payload or {}).get("bars") or []
         is_cb = _is_convertible_bond_code(stock_code)
+        if is_cb:
+            # 转债无除权概念，QMT 不产生 fq key（以 key 存在性判断，不当异常）
+            payload = self._client.get_daily(symbol)
+        else:
+            # 指标计算优先前复权（价格连续性）；QMT 未升级/key 缺失时回落不复权
+            payload = self._client.get_daily_fq(symbol) or self._client.get_daily(symbol)
+        bars = (payload or {}).get("bars") or []
         rows = [
             _parse_daily_bar(bar, lot_multiplier=10 if is_cb else 100)
             for bar in bars
@@ -331,7 +355,7 @@ class QmtFetcher(BaseFetcher):
         df = pd.DataFrame(rows)
         first_date = str(df["date"].min())
         if first_date > start_date:
-            # 本地只有最近 30 根：请求窗口更早时盖不住，留给外部源
+            # 本地只有最近 300 根：请求窗口更早时盖不住，留给外部源
             logger.info(
                 "QmtFetcher daily history cannot cover window for %s: first_date=%s requested_start=%s",
                 stock_code,

@@ -1113,6 +1113,54 @@ def _run_analysis_with_runtime_scheduler_lock(
     )
 
 
+# --serve 启动前等待旧实例释放端口的上限（秒）。旧实例退出与端口真正可用
+# 之间存在窗口期，超过仍不可用则响亮失败，而不是静默降级。
+API_PORT_WAIT_SECONDS = 30
+
+
+def _is_port_bindable(host: str, port: int) -> bool:
+    """Return whether a TCP listener can currently bind (host, port)."""
+    import socket
+
+    probe = socket.socket(socket.AF_INET6 if ":" in host else socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        probe.bind((host, port))
+        return True
+    except OSError:
+        return False
+    finally:
+        probe.close()
+
+
+def _wait_for_api_port_available(
+    host: str,
+    port: int,
+    timeout_seconds: float,
+    poll_interval: float = 1.0,
+) -> bool:
+    """启动前有限等待端口释放，超时返回 False 由调用方响亮失败。
+
+    背景：旧实例刚被停止时端口可能仍未释放，新实例若直接启动会撞端口，
+    曾导致进程静默降级为只注册告警监控的 CLI 调度器，实盘调度等后台任务
+    全部缺失且无任何提示。
+    """
+    deadline = time.monotonic() + max(0.0, timeout_seconds)
+    while True:
+        if _is_port_bindable(host, port):
+            return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            logger.warning("端口仍不可用: %s:%s（可能有旧实例未退出）", host, port)
+            return False
+        logger.warning(
+            "端口暂不可用（可能有旧实例未退出）: %s:%s，剩余等待 %.0fs",
+            host,
+            port,
+            remaining,
+        )
+        time.sleep(min(poll_interval, remaining))
+
+
 def start_api_server(host: str, port: int, config: Config) -> None:
     """
     在后台线程启动 FastAPI 服务
@@ -1122,17 +1170,11 @@ def start_api_server(host: str, port: int, config: Config) -> None:
         port: 监听端口
         config: 配置对象
     """
-    import socket
     import threading
     import uvicorn
 
-    probe = socket.socket(socket.AF_INET6 if ":" in host else socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        probe.bind((host, port))
-    except OSError as exc:
-        raise RuntimeError(f"FastAPI port is not available: {host}:{port}") from exc
-    finally:
-        probe.close()
+    if not _is_port_bindable(host, port):
+        raise RuntimeError(f"FastAPI port is not available: {host}:{port}")
 
     level_name = (config.log_level or "INFO").lower()
     use_config_signal_handlers = True
@@ -1453,13 +1495,19 @@ def main() -> int:
         if not prepare_webui_frontend_assets():
             logger.warning("前端静态资源未就绪，继续启动 FastAPI 服务（Web 页面可能不可用）")
         try:
+            # 启动前有限等待端口释放（旧实例退出窗口期）；超时则随下方 except 响亮退出
+            if not _wait_for_api_port_available(args.host, args.port, API_PORT_WAIT_SECONDS):
+                raise RuntimeError(
+                    f"等待端口释放超时（{API_PORT_WAIT_SECONDS}s）: {args.host}:{args.port}"
+                )
             start_api_server(host=args.host, port=args.port, config=config)
             bot_clients_started = True
         except Exception as e:
+            # --serve 启动失败必须响亮退出，禁止静默降级：CLI 调度分支只注册
+            # 告警监控，降级后实盘调度等后台任务全部缺失且无任何提示
+            # （2026-11-12~13 实盘漏跑事故根因）。
             logger.error(f"启动 FastAPI 服务失败: {e}")
-            if args.serve_only:
-                return 1
-            start_serve = False
+            return 1
 
     if bot_clients_started:
         start_bot_stream_clients(config)
