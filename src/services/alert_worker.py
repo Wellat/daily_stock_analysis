@@ -48,7 +48,7 @@ if TYPE_CHECKING:
     from src.notification import ChannelAttemptResult, NotificationDispatchResult
 
 ALERT_WORKER_FINGERPRINT_TTL_SECONDS = 24 * 60 * 60
-DEFAULT_DB_ALERT_COOLDOWN_SECONDS = 6 * 60 * 60
+DEFAULT_DB_ALERT_COOLDOWN_SECONDS = 2 * 60 * 60
 ALERT_WORKER_RULE_LIMIT = 1000
 WRITABLE_TRIGGER_STATUSES = frozenset({"triggered", "skipped", "degraded", "failed"})
 

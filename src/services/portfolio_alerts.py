@@ -148,6 +148,12 @@ def expand_symbol_targets(
         return [], 0
 
     unique = _dedupe_symbols(symbols)
+    # 场外基金（.OF）没有实时行情/股票日线语义：任何行情源都不支持，
+    # 评估必然失败且连续失败会打穿外部源熔断器，直接不展开
+    of_symbols = [symbol for symbol in unique if str(symbol).upper().endswith(".OF")]
+    if of_symbols:
+        logger.debug("[portfolio_alerts] skip OTC fund targets: %s", of_symbols)
+        unique = [symbol for symbol in unique if not str(symbol).upper().endswith(".OF")]
     overflow_count = max(0, len(unique) - EXPANDED_TARGET_SOFT_CAP)
     capped = unique[:EXPANDED_TARGET_SOFT_CAP]
     return [

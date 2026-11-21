@@ -145,6 +145,11 @@ def get_market_for_stock(code: str) -> Optional[str]:
     # A-share: 6-digit numeric
     if code.isdigit() and len(code) == 6:
         return "cn"
+    # 场外基金（.OF）：按 A 股日历申赎/净值更新。此前返回 None 触发
+    # fail-open，导致告警巡检对 .OF 标的 7×24 评估，外部行情源全部
+    # 不支持 .OF，连续失败把熔断器反复打穿
+    if code.endswith(".OF"):
+        return "cn"
     return None
 
 

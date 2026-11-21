@@ -171,7 +171,7 @@ P2 将 schedule 运行时从启动时一次性构建 legacy `EventMonitor`，切
 - 交易日过滤按**规则标的所属市场**逐条判断：A 股标的按 A 股日历、港股按港股日历、美股按美股日历（`market` 规则按目标 region、`portfolio_account` 按 A 股口径）；当日休市的规则本轮跳过（计入 `market_closed_skipped`）。市场无法解析或交易日历库不可用时不过滤（fail-open），不会把巡检停死。
 - 盘中时段过滤（默认开启，`AGENT_EVENT_MONITOR_TRADING_SESSIONS_ONLY=false` 关闭）：交易日内仅在各标的所属市场的**盘中时段**（INTRADAY / 收盘竞价）执行评估，午休、盘前、盘后跳过（计入 `trading_session_skipped`）——实时行情类规则盘中才有效，日线类规则盘中重复评估拿到的也是同一根 K 线。时段判定失败（UNKNOWN）放行（fail-open）。关闭后恢复 7×24 全时段评估。
 - 通知标题会把标的名称缀在代码后（如「Event Alert | 持仓 - 512170 医疗ETF」）：名称按 本地股票索引 → 实时行情 兜底解析，仅发送通知前 best-effort 查询，解析失败保持仅代码，且任何解析异常不影响通知发送。
-- 巡检间隔与冷却正交：间隔决定"多久评估一次"，冷却（默认 6 小时，`cooldown_policy.cooldown_seconds`）决定"多久最多通知一次"。
+- 巡检间隔与冷却正交：间隔决定"多久评估一次"，冷却（默认 2 小时，`cooldown_policy.cooldown_seconds`）决定"多久最多通知一次"。
 - 行情数据源：巡检的实时/日线查询统一走 `DataFetcherManager` fallback 链；启用 QMT 本地行情桥（Redis）时沪深标的**优先本地源**（快照停滞自动降级外部源），告警规则标的会被订阅同步任务自动纳入订阅列表，详见 [`docs/qmt-local-source.md`](./qmt-local-source.md)。
 
 P2 不做：
@@ -218,7 +218,7 @@ P4 让真实告警触发具备可排障的通知结果，并让通过 Alert API 
   - DB 持久化规则正常路径使用 `alert_cooldowns` 作为告警业务冷却，不再由 worker 进程内 fingerprint 决定；仅当读取持久化冷却状态失败时，临时使用进程内 fingerprint 防止同一规则在 DB 异常期间每轮重复推送。
   - legacy `AGENT_EVENT_ALERT_RULES_JSON` 规则继续使用 worker 进程内 fingerprint，不写 `alert_cooldowns`。
   - `notification_noise.py` 仍作为通知基础设施层的全局安全网；它不是告警业务 cooldown，且被其抑制时不会写入或延长 `alert_cooldowns`。
-- DB 规则的 `cooldown_policy.cooldown_seconds` 归一为非负整数；缺失时使用默认 6 小时业务冷却，`0` 表示关闭 DB 业务冷却。
+- DB 规则的 `cooldown_policy.cooldown_seconds` 归一为非负整数；缺失时使用默认 2 小时业务冷却，`0` 表示关闭 DB 业务冷却。
 - `GET /api/v1/alerts/rules` 会返回只读 `last_triggered_at` / `cooldown_until` / `cooldown_active` 摘要；`cooldown_active` 由后端按同一冷却时间语义计算，Web 不在浏览器本地解析 naive ISO 字符串来推断状态。
 - Web 告警中心只读展示冷却状态和通知结果，不提供 cooldown policy 编辑表单。
 

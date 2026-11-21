@@ -186,6 +186,30 @@ class PortfolioAlertsTestCase(unittest.TestCase):
         self.assertEqual([item.symbol for item in targets], ["AAPL", "HK00700"])
         self.assertEqual(overflow, 0)
 
+    def test_portfolio_holdings_expansion_skips_otc_funds(self) -> None:
+        """场外基金（.OF）无实时行情语义，不展开（否则评估必败且打穿熔断器）。"""
+        snapshot = {
+            "accounts": [
+                {
+                    "positions": [
+                        {"symbol": "600519", "quantity": 2},
+                        {"symbol": "001556.OF", "quantity": 100},
+                        {"symbol": "270042.of", "quantity": 50},
+                    ]
+                }
+            ]
+        }
+
+        targets, overflow = expand_symbol_targets(
+            target_scope="portfolio_holdings",
+            target="all",
+            config=None,
+            portfolio_service=FakePortfolioService(snapshot=snapshot),
+        )
+
+        self.assertEqual([item.symbol for item in targets], ["600519"])
+        self.assertEqual(overflow, 0)
+
     def test_portfolio_holdings_expansion_preserves_exchange_identity_and_dedupes_equivalent_formats(self) -> None:
         snapshot = {
             "accounts": [
@@ -234,6 +258,20 @@ class PortfolioAlertsTestCase(unittest.TestCase):
         self.assertTrue(config.refreshed)
         self.assertEqual([item.symbol for item in targets], ["000001", "HK00700"])
         self.assertEqual(overflow, 0)
+
+
+class OtcFundMarketDetectionTestCase(unittest.TestCase):
+    def test_get_market_for_stock_maps_otc_funds_to_cn(self) -> None:
+        """.OF 识别为 cn（按 A 股日历过滤），不再 fail-open 整夜评估。"""
+        from src.core.trading_calendar import get_market_for_stock
+
+        self.assertEqual(get_market_for_stock("001556.OF"), "cn")
+        self.assertEqual(get_market_for_stock("270042.of"), "cn")
+        # 既有行为不回归
+        self.assertEqual(get_market_for_stock("600519"), "cn")
+        self.assertEqual(get_market_for_stock("HK01810"), "hk")
+        self.assertEqual(get_market_for_stock("AAPL"), "us")
+        self.assertIsNone(get_market_for_stock("???"))
 
 
 if __name__ == "__main__":

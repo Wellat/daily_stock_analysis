@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [改进] 告警冷却时间统一缩短为 2 小时：默认值 `DEFAULT_DB_ALERT_COOLDOWN_SECONDS` 从 6 小时改为 2 小时（影响未配置 `cooldown_policy.cooldown_seconds` 的规则，当前为 MACD 金/死叉、MA10 三条技术指标规则），存量 24 条显式配置的规则（原卖出/减仓线 72h、止损线 24h）的 `cooldown_policy` 数据同步改为 7200s，存量活跃冷却记录按新语义重算（触发时刻 +2h，早已过期的立即恢复可通知）。
+- [修复] 告警巡检对场外基金整夜空转并打穿外部源熔断器：`get_market_for_stock` 此前对 `.OF` 代码返回 None（fail-open 不过滤），`portfolio_holdings` 规则展开出的场外基金子标的 7×24 每 tick 评估——所有行情源均不支持 .OF 实时行情，连续失败把 tencent/sina/efinance/em 熔断器反复打穿（盘中间接拖累真股票的兜底链可用性）。现 .OF 识别为 cn（按 A 股日历过滤，休市跳过），且告警标的展开直接跳过 .OF（无实时行情语义，场外基金估值走净值链路）。
 - [修复] `--serve` 启动失败静默降级导致定时任务集体缺失：FastAPI 端口被占时（如旧实例未完全退出的窗口期）进程此前会降级为仅注册告警监控的 CLI 调度器继续运行，实盘调度（live_strategy_schedule）、QMT 订阅同步、转债/ETF 数据同步、持仓快照、成交汇总等后台任务全部静默缺失且无任何提示（2026-11-12~13 实盘策略连续两日漏跑即此因）；现启动前有限等待端口释放（默认 30s），超时或启动失败一律报错退出（`--serve` 与 `--serve-only` 行为对齐），不再静默降级。
 - [改进] `start.sh` 重启防端口争用：启动前自动对旧 `main.py --serve` 实例发送 SIGINT 并等待其完全退出（30s 超时后 SIGKILL 兜底），消除新旧实例切换时的端口占用窗口。
 - [改进] 告警触发通知可读性：正文前置「规则」「信号」两行——规则名为创建规则时填写的操作意图（如「减仓① 小米 28.8上方（减1/4）」），信号行按规则类型翻译（价格穿越→站上/跌破阈值并带偏离百分比、MACD→金叉/死叉并带 delta、均线穿越→跌破/站上 MA{N}、放量→倍数、RSI/CCI→观察值 vs 阈值），未识别类型回落通用「观察值/阈值」表述；原始判定文本保留在后，名称回查/翻译任何失败不影响通知发送。
